@@ -10,6 +10,8 @@ type TeacherActor = { type: "teacher"; id: string; email: string };
 type ClassRoom = {
   id: string; school_name: string; school_year: number; grade: number; class_number: number;
   display_name: string | null; status: string; student_count?: number; active_count?: number; action_count?: number;
+  job_student_count?: number; job_status?: "not_started" | "draft" | "completed";
+  job_count?: number; job_capacity?: number; job_student_snapshot?: number; job_student_count_changed?: number;
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
@@ -138,6 +140,26 @@ export function TeacherPortal() {
               <div className={students.length ? "done" : "current"}><b>2</b><span>학생 명단<small>{students.length ? `${students.length}명` : "입력 중"}</small></span></div>
               <i />
               <div className={activeCount === students.length && students.length ? "done" : students.length ? "current" : ""}><b>3</b><span>QR 등록<small>{students.length ? `${activeCount}/${students.length}명` : "대기"}</small></span></div>
+            </section>
+
+            <section className={`job-dashboard-card ${selectedSummary.job_student_count_changed ? "needs-review" : selectedSummary.job_status || "not_started"}`}>
+              <div className="job-dashboard-bear" aria-hidden="true"><span>●</span></div>
+              <div>
+                <p className="eyebrow">우리 반 운영</p>
+                <h2>우리 반 직업</h2>
+                {selectedSummary.job_student_count_changed ? (
+                  <p><b>학생 명단이 달라졌어요.</b> 저장 당시 {selectedSummary.job_student_snapshot}명에서 현재 {selectedSummary.job_student_count}명으로 바뀌었어요.</p>
+                ) : selectedSummary.job_status === "completed" ? (
+                  <p><b>직업 구성이 확정됐어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리를 운영해요.</p>
+                ) : selectedSummary.job_status === "draft" ? (
+                  <p><b>저장한 초안이 있어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리부터 이어서 만들 수 있어요.</p>
+                ) : (
+                  <p><b>아직 직업을 정하지 않았어요.</b> 간단한 질문으로 추천받거나 직접 만들 수 있어요.</p>
+                )}
+              </div>
+              <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/jobs`}>
+                {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
+              </a>
             </section>
 
             {students.length === 0 ? (

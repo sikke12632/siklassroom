@@ -56,6 +56,34 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS audit_logs_teacher_idx ON audit_logs(teacher_id)`,
   `CREATE INDEX IF NOT EXISTS audit_logs_class_idx ON audit_logs(class_id)`,
+  `CREATE TABLE IF NOT EXISTS job_templates (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, short_description TEXT NOT NULL,
+    detailed_tasks TEXT NOT NULL, category TEXT NOT NULL,
+    recommended_min_members INTEGER NOT NULL, recommended_max_members INTEGER NOT NULL,
+    icon_key TEXT NOT NULL, default_priority INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1
+  )`,
+  `CREATE INDEX IF NOT EXISTS job_templates_category_idx ON job_templates(category)`,
+  `CREATE TABLE IF NOT EXISTS class_job_setup (
+    class_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'not_started',
+    setup_mode TEXT, survey_answers TEXT, draft_jobs TEXT,
+    student_count_snapshot INTEGER NOT NULL DEFAULT 0,
+    selected_job_count INTEGER NOT NULL DEFAULT 0,
+    selected_capacity INTEGER NOT NULL DEFAULT 0,
+    last_step INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 0,
+    completed_at INTEGER, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS class_jobs (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, template_id TEXT,
+    name TEXT NOT NULL, description TEXT NOT NULL, member_capacity INTEGER NOT NULL,
+    category TEXT NOT NULL, source TEXT NOT NULL, sort_order INTEGER NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (template_id) REFERENCES job_templates(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS class_jobs_class_idx ON class_jobs(class_id)`,
+  `CREATE INDEX IF NOT EXISTS class_jobs_template_idx ON class_jobs(template_id)`,
 ];
 
 export function runtimeEnv(): RuntimeEnv {

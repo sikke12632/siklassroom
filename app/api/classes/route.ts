@@ -10,8 +10,21 @@ export async function GET(request: Request) {
       `SELECT c.id, c.school_name, c.school_year, c.grade, c.class_number, c.display_name, c.status,
               COUNT(s.id) AS student_count,
               SUM(CASE WHEN s.status = 'active' THEN 1 ELSE 0 END) AS active_count,
-              SUM(CASE WHEN s.status IN ('pending','reset_required') THEN 1 ELSE 0 END) AS action_count
-       FROM classes c LEFT JOIN students s ON s.class_id = c.id
+              SUM(CASE WHEN s.status IN ('pending','reset_required') THEN 1 ELSE 0 END) AS action_count,
+              SUM(CASE WHEN s.id IS NOT NULL AND s.status <> 'excluded' THEN 1 ELSE 0 END) AS job_student_count,
+              COALESCE(j.status, 'not_started') AS job_status,
+              COALESCE(j.selected_job_count, 0) AS job_count,
+              COALESCE(j.selected_capacity, 0) AS job_capacity,
+              COALESCE(j.student_count_snapshot, 0) AS job_student_snapshot,
+              CASE
+                WHEN j.status IS NOT NULL
+                  AND j.status <> 'not_started'
+                  AND j.student_count_snapshot <> SUM(CASE WHEN s.id IS NOT NULL AND s.status <> 'excluded' THEN 1 ELSE 0 END)
+                THEN 1 ELSE 0
+              END AS job_student_count_changed
+       FROM classes c
+       LEFT JOIN students s ON s.class_id = c.id
+       LEFT JOIN class_job_setup j ON j.class_id = c.id
        WHERE c.teacher_id = ? GROUP BY c.id ORDER BY c.school_year DESC, c.created_at DESC`,
     ).bind(teacherId).all();
     return json({ classes: result.results });

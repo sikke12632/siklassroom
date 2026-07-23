@@ -13,6 +13,10 @@ function cookieFrom(response) {
   return value?.split(";")[0] || "";
 }
 
+function capacityOf(jobs) {
+  return jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
+}
+
 async function request(path, { cookie = "", method = "GET", body, expected = 200 } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -69,6 +73,122 @@ await request(`/api/classes/${classId}/students`, {
   expected: 409,
 });
 
+const jobClassCreated = await request("/api/classes", {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 8, displayName: "직업검증반" },
+  expected: 201,
+});
+const jobClassId = jobClassCreated.data.class.id;
+await request(`/api/classes/${jobClassId}/students`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    students: Array.from({ length: 26 }, (_, index) => ({
+      number: index + 1,
+      name: `직업학생${index + 1}`,
+    })),
+  },
+  expected: 201,
+});
+const initialSetup = await request(`/api/classes/${jobClassId}/job-setup`, { cookie: teacherCookie });
+assert.equal(initialSetup.data.studentCount, 26);
+assert.equal(initialSetup.data.templates.length, 20);
+assert.equal(initialSetup.data.setup.revision, 0);
+
+const surveyAnswers = {
+  areas: ["cleaning", "learning"],
+  economy: "none",
+  checks: [],
+  distribution: "balanced",
+  includeJobIds: [],
+  excludeJobIds: [],
+};
+const recommendation = await request(`/api/classes/${jobClassId}/job-setup/recommend`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { surveyAnswers },
+});
+assert.equal(capacityOf(recommendation.data.jobs), 26);
+assert.ok(recommendation.data.jobs.length >= 8 && recommendation.data.jobs.length <= 12);
+assert.ok(!recommendation.data.jobs.some((job) => ["banker", "market-clerk"].includes(job.templateId)));
+
+const mismatchedDraft = structuredClone(recommendation.data.jobs);
+mismatchedDraft[0].memberCapacity -= 1;
+assert.equal(capacityOf(mismatchedDraft), 25);
+const draftSaved = await request(`/api/classes/${jobClassId}/job-setup/draft`, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    setupMode: "recommended",
+    surveyAnswers,
+    jobs: mismatchedDraft,
+    lastStep: 3,
+  },
+});
+assert.equal(draftSaved.data.setup.revision, 1);
+assert.equal(draftSaved.data.setup.selectedCapacity, 25);
+await request(`/api/classes/${jobClassId}/job-setup/draft`, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    setupMode: "recommended",
+    surveyAnswers,
+    jobs: mismatchedDraft,
+    lastStep: 3,
+  },
+  expected: 409,
+});
+
+const adjusted = await request(`/api/classes/${jobClassId}/job-setup/adjust`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { jobs: mismatchedDraft },
+});
+assert.equal(capacityOf(adjusted.data.jobs), 26);
+const jobsToComplete = structuredClone(adjusted.data.jobs);
+jobsToComplete[0].name = "우리 반 특별 환경지킴이";
+jobsToComplete[jobsToComplete.length - 1] = {
+  id: `${jobClassId}:custom:welcome-helper`,
+  templateId: null,
+  name: "새 친구 환영 도우미",
+  description: "새로 온 친구가 교실에 적응하도록 안내해요.",
+  memberCapacity: jobsToComplete[jobsToComplete.length - 1].memberCapacity,
+  category: "life",
+  source: "custom",
+  sortOrder: jobsToComplete.length - 1,
+};
+const completed = await request(`/api/classes/${jobClassId}/job-setup/complete`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    expectedRevision: 1,
+    setupMode: "recommended",
+    surveyAnswers,
+    jobs: jobsToComplete,
+  },
+});
+assert.equal(completed.data.setup.status, "completed");
+assert.equal(completed.data.setup.revision, 2);
+assert.equal(capacityOf(completed.data.setup.draftJobs), 26);
+await request(`/api/classes/${jobClassId}/job-setup/complete`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    expectedRevision: 1,
+    setupMode: "recommended",
+    surveyAnswers,
+    jobs: jobsToComplete,
+  },
+  expected: 409,
+});
+const restored = await request(`/api/classes/${jobClassId}/job-setup`, { cookie: teacherCookie });
+assert.equal(restored.data.setup.status, "completed");
+assert.ok(restored.data.setup.draftJobs.some((job) => job.source === "custom"));
+assert.ok(restored.data.templates.every((template) => template.name !== "우리 반 특별 환경지킴이"));
+
 const verification = await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`);
 assert.equal(verification.data.student.official_name, "김하늘");
 assert.equal(verification.data.student.student_number, 1);
@@ -96,6 +216,37 @@ await request(`/api/classes/${classId}/students`, {
   cookie: cookieFrom(outsider.response),
   expected: 404,
 });
+const outsiderCookie = cookieFrom(outsider.response);
+await request(`/api/classes/${jobClassId}/job-setup`, {
+  cookie: outsiderCookie,
+  expected: 404,
+});
+await request(`/api/classes/${jobClassId}/job-setup/draft`, {
+  cookie: outsiderCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 2,
+    setupMode: "manual",
+    surveyAnswers,
+    jobs: jobsToComplete,
+    lastStep: 3,
+  },
+  expected: 404,
+});
+
+await request(`/api/classes/${jobClassId}/students`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { students: [{ number: 27, name: "추가학생" }] },
+  expected: 201,
+});
+const changedSetup = await request(`/api/classes/${jobClassId}/job-setup`, { cookie: teacherCookie });
+assert.equal(changedSetup.data.studentCount, 27);
+assert.equal(changedSetup.data.studentCountChanged, true);
+const classSummary = await request("/api/classes", { cookie: teacherCookie });
+const jobSummary = classSummary.data.classes.find((item) => item.id === jobClassId);
+assert.equal(jobSummary.job_status, "completed");
+assert.equal(jobSummary.job_student_count_changed, 1);
 
 await request(`/api/students/${student.id}`, {
   cookie: teacherCookie,
@@ -157,4 +308,4 @@ const finalRoster = await request(`/api/classes/${classId}/students`, { cookie: 
 assert.equal(finalRoster.data.students[0].id, student.id);
 assert.equal(finalRoster.data.students[0].official_name, "김하늘");
 
-console.log("통합 흐름 검증 완료: 교사·학급·학생·일회용 QR·권한·복구");
+console.log("통합 흐름 검증 완료: 인증·학급·학생·직업 추천·초안·충돌·확정·권한·명단 변경");

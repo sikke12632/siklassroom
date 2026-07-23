@@ -108,3 +108,51 @@ export const auditLogs = sqliteTable("audit_logs", {
   index("audit_logs_teacher_idx").on(table.teacherId),
   index("audit_logs_class_idx").on(table.classId),
 ]);
+
+export const jobTemplates = sqliteTable("job_templates", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  shortDescription: text("short_description").notNull(),
+  detailedTasks: text("detailed_tasks").notNull(),
+  category: text("category").notNull(),
+  recommendedMinMembers: integer("recommended_min_members").notNull(),
+  recommendedMaxMembers: integer("recommended_max_members").notNull(),
+  iconKey: text("icon_key").notNull(),
+  defaultPriority: integer("default_priority").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+}, (table) => [
+  index("job_templates_category_idx").on(table.category),
+]);
+
+export const classJobSetup = sqliteTable("class_job_setup", {
+  classId: text("class_id").primaryKey().references(() => classes.id),
+  status: text("status").notNull().default("not_started"),
+  setupMode: text("setup_mode"),
+  surveyAnswers: text("survey_answers"),
+  draftJobs: text("draft_jobs"),
+  studentCountSnapshot: integer("student_count_snapshot").notNull().default(0),
+  selectedJobCount: integer("selected_job_count").notNull().default(0),
+  selectedCapacity: integer("selected_capacity").notNull().default(0),
+  lastStep: integer("last_step").notNull().default(1),
+  revision: integer("revision").notNull().default(0),
+  completedAt: integer("completed_at"),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const classJobs = sqliteTable("class_jobs", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  templateId: text("template_id").references(() => jobTemplates.id),
+  name: text("name").notNull(),
+  description: text("description").notNull(),
+  memberCapacity: integer("member_capacity").notNull(),
+  category: text("category").notNull(),
+  source: text("source").notNull(),
+  sortOrder: integer("sort_order").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("class_jobs_class_idx").on(table.classId),
+  index("class_jobs_template_idx").on(table.templateId),
+]);
