@@ -8,11 +8,14 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "deploy": "vinext deploy",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "test:integration": "node tests/integration-flow.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply ogu-classroom-production --local",
+    "db:migrate:remote": "wrangler d1 migrations apply ogu-classroom-production --remote"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
