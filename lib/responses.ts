@@ -15,6 +15,12 @@ export function apiFailure(error: unknown) {
 }
 
 export async function readJson<T>(request: Request): Promise<T> {
+  const origin = request.headers.get("origin");
+  const targetOrigin = new URL(request.url).origin;
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if ((origin && origin !== targetOrigin) || (fetchSite && fetchSite === "cross-site")) {
+    throw new ApiError(403, "허용되지 않은 요청입니다.", "CROSS_SITE_REQUEST_BLOCKED");
+  }
   try {
     return await request.json() as T;
   } catch {

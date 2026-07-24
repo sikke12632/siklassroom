@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement, requireTeacher } from "@/lib/auth";
 import { audit, database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, currentSchoolYear, integerInRange, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
@@ -35,9 +35,17 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { teacherId } = await requireTeacher(request);
-    const body = await readJson<{ schoolName?: string; schoolYear?: number; grade?: number; classNumber?: number; displayName?: string }>(request);
-    const schoolName = cleanDisplayText(body.schoolName, 60);
+    const access = await requireClassManagement(request);
+    const { teacherId } = access;
+    const body = await readJson<{ schoolYear?: number; grade?: number; classNumber?: number; displayName?: string }>(request);
+    const school = await database().prepare(
+      `SELECT COALESCE(s.official_name, r.entered_name) AS school_name
+       FROM teachers t
+       LEFT JOIN schools s ON s.id = t.school_id
+       LEFT JOIN school_manual_requests r ON r.id = t.manual_school_request_id
+       WHERE t.id = ?`,
+    ).bind(teacherId).first<{ school_name: string | null }>();
+    const schoolName = cleanDisplayText(school?.school_name, 80);
     const schoolNormalized = normalizeSchool(schoolName);
     const schoolYear = integerInRange(body.schoolYear ?? currentSchoolYear(), 2020, 2100);
     const grade = integerInRange(body.grade, 1, 6);
@@ -53,9 +61,14 @@ export async function POST(request: Request) {
     const id = crypto.randomUUID();
     const now = Date.now();
     await database().prepare(
-      `INSERT INTO classes (id, teacher_id, school_name, school_normalized, school_year, grade, class_number, display_name, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    ).bind(id, teacherId, schoolName, schoolNormalized, schoolYear, grade, classNumber, displayName, now, now).run();
+      `INSERT INTO classes
+       (id, teacher_id, school_name, school_normalized, school_id, manual_school_request_id,
+        school_year, grade, class_number, display_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+    ).bind(
+      id, teacherId, schoolName, schoolNormalized, access.schoolId, access.manualSchoolRequestId,
+      schoolYear, grade, classNumber, displayName, now, now,
+    ).run();
     await audit({ action: "class_created", teacherId, classId: id, detail: { schoolYear, grade, classNumber } });
     return json({ class: { id, school_name: schoolName, school_year: schoolYear, grade, class_number: classNumber, display_name: displayName, status: "active" } }, 201);
   } catch (error) {

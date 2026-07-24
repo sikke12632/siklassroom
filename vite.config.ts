@@ -7,6 +7,10 @@ const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
 const { d1, r2 } = hostingConfig;
+const localVars = Object.fromEntries(
+  ["RESEND_API_KEY", "MAIL_FROM", "ADMIN_API_TOKEN", "NEIS_API_KEY"]
+    .flatMap((key) => process.env[key] ? [[key, process.env[key] as string]] : []),
+);
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
@@ -31,6 +35,7 @@ const localBindingConfig = {
         },
       ]
     : [],
+  vars: localVars,
 };
 
 export default defineConfig(async () => {

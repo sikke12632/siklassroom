@@ -1,11 +1,11 @@
-import { requireTeacher, revokeActorSessions } from "@/lib/auth";
+import { requireClassManagement, revokeActorSessions } from "@/lib/auth";
 import { ownedStudent } from "@/lib/authorization";
 import { issueRegistrationToken } from "@/lib/registration";
 import { apiFailure, json } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ studentId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { studentId } = await context.params;
     const student = await ownedStudent(teacherId, studentId);
     const purpose = student.status === "active" ? "reset" : student.status === "reset_required" ? "reset" : "activate";

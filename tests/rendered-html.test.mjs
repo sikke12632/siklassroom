@@ -33,3 +33,19 @@ test("서비스의 보안·기록 원칙을 사용자에게 설명한다", async
   assert.match(auth, /SameSite=Lax/);
   assert.match(registration, /used_at IS NULL AND revoked_at IS NULL/);
 });
+
+test("이메일·초대코드·학교 상태를 분리하고 가입 단계를 안내한다", async () => {
+  const [portal, schema, migration] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0002_smooth_thor.sql", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /이메일을 확인해 주세요/);
+  assert.match(portal, /초대코드를 입력해 주세요/);
+  assert.match(portal, /학교를 선택해 주세요/);
+  assert.match(portal, /학교를 찾을 수 없나요\? 직접 입력/);
+  assert.match(schema, /emailVerifiedAt/);
+  assert.match(schema, /teacherAccessStatus/);
+  assert.match(schema, /schools_office_school_uq/);
+  assert.match(migration, /teacher_access_after_invite_use/);
+});

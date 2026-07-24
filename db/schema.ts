@@ -5,6 +5,11 @@ export const teachers = sqliteTable("teachers", {
   email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(),
   status: text("status").notNull().default("active"),
+  emailVerifiedAt: integer("email_verified_at"),
+  teacherAccessStatus: text("teacher_access_status").notNull().default("pending"),
+  teacherAccessVerifiedAt: integer("teacher_access_verified_at"),
+  schoolId: text("school_id"),
+  manualSchoolRequestId: text("manual_school_request_id"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [uniqueIndex("teachers_email_uq").on(table.email)]);
@@ -14,6 +19,8 @@ export const classes = sqliteTable("classes", {
   teacherId: text("teacher_id").notNull().references(() => teachers.id),
   schoolName: text("school_name").notNull(),
   schoolNormalized: text("school_normalized").notNull(),
+  schoolId: text("school_id"),
+  manualSchoolRequestId: text("manual_school_request_id"),
   schoolYear: integer("school_year").notNull(),
   grade: integer("grade").notNull(),
   classNumber: integer("class_number").notNull(),
@@ -107,6 +114,86 @@ export const auditLogs = sqliteTable("audit_logs", {
 }, (table) => [
   index("audit_logs_teacher_idx").on(table.teacherId),
   index("audit_logs_class_idx").on(table.classId),
+]);
+
+export const schools = sqliteTable("schools", {
+  id: text("id").primaryKey(),
+  officeCode: text("office_code").notNull(),
+  schoolCode: text("school_code").notNull(),
+  officialName: text("official_name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  searchName: text("search_name").notNull(),
+  schoolLevel: text("school_level").notNull(),
+  provinceName: text("province_name").notNull(),
+  districtName: text("district_name"),
+  roadAddress: text("road_address"),
+  status: text("status").notNull().default("active"),
+  source: text("source").notNull().default("neis"),
+  sourceUpdatedAt: integer("source_updated_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("schools_office_school_uq").on(table.officeCode, table.schoolCode),
+  index("schools_normalized_idx").on(table.normalizedName),
+  index("schools_search_idx").on(table.searchName),
+  index("schools_filters_idx").on(table.provinceName, table.schoolLevel, table.status),
+]);
+
+export const schoolAliases = sqliteTable("school_aliases", {
+  id: text("id").primaryKey(),
+  schoolId: text("school_id").notNull().references(() => schools.id),
+  alias: text("alias").notNull(),
+  normalizedAlias: text("normalized_alias").notNull(),
+  aliasType: text("alias_type").notNull(),
+}, (table) => [
+  uniqueIndex("school_aliases_school_normalized_uq").on(table.schoolId, table.normalizedAlias),
+  index("school_aliases_normalized_idx").on(table.normalizedAlias),
+]);
+
+export const schoolManualRequests = sqliteTable("school_manual_requests", {
+  id: text("id").primaryKey(),
+  submittedByTeacherId: text("submitted_by_teacher_id").notNull().references(() => teachers.id),
+  enteredName: text("entered_name").notNull(),
+  normalizedName: text("normalized_name").notNull(),
+  provinceName: text("province_name").notNull(),
+  schoolLevel: text("school_level").notNull(),
+  districtOrAddress: text("district_or_address"),
+  note: text("note"),
+  status: text("status").notNull().default("pending"),
+  linkedSchoolId: text("linked_school_id").references(() => schools.id),
+  createdAt: integer("created_at").notNull(),
+  reviewedAt: integer("reviewed_at"),
+}, (table) => [
+  index("school_manual_requests_teacher_idx").on(table.submittedByTeacherId),
+  index("school_manual_requests_lookup_idx").on(table.normalizedName, table.provinceName, table.status),
+]);
+
+export const teacherEmailVerifications = sqliteTable("teacher_email_verifications", {
+  id: text("id").primaryKey(),
+  teacherId: text("teacher_id").notNull().references(() => teachers.id),
+  tokenHash: text("token_hash").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  usedAt: integer("used_at"),
+  invalidatedAt: integer("invalidated_at"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("teacher_email_verifications_hash_uq").on(table.tokenHash),
+  index("teacher_email_verifications_teacher_idx").on(table.teacherId, table.createdAt),
+]);
+
+export const teacherInviteCodes = sqliteTable("teacher_invite_codes", {
+  id: text("id").primaryKey(),
+  codeHash: text("code_hash").notNull(),
+  status: text("status").notNull().default("active"),
+  issuedBy: text("issued_by").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  usedAt: integer("used_at"),
+  usedByTeacherId: text("used_by_teacher_id").references(() => teachers.id),
+  revokedAt: integer("revoked_at"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("teacher_invite_codes_hash_uq").on(table.codeHash),
+  index("teacher_invite_codes_status_idx").on(table.status, table.expiresAt),
 ]);
 
 export const jobTemplates = sqliteTable("job_templates", {

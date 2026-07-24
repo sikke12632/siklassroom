@@ -26,6 +26,16 @@ export async function sha256(value: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
+export async function secureStringEqual(left: string, right: string): Promise<boolean> {
+  const [leftHash, rightHash] = await Promise.all([sha256(left), sha256(right)]);
+  if (leftHash.length !== rightHash.length) return false;
+  let difference = 0;
+  for (let index = 0; index < leftHash.length; index += 1) {
+    difference |= leftHash.charCodeAt(index) ^ rightHash.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
 export async function hashPassword(password: string): Promise<string> {
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);

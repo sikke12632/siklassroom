@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
 import { recommendJobs, type SurveyAnswers } from "@/lib/job-catalog";
@@ -7,7 +7,7 @@ import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
     const studentCount = await eligibleStudentCount(classId);

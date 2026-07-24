@@ -7,6 +7,8 @@ const secondTeacherEmail = `other-${runId}@example.test`;
 const schoolName = `검증초${runId.slice(-6)}`;
 const firstPassword = "Teacher!234";
 const nextPassword = "Teacher!567";
+const adminToken = process.env.ADMIN_API_TOKEN;
+assert.ok(adminToken, "ADMIN_API_TOKEN 환경 변수가 필요합니다.");
 
 function cookieFrom(response) {
   const value = response.headers.get("set-cookie");
@@ -17,12 +19,13 @@ function capacityOf(jobs) {
   return jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
 }
 
-async function request(path, { cookie = "", method = "GET", body, expected = 200 } = {}) {
+async function request(path, { cookie = "", method = "GET", body, expected = 200, headers = {} } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
       ...(cookie ? { cookie } : {}),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -41,17 +44,146 @@ const signup = await request("/api/teacher/signup", {
 let teacherCookie = cookieFrom(signup.response);
 assert.match(teacherCookie, /^job_classroom_session=/);
 
+await request("/api/classes", {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { schoolYear: 2099, grade: 5, classNumber: 9 },
+  expected: 403,
+});
+assert.ok(signup.data.verification.developmentUrl);
+const emailToken = new URL(signup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+await request("/api/teacher/email-verification/confirm", {
+  method: "POST",
+  body: { token: emailToken },
+});
+await request("/api/teacher/email-verification/confirm", {
+  method: "POST",
+  body: { token: emailToken },
+  expected: 410,
+});
+
+const outsider = await request("/api/teacher/signup", {
+  method: "POST",
+  body: { email: secondTeacherEmail, password: firstPassword },
+  expected: 201,
+});
+let outsiderCookie = cookieFrom(outsider.response);
+const outsiderEmailToken = new URL(outsider.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+await request("/api/teacher/email-verification/confirm", {
+  method: "POST",
+  body: { token: outsiderEmailToken },
+});
+
+await request("/api/admin/schools/import", {
+  method: "POST",
+  headers: { authorization: `Bearer ${adminToken}` },
+  body: {
+    schools: [{
+      officeCode: "TST",
+      schoolCode: `S${runId.replace(/\W/g, "").slice(-12)}`,
+      officialName: schoolName,
+      schoolLevel: "초등학교",
+      provinceName: "서울특별시",
+      districtName: "검증교육지원청",
+      roadAddress: "서울특별시 검증구 1",
+    }],
+  },
+});
+const search = await request(`/api/schools/search?q=${encodeURIComponent(schoolName)}`, {
+  cookie: teacherCookie,
+});
+assert.equal(search.data.schools.length, 1);
+const schoolId = search.data.schools[0].id;
+
+const sharedInvite = await request("/api/admin/invite-codes", {
+  method: "POST",
+  headers: { authorization: `Bearer ${adminToken}` },
+  body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
+  expected: 201,
+});
+const parallelRedeem = await Promise.all([
+  fetch(`${baseUrl}/api/teacher/invite-code/redeem`, {
+    method: "POST", headers: { cookie: teacherCookie, "content-type": "application/json" },
+    body: JSON.stringify({ code: sharedInvite.data.code }),
+  }),
+  fetch(`${baseUrl}/api/teacher/invite-code/redeem`, {
+    method: "POST", headers: { cookie: outsiderCookie, "content-type": "application/json" },
+    body: JSON.stringify({ code: sharedInvite.data.code }),
+  }),
+]);
+assert.deepEqual(parallelRedeem.map((response) => response.status).sort(), [200, 410]);
+for (const [cookie, response] of [[teacherCookie, parallelRedeem[0]], [outsiderCookie, parallelRedeem[1]]]) {
+  if (response.status === 200) continue;
+  const replacement = await request("/api/admin/invite-codes", {
+    method: "POST",
+    headers: { authorization: `Bearer ${adminToken}` },
+    body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
+    expected: 201,
+  });
+  await request("/api/teacher/invite-code/redeem", {
+    cookie,
+    method: "POST",
+    body: { code: replacement.data.code },
+  });
+}
+await request("/api/schools/select", { cookie: teacherCookie, method: "POST", body: { schoolId } });
+await request("/api/schools/select", { cookie: outsiderCookie, method: "POST", body: { schoolId } });
+
+const manualSignup = await request("/api/teacher/signup", {
+  method: "POST",
+  body: { email: `manual-${runId}@example.test`, password: firstPassword },
+  expected: 201,
+});
+const manualCookie = cookieFrom(manualSignup.response);
+const manualEmailToken = new URL(manualSignup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+await request("/api/teacher/email-verification/confirm", { method: "POST", body: { token: manualEmailToken } });
+const manualInvite = await request("/api/admin/invite-codes", {
+  method: "POST",
+  headers: { authorization: `Bearer ${adminToken}` },
+  body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
+  expected: 201,
+});
+await request("/api/teacher/invite-code/redeem", {
+  cookie: manualCookie,
+  method: "POST",
+  body: { code: manualInvite.data.code },
+});
+const manualSchool = await request("/api/schools/manual", {
+  cookie: manualCookie,
+  method: "POST",
+  body: {
+    enteredName: `직접입력학교${runId.slice(-4)}`,
+    provinceName: "서울특별시",
+    schoolLevel: "초등학교",
+    districtOrAddress: "검증구",
+    note: "<script>alert(1)</script>",
+  },
+  expected: 400,
+});
+assert.equal(manualSchool.data.code, "INVALID_SCHOOL_DETAIL");
+await request("/api/schools/manual", {
+  cookie: manualCookie,
+  method: "POST",
+  body: {
+    enteredName: `직접입력학교${runId.slice(-4)}`,
+    provinceName: "서울특별시",
+    schoolLevel: "초등학교",
+    districtOrAddress: "검증구",
+  },
+  expected: 201,
+});
+
 const classCreated = await request("/api/classes", {
   cookie: teacherCookie,
   method: "POST",
-  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, displayName: "검증반" },
+  body: { schoolYear: 2099, grade: 5, classNumber: 9, displayName: "검증반" },
   expected: 201,
 });
 const classId = classCreated.data.class.id;
 await request("/api/classes", {
   cookie: teacherCookie,
   method: "POST",
-  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9 },
+  body: { schoolYear: 2099, grade: 5, classNumber: 9 },
   expected: 409,
 });
 
@@ -76,7 +208,7 @@ await request(`/api/classes/${classId}/students`, {
 const jobClassCreated = await request("/api/classes", {
   cookie: teacherCookie,
   method: "POST",
-  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 8, displayName: "직업검증반" },
+  body: { schoolYear: 2099, grade: 5, classNumber: 8, displayName: "직업검증반" },
   expected: 201,
 });
 const jobClassId = jobClassCreated.data.class.id;
@@ -207,16 +339,10 @@ await request("/api/registration/complete", {
 const me = await request("/api/student/me", { cookie: studentCookie });
 assert.equal(me.data.student.id, student.id);
 
-const outsider = await request("/api/teacher/signup", {
-  method: "POST",
-  body: { email: secondTeacherEmail, password: firstPassword },
-  expected: 201,
-});
 await request(`/api/classes/${classId}/students`, {
-  cookie: cookieFrom(outsider.response),
+  cookie: outsiderCookie,
   expected: 404,
 });
-const outsiderCookie = cookieFrom(outsider.response);
 await request(`/api/classes/${jobClassId}/job-setup`, {
   cookie: outsiderCookie,
   expected: 404,
@@ -308,4 +434,4 @@ const finalRoster = await request(`/api/classes/${classId}/students`, { cookie: 
 assert.equal(finalRoster.data.students[0].id, student.id);
 assert.equal(finalRoster.data.students[0].official_name, "김하늘");
 
-console.log("통합 흐름 검증 완료: 인증·학급·학생·직업 추천·초안·충돌·확정·권한·명단 변경");
+console.log("통합 흐름 검증 완료: 이메일·초대코드·학교·학급·학생·직업·권한·기존 흐름");

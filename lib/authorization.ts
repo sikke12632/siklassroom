@@ -4,7 +4,8 @@ import { ApiError } from "./responses";
 export async function ownedClass(teacherId: string, classId: string) {
   await ensureSchema();
   const row = await database().prepare(
-    `SELECT id, teacher_id, school_name, school_year, grade, class_number, display_name, status, created_at, updated_at
+    `SELECT id, teacher_id, school_name, school_normalized, school_id, manual_school_request_id,
+            school_year, grade, class_number, display_name, status, created_at, updated_at
      FROM classes WHERE id = ? AND teacher_id = ?`,
   ).bind(classId, teacherId).first<Record<string, string | number | null>>();
   if (!row) throw new ApiError(404, "학급을 찾을 수 없습니다.", "CLASS_NOT_FOUND");

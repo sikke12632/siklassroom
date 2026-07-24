@@ -1,14 +1,29 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, BriefcaseBusiness, Home, LogOut, Plus, RefreshCw, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CheckCircle2, Home, KeyRound, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
+import { PROVINCES, SCHOOL_LEVELS } from "@/lib/schools";
 
-type TeacherActor = { type: "teacher"; id: string; email: string };
+type TeacherActor = {
+  type: "teacher";
+  id: string;
+  email: string;
+  email_verified_at: number | null;
+  teacher_access_status: "pending" | "invite_verified" | "revoked";
+  teacher_access_verified_at: number | null;
+  school_id: string | null;
+  manual_school_request_id: string | null;
+  school_display_name?: string | null;
+  school_province_name?: string | null;
+  school_level?: string | null;
+  school_pending?: number;
+};
+type VerificationDelivery = { sent: boolean; retryAfterSeconds: number; developmentUrl?: string };
 type ClassRoom = {
   id: string; school_name: string; school_year: number; grade: number; class_number: number;
   display_name: string | null; status: string; student_count?: number; active_count?: number; action_count?: number;
@@ -39,6 +54,8 @@ export function TeacherPortal() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
+  const [initialVerification, setInitialVerification] = useState<VerificationDelivery | null>(null);
 
   const loadClasses = useCallback(async (preferredId?: string) => {
     const data = await api<{ classes: ClassRoom[] }>("/api/classes");
@@ -55,16 +72,36 @@ export function TeacherPortal() {
     setStudents(data.students);
   }, []);
 
+  const loadActor = useCallback(async () => {
+    const data = await api<{ actor: TeacherActor | { type: "student" } | null }>("/api/session");
+    if (data.actor?.type === "teacher") {
+      setActor(data.actor);
+      if (
+        data.actor.email_verified_at
+        && data.actor.teacher_access_status === "invite_verified"
+        && (data.actor.school_id || data.actor.manual_school_request_id)
+      ) {
+        await loadClasses();
+      }
+    } else if (data.actor?.type === "student") {
+      setWrongEntrance(true);
+    } else {
+      setActor(null);
+    }
+    return data.actor;
+  }, [loadClasses]);
+
   useEffect(() => {
-    api<{ actor: TeacherActor | { type: "student" } | null }>("/api/session")
-      .then(async ({ actor: sessionActor }) => {
-        if (sessionActor?.type === "teacher") {
-          setActor(sessionActor);
-          await loadClasses();
-        } else if (sessionActor?.type === "student") {
-          setWrongEntrance(true);
-        }
-      })
+    const token = new URLSearchParams(window.location.search).get("verifyEmailToken");
+    const verify = token
+      ? postJson("/api/teacher/email-verification/confirm", { token })
+        .then(() => {
+          setAuthNotice("이메일 확인을 완료했어요. 다음 단계로 이어갈게요.");
+          window.history.replaceState({}, "", "/teacher");
+        })
+        .catch((reason) => setError((reason as Error).message))
+      : Promise.resolve();
+    verify.then(() => loadActor())
       .catch(() => setError("접속 상태를 확인하지 못했어요. 새로고침해 주세요."))
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -89,7 +126,30 @@ export function TeacherPortal() {
       <div className="button-stack"><a className="button button-primary" href="/student">학생 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></div>
     </CenteredCard>
   );
-  if (!actor) return <TeacherAuth mode={authMode} setMode={setAuthMode} onAuthenticated={(teacher) => { setActor(teacher); loadClasses(); }} />;
+  if (!actor) return (
+    <TeacherAuth
+      mode={authMode}
+      setMode={setAuthMode}
+      notice={authNotice}
+      onAuthenticated={(teacher, verification) => {
+        setActor(teacher);
+        setInitialVerification(verification ?? null);
+        loadActor();
+      }}
+    />
+  );
+  if (!actor.email_verified_at) {
+    return <EmailVerificationGate actor={actor} initialDelivery={initialVerification} onComplete={loadActor} onLogout={logout} />;
+  }
+  if (actor.teacher_access_status === "revoked") {
+    return <AccessRevokedGate actor={actor} onLogout={logout} />;
+  }
+  if (actor.teacher_access_status !== "invite_verified") {
+    return <InviteCodeGate actor={actor} onComplete={loadActor} onLogout={logout} />;
+  }
+  if (!actor.school_id && !actor.manual_school_request_id) {
+    return <SchoolSelectionGate actor={actor} onComplete={loadActor} onLogout={logout} />;
+  }
 
   const selectedSummary = classes.find((item) => item.id === selectedClassId);
   const classLabel = classRoom ? (classRoom.display_name || `${classRoom.school_name} ${classRoom.grade}학년 ${classRoom.class_number}반`) : "우리 반";
@@ -129,7 +189,7 @@ export function TeacherPortal() {
         <Notice message={message} tone="success" />
 
         {showClassForm ? (
-          <ClassCreateForm busy={busy} onSubmit={async (input) => {
+          <ClassCreateForm actor={actor} busy={busy} onSubmit={async (input) => {
             setBusy(true); setError("");
             try {
               const data = await postJson<{ class: ClassRoom }>("/api/classes", input);
@@ -223,7 +283,242 @@ export function TeacherPortal() {
   );
 }
 
-function TeacherAuth({ mode, setMode, onAuthenticated }: { mode: "login" | "signup" | "forgot"; setMode: (mode: "login" | "signup" | "forgot") => void; onAuthenticated: (teacher: TeacherActor) => void }) {
+function OnboardingShell({ step, icon, title, description, children, onLogout }: {
+  step: number;
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+  onLogout: () => void;
+}) {
+  return (
+    <div className="auth-page onboarding-auth-page">
+      <header><Logo /><div className="header-actions"><ThemeToggle compact /><button className="text-button" onClick={onLogout}>로그아웃</button></div></header>
+      <main className="onboarding-gate-wrap">
+        <section className="onboarding-gate">
+          <div className="onboarding-gate-icon" aria-hidden="true">{icon}</div>
+          <div className="onboarding-step">{step} / 5</div>
+          <p className="eyebrow">교사 가입 준비</p>
+          <h1>{title}</h1>
+          <p>{description}</p>
+          <div className="account-steps" aria-label="가입 단계">
+            {["계정", "이메일", "초대코드", "학교", "학급"].map((label, index) => (
+              <span key={label} className={index + 1 < step ? "done" : index + 1 === step ? "current" : ""}>
+                {index + 1 < step ? <CheckCircle2 aria-hidden="true" /> : index + 1}<small>{label}</small>
+              </span>
+            ))}
+          </div>
+          {children}
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function EmailVerificationGate({ actor, initialDelivery, onComplete, onLogout }: {
+  actor: TeacherActor;
+  initialDelivery: VerificationDelivery | null;
+  onComplete: () => Promise<unknown>;
+  onLogout: () => void;
+}) {
+  const [delivery, setDelivery] = useState<VerificationDelivery | null>(initialDelivery);
+  const [cooldown, setCooldown] = useState(initialDelivery?.retryAfterSeconds ?? 0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState(initialDelivery?.sent ? "인증 메일을 보냈어요. 스팸함도 확인해 주세요." : "");
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setTimeout(() => setCooldown((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [cooldown]);
+
+  async function resend() {
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const data = await postJson<{ verification?: VerificationDelivery; alreadyVerified?: boolean }>("/api/teacher/email-verification/request", {});
+      if (data.alreadyVerified) return void await onComplete();
+      const next = data.verification ?? null;
+      setDelivery(next);
+      setCooldown(next?.retryAfterSeconds ?? 60);
+      setMessage(next?.sent ? "인증 메일을 다시 보냈어요." : "메일 발송 설정을 확인하고 있어요.");
+    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+  }
+
+  return (
+    <OnboardingShell step={2} icon={<MailCheck />} title="이메일을 확인해 주세요" description={`${actor.email} 주소로 보낸 링크를 누르면 이메일 확인이 완료됩니다.`} onLogout={onLogout}>
+      <div className="verification-help"><b>메일이 보이지 않나요?</b><span>스팸함을 확인하고, 주소가 맞는지 살펴본 뒤 다시 보내 주세요.</span></div>
+      <Notice message={error} tone="error" /><Notice message={message} tone="success" />
+      {delivery?.developmentUrl && <a className="dev-reset-link" href={delivery.developmentUrl}>개발 환경 인증 링크 열기</a>}
+      <div className="button-stack">
+        <button className="button button-primary" disabled={busy || cooldown > 0} onClick={resend}>
+          {busy ? "보내는 중…" : cooldown > 0 ? `${cooldown}초 뒤 다시 보내기` : "인증 메일 다시 보내기"}
+        </button>
+        <button className="button button-light" onClick={() => onComplete()}>확인 완료 상태 새로고침</button>
+      </div>
+    </OnboardingShell>
+  );
+}
+
+function InviteCodeGate({ actor, onComplete, onLogout }: {
+  actor: TeacherActor;
+  onComplete: () => Promise<unknown>;
+  onLogout: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await postJson("/api/teacher/invite-code/redeem", { code });
+      await onComplete();
+    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+  }
+  return (
+    <OnboardingShell step={3} icon={<KeyRound />} title="초대코드를 입력해 주세요" description={`${actor.email} 이메일 확인이 완료됐어요. 베타 이용 권한을 활성화할 차례입니다.`} onLogout={onLogout}>
+      <div className="verification-help"><b>초대코드는 일회용입니다</b><span>발급받은 코드는 한 계정에서 한 번만 사용할 수 있어요.</span></div>
+      <form className="form-stack" onSubmit={submit}>
+        <label>교사 초대코드<input value={code} onChange={(event) => setCode(event.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 23))} placeholder="XXXXX-XXXXX-XXXXX-XXXXX" autoComplete="one-time-code" autoFocus required /></label>
+        <Notice message={error} tone="error" />
+        <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : "초대코드 인증하기"}</button>
+      </form>
+      <p className="privacy-note">초대코드는 베타 서비스 이용 권한을 위한 것이며, 재직 또는 학교 소속을 공식 인증하지 않습니다.</p>
+    </OnboardingShell>
+  );
+}
+
+function AccessRevokedGate({ actor, onLogout }: { actor: TeacherActor; onLogout: () => void }) {
+  return (
+    <OnboardingShell step={3} icon={<KeyRound />} title="교사 이용 권한이 비활성화됐어요" description={`${actor.email} 계정으로 로그인되어 있지만 지금은 학급을 변경할 수 없습니다.`} onLogout={onLogout}>
+      <Notice message="서비스 관리자에게 새 이용 권한을 요청해 주세요." tone="error" />
+    </OnboardingShell>
+  );
+}
+
+type SchoolResult = {
+  id: string;
+  official_name: string;
+  province_name: string;
+  school_level: string;
+  district_name: string | null;
+  road_address: string | null;
+};
+
+function SchoolSelectionGate({ actor, onComplete, onLogout }: {
+  actor: TeacherActor;
+  onComplete: () => Promise<unknown>;
+  onLogout: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [province, setProvince] = useState("");
+  const [level, setLevel] = useState("");
+  const [results, setResults] = useState<SchoolResult[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [manual, setManual] = useState(false);
+  const [error, setError] = useState("");
+  const [searched, setSearched] = useState(false);
+  const [manualName, setManualName] = useState("");
+  const [manualProvince, setManualProvince] = useState("");
+  const [manualLevel, setManualLevel] = useState("");
+  const [manualDistrict, setManualDistrict] = useState("");
+  const [manualNote, setManualNote] = useState("");
+
+  useEffect(() => {
+    if (query.trim().replace(/\s+/g, "").length < 2) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true); setError("");
+      try {
+        const params = new URLSearchParams({ q: query });
+        if (province) params.set("province", province);
+        if (level) params.set("level", level);
+        const data = await api<{ schools: SchoolResult[] }>(`/api/schools/search?${params}`, { signal: controller.signal });
+        setResults(data.schools); setSearched(true);
+      } catch (reason) {
+        if (!controller.signal.aborted) setError((reason as Error).message);
+      } finally { if (!controller.signal.aborted) setLoading(false); }
+    }, 350);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [query, province, level]);
+
+  async function selectSchool(school: SchoolResult) {
+    setBusy(true); setError("");
+    try {
+      await postJson("/api/schools/select", { schoolId: school.id });
+      await onComplete();
+    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+  }
+
+  async function submitManual(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError("");
+    try {
+      await postJson("/api/schools/manual", {
+        enteredName: manualName,
+        provinceName: manualProvince,
+        schoolLevel: manualLevel,
+        districtOrAddress: manualDistrict,
+        note: manualNote,
+      });
+      await onComplete();
+    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+  }
+
+  return (
+    <OnboardingShell step={4} icon={<School />} title="학교를 선택해 주세요" description={`${actor.email} 계정에 공식 학교를 연결합니다. 찾을 수 없으면 직접 입력할 수 있어요.`} onLogout={onLogout}>
+      {!manual ? (
+        <>
+          <div className="school-filters">
+            <label>시도<select value={province} onChange={(event) => setProvince(event.target.value)}><option value="">전체 시도</option>{PROVINCES.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>학교급<select value={level} onChange={(event) => setLevel(event.target.value)}><option value="">전체 학교급</option>{SCHOOL_LEVELS.map((item) => <option key={item}>{item}</option>)}</select></label>
+          </div>
+          <label className="school-search-label">학교명 검색<div className="school-search-input"><Search aria-hidden="true" /><input value={query} onChange={(event) => {
+            const value = event.target.value;
+            setQuery(value);
+            if (value.trim().replace(/\s+/g, "").length < 2) {
+              setResults([]);
+              setSearched(false);
+            }
+          }} placeholder="예: 서이초" autoFocus /></div></label>
+          <Notice message={error} tone="error" />
+          <div className="school-results" aria-live="polite" aria-busy={loading}>
+            {loading ? <p>학교를 찾고 있어요…</p> : results.map((school) => (
+              <button key={school.id} disabled={busy} onClick={() => selectSchool(school)}>
+                <School aria-hidden="true" /><span><strong>{school.official_name}</strong><small>{school.province_name} · {school.school_level}{school.district_name ? ` · ${school.district_name}` : ""}</small><em>{school.road_address || "주소 정보 없음"}</em></span>
+              </button>
+            ))}
+            {!loading && searched && !results.length && <p>검색 결과가 없어요. 이름을 다시 확인하거나 직접 입력해 주세요.</p>}
+          </div>
+          <button className="button button-light button-large" onClick={() => { setManual(true); setManualName(query); }}>학교를 찾을 수 없나요? 직접 입력</button>
+        </>
+      ) : (
+        <form className="form-stack manual-school-form" onSubmit={submitManual}>
+          <div className="school-filters">
+            <label>시도<select value={manualProvince} onChange={(event) => setManualProvince(event.target.value)} required><option value="">선택</option>{PROVINCES.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label>학교급<select value={manualLevel} onChange={(event) => setManualLevel(event.target.value)} required><option value="">선택</option>{SCHOOL_LEVELS.map((item) => <option key={item}>{item}</option>)}</select></label>
+          </div>
+          <label>학교명<input value={manualName} onChange={(event) => setManualName(event.target.value)} maxLength={80} required /></label>
+          <label>교육지원청 또는 주소 일부<input value={manualDistrict} onChange={(event) => setManualDistrict(event.target.value)} maxLength={120} required /></label>
+          <label>추가 설명 <small>선택</small><textarea value={manualNote} onChange={(event) => setManualNote(event.target.value)} maxLength={300} rows={3} /></label>
+          <Notice message={error} tone="error" />
+          <button className="button button-primary button-large" disabled={busy}>{busy ? "저장 중…" : "학교 확인 요청 저장하기"}</button>
+          <button type="button" className="text-button" onClick={() => setManual(false)}>공식 학교 검색으로 돌아가기</button>
+          <p className="privacy-note">직접 입력한 학교는 공식 학교 목록에 바로 추가되지 않고 ‘학교 확인 중’으로 저장됩니다.</p>
+        </form>
+      )}
+    </OnboardingShell>
+  );
+}
+
+function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
+  mode: "login" | "signup" | "forgot";
+  setMode: (mode: "login" | "signup" | "forgot") => void;
+  notice?: string;
+  onAuthenticated: (teacher: TeacherActor, verification?: VerificationDelivery) => void;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -241,8 +536,8 @@ function TeacherAuth({ mode, setMode, onAuthenticated }: { mode: "login" | "sign
         setDevelopmentUrl(data.developmentResetUrl || "");
       } else {
         if (mode === "signup" && password !== confirmPassword) throw new Error("비밀번호가 서로 달라요.");
-        const data = await postJson<{ teacher: TeacherActor }>(`/api/teacher/${mode}`, { email, password });
-        onAuthenticated({ ...data.teacher, type: "teacher" });
+        const data = await postJson<{ teacher: TeacherActor; verification?: VerificationDelivery }>(`/api/teacher/${mode}`, { email, password });
+        onAuthenticated({ ...data.teacher, type: "teacher" }, data.verification);
       }
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }
@@ -259,9 +554,9 @@ function TeacherAuth({ mode, setMode, onAuthenticated }: { mode: "login" | "sign
             <label>이메일<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teacher@school.kr" autoComplete="email" required /></label>
             {mode !== "forgot" && <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "signup" ? "8자 이상" : "비밀번호"} autoComplete={mode === "signup" ? "new-password" : "current-password"} required /></label>}
             {mode === "signup" && <label>비밀번호 확인<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required /></label>}
-            <Notice message={error} tone="error" /><Notice message={message} tone="success" />
+            <Notice message={error} tone="error" /><Notice message={message || notice || ""} tone="success" />
             {developmentUrl && <a className="dev-reset-link" href={developmentUrl}>개발 확인용 재설정 링크 열기</a>}
-            <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : mode === "login" ? "로그인" : mode === "signup" ? "가입하고 학급 만들기" : "재설정 메일 받기"}</button>
+            <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : mode === "login" ? "로그인" : mode === "signup" ? "가입하고 이메일 확인하기" : "재설정 메일 받기"}</button>
           </form>
           {mode === "login" && <button className="text-button" onClick={() => setMode("forgot")}>비밀번호를 잊었어요</button>}
           {mode === "forgot" && <button className="text-button" onClick={() => setMode("login")}>로그인으로 돌아가기</button>}
@@ -271,17 +566,16 @@ function TeacherAuth({ mode, setMode, onAuthenticated }: { mode: "login" | "sign
   );
 }
 
-function ClassCreateForm({ busy, onSubmit }: { busy: boolean; onSubmit: (input: Record<string, string | number>) => Promise<void> }) {
-  const [schoolName, setSchoolName] = useState("");
+function ClassCreateForm({ actor, busy, onSubmit }: { actor: TeacherActor; busy: boolean; onSubmit: (input: Record<string, string | number>) => Promise<void> }) {
   const [schoolYear, setSchoolYear] = useState(String(currentYear));
   const [grade, setGrade] = useState("");
   const [classNumber, setClassNumber] = useState("");
   const [displayName, setDisplayName] = useState("");
   return (
     <section className="onboarding-card">
-      <div className="onboarding-step">1 / 3</div><p className="eyebrow">첫 학급 만들기</p><h1>우리 반을 알려 주세요</h1><p>학생에게는 학교·학년·반만 보여요. 내부에서는 학급마다 안전한 고유 번호를 따로 사용합니다.</p>
-      <form className="class-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ schoolName, schoolYear: Number(schoolYear), grade: Number(grade), classNumber: Number(classNumber), displayName }); }}>
-        <label className="wide">학교명<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="예: 새봄초등학교" autoFocus required /></label>
+      <div className="onboarding-step">5 / 5</div><p className="eyebrow">학급 만들기</p><h1>우리 반을 알려 주세요</h1><p>학생에게는 학교·학년·반만 보여요. 내부에서는 학급마다 안전한 고유 번호를 따로 사용합니다.</p>
+      <div className="selected-school-summary"><School aria-hidden="true" /><div><small>{actor.school_pending ? "학교 확인 중" : "선택한 학교"}</small><strong>{actor.school_display_name}</strong><span>{actor.school_province_name} · {actor.school_level}</span></div></div>
+      <form className="class-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ schoolYear: Number(schoolYear), grade: Number(grade), classNumber: Number(classNumber), displayName }); }}>
         <label>학년도<input type="number" min="2020" max="2100" value={schoolYear} onChange={(event) => setSchoolYear(event.target.value)} required /></label>
         <label>학년<select value={grade} onChange={(event) => setGrade(event.target.value)} required><option value="">선택</option>{[1,2,3,4,5,6].map((item) => <option key={item} value={item}>{item}학년</option>)}</select></label>
         <label>반<input type="number" min="1" max="30" value={classNumber} onChange={(event) => setClassNumber(event.target.value)} placeholder="예: 3" required /></label>

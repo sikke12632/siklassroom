@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement, requireTeacher } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
@@ -9,7 +9,7 @@ type StudentInput = { number?: number; name?: string };
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     const result = await database().prepare(

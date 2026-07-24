@@ -1,4 +1,4 @@
-import { requireTeacher, revokeActorSessions } from "@/lib/auth";
+import { requireClassManagement, revokeActorSessions } from "@/lib/auth";
 import { ownedStudent } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
@@ -6,7 +6,7 @@ import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function PATCH(request: Request, context: { params: Promise<{ studentId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { studentId } = await context.params;
     const current = await ownedStudent(teacherId, studentId);
     const body = await readJson<{ number?: number; name?: string; status?: string }>(request);

@@ -15,6 +15,13 @@
       "when": 1784828861368,
       "tag": "0001_keen_rocket_raccoon",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784868646554,
+      "tag": "0002_smooth_thor",
+      "breakpoints": true
     }
   ]
 }

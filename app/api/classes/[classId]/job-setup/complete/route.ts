@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
 import type { ClassJobDraft, SetupMode, SurveyAnswers } from "@/lib/job-catalog";
@@ -14,7 +14,7 @@ type CompleteBody = {
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
     const body = await readJson<CompleteBody>(request);

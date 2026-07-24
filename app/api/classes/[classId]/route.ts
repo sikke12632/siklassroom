@@ -1,12 +1,12 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement, requireTeacher } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
-import { cleanDisplayText, integerInRange, normalizeSchool } from "@/lib/identity";
+import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     return json({ class: classRoom });
@@ -20,9 +20,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
     const { teacherId } = await requireTeacher(request);
     const { classId } = await context.params;
     const current = await ownedClass(teacherId, classId);
-    const body = await readJson<{ schoolName?: string; schoolYear?: number; grade?: number; classNumber?: number; displayName?: string; status?: string }>(request);
-    const schoolName = cleanDisplayText(body.schoolName ?? current.school_name, 60);
-    const schoolNormalized = normalizeSchool(schoolName);
+    const body = await readJson<{ schoolYear?: number; grade?: number; classNumber?: number; displayName?: string; status?: string }>(request);
+    const schoolName = String(current.school_name);
+    const schoolNormalized = String(current.school_normalized);
     const schoolYear = integerInRange(body.schoolYear ?? current.school_year, 2020, 2100);
     const grade = integerInRange(body.grade ?? current.grade, 1, 6);
     const classNumber = integerInRange(body.classNumber ?? current.class_number, 1, 30);

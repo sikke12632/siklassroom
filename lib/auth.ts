@@ -13,6 +13,14 @@ export type SessionActor = {
   expiresAt: number;
 };
 
+export type TeacherAccess = {
+  teacherId: string;
+  emailVerifiedAt: number | null;
+  teacherAccessStatus: "pending" | "invite_verified" | "revoked";
+  schoolId: string | null;
+  manualSchoolRequestId: string | null;
+};
+
 function requestCookie(request: Request, name: string): string | null {
   const source = request.headers.get("cookie") ?? "";
   for (const part of source.split(";")) {
@@ -75,6 +83,55 @@ export async function requireTeacher(request: Request): Promise<{ teacherId: str
   const teacher = await database().prepare(`SELECT status FROM teachers WHERE id = ?`).bind(session.teacherId).first<{ status: string }>();
   if (!teacher || teacher.status !== "active") throw new ApiError(403, "사용할 수 없는 교사 계정입니다.", "ACCOUNT_DISABLED");
   return { teacherId: session.teacherId };
+}
+
+export async function teacherAccess(request: Request): Promise<TeacherAccess> {
+  const { teacherId } = await requireTeacher(request);
+  const teacher = await database().prepare(
+    `SELECT email_verified_at, teacher_access_status, school_id, manual_school_request_id
+     FROM teachers WHERE id = ?`,
+  ).bind(teacherId).first<{
+    email_verified_at: number | null;
+    teacher_access_status: string;
+    school_id: string | null;
+    manual_school_request_id: string | null;
+  }>();
+  if (!teacher) throw new ApiError(403, "사용할 수 없는 교사 계정입니다.", "ACCOUNT_DISABLED");
+  const status = teacher.teacher_access_status;
+  return {
+    teacherId,
+    emailVerifiedAt: teacher.email_verified_at,
+    teacherAccessStatus: status === "invite_verified" || status === "revoked" ? status : "pending",
+    schoolId: teacher.school_id,
+    manualSchoolRequestId: teacher.manual_school_request_id,
+  };
+}
+
+export async function requireEmailVerified(request: Request): Promise<TeacherAccess> {
+  const access = await teacherAccess(request);
+  if (!access.emailVerifiedAt) {
+    throw new ApiError(403, "이메일 확인을 먼저 완료해 주세요.", "EMAIL_VERIFICATION_REQUIRED");
+  }
+  return access;
+}
+
+export async function requireTeacherAccess(request: Request): Promise<TeacherAccess> {
+  const access = await requireEmailVerified(request);
+  if (access.teacherAccessStatus === "revoked") {
+    throw new ApiError(403, "교사 이용 권한이 회수되어 변경할 수 없습니다.", "TEACHER_ACCESS_REVOKED");
+  }
+  if (access.teacherAccessStatus !== "invite_verified") {
+    throw new ApiError(403, "초대코드 인증을 먼저 완료해 주세요.", "INVITE_VERIFICATION_REQUIRED");
+  }
+  return access;
+}
+
+export async function requireClassManagement(request: Request): Promise<TeacherAccess> {
+  const access = await requireTeacherAccess(request);
+  if (!access.schoolId && !access.manualSchoolRequestId) {
+    throw new ApiError(403, "학교를 먼저 선택하거나 직접 입력해 주세요.", "SCHOOL_SELECTION_REQUIRED");
+  }
+  return access;
 }
 
 export async function requireStudent(request: Request): Promise<{ studentId: string }> {
