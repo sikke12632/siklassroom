@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { BriefcaseBusiness, PencilLine, Sparkles } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, postJson } from "@/lib/client-api";
 import type {
   ClassJobDraft,
@@ -323,7 +325,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
           <strong>{classLabel(data.class)}</strong>
           <span>우리 반 직업 설정</span>
         </div>
-        <a className="button button-light" href="/teacher">나가기</a>
+        <div className="job-topbar-actions"><ThemeToggle compact /><a className="button button-light" href="/teacher">나가기</a></div>
       </header>
 
       <main className="job-main">
@@ -355,12 +357,12 @@ export function JobSetupPortal({ classId }: { classId: string }) {
             {data.studentCount === 0 && <Notice message="학생 명단을 먼저 등록해야 추천과 확정을 진행할 수 있어요." tone="info" />}
             <div className="job-mode-grid">
               <button disabled={data.studentCount === 0} onClick={() => { setMode("recommended"); setStep(2); setSurveyPage(0); }}>
-                <span className="bear-face" aria-hidden="true">●</span>
+                <span className="mode-icon" aria-hidden="true"><Sparkles /></span>
                 <b>추천받기</b>
                 <small>짧은 질문에 답하면 학생 수에 맞춘 구성을 제안해요.</small>
               </button>
               <button onClick={() => { setMode("manual"); setStep(3); setJobs([]); }}>
-                <span className="bear-face bear-face-pencil" aria-hidden="true">＋</span>
+                <span className="mode-icon" aria-hidden="true"><PencilLine /></span>
                 <b>직접 만들기</b>
                 <small>기본 직업을 골라 담거나 우리 반만의 직업을 만들어요.</small>
               </button>
@@ -482,7 +484,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
               </div>
               {reasons.length > 0 && <div className="recommend-reasons">{reasons.map((reason) => <p key={reason}>✓ {reason}</p>)}</div>}
               {jobs.length === 0 ? (
-                <div className="empty-jobs"><span className="bear-face" aria-hidden="true">●</span><h2>아직 담은 직업이 없어요</h2><p>오른쪽 목록에서 기본 직업을 담거나 새 직업을 만들어 주세요.</p></div>
+                <div className="empty-jobs"><span className="mode-icon" aria-hidden="true"><BriefcaseBusiness /></span><h2>아직 담은 직업이 없어요</h2><p>오른쪽 목록에서 기본 직업을 담거나 새 직업을 만들어 주세요.</p></div>
               ) : (
                 <div className="job-card-list">
                   {jobs.map((job, index) => (

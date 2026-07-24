@@ -1,8 +1,10 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { BookOpen, GraduationCap, School } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, postJson } from "@/lib/client-api";
 
 type StudentInfo = {
@@ -10,7 +12,7 @@ type StudentInfo = {
   school_name: string; school_year: number; grade: number; class_number: number; display_name: string | null;
 };
 
-const preferenceKey = "ogu_student_class_v1";
+const preferenceKey = "job_classroom_student_class_v1";
 
 export function StudentPortal() {
   const [loading, setLoading] = useState(true);
@@ -55,18 +57,17 @@ export function StudentPortal() {
     setStudent(null); setTeacherSession(false); setStudentNumber(""); setPassword("");
   }
 
-  if (loading) return <div className="student-loading"><span>59</span><p>우리 반을 찾고 있어요</p></div>;
+  if (loading) return <div className="student-loading"><span><BookOpen aria-hidden="true" /></span><p>우리 반을 찾고 있어요</p></div>;
   if (teacherSession) return (
-    <main className="student-page"><header><Logo compact /></header><section className="student-message-card"><span className="big-emoji">👩‍🏫</span><h1>선생님으로 로그인되어 있어요</h1><p>교사 화면으로 돌아가거나 로그아웃한 뒤 학생으로 들어와 주세요.</p><a className="button button-primary button-large" href="/teacher">교사 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></section></main>
+    <main className="student-page"><header><Logo compact /><ThemeToggle compact /></header><section className="student-message-card"><span className="message-icon"><GraduationCap aria-hidden="true" /></span><h1>선생님으로 로그인되어 있어요</h1><p>교사 화면으로 돌아가거나 로그아웃한 뒤 학생으로 들어와 주세요.</p><a className="button button-primary button-large" href="/teacher">교사 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></section></main>
   );
   if (student) return (
     <main className="student-page student-home">
-      <header><Logo compact /><button className="student-logout" onClick={logout}>로그아웃</button></header>
+      <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><button className="student-logout" onClick={logout}>로그아웃</button></div></header>
       <section className="student-welcome">
-        <div className="welcome-confetti" aria-hidden="true"><i /><i /><i /><i /></div>
         <span className="student-avatar">{student.student_number}</span>
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>
-        <h1>{student.official_name}님,<br />오구학급에 잘 들어왔어요!</h1>
+        <h1>{student.official_name}님,<br />직업교실에 잘 들어왔어요!</h1>
         <div className="student-id-card"><span>내 공식 정보</span><strong>{student.student_number}번 · {student.official_name}</strong><small>이름과 번호는 선생님만 고칠 수 있어요.</small></div>
         <div className="future-card"><b>우리 반 기능을 준비하고 있어요</b><p>다음 단계에서 직업과 학급 운영 기능이 이 계정에 연결됩니다.</p></div>
       </section>
@@ -76,9 +77,9 @@ export function StudentPortal() {
   const classRemembered = schoolName && grade && classNumber;
   return (
     <main className="student-login-page">
-      <header><Logo compact /><a href="/teacher">선생님 입구</a></header>
+      <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><a href="/teacher">선생님 입구</a></div></header>
       <section className="student-login-card">
-        <div className="student-login-heading"><span className="pencil-mark" aria-hidden="true">학</span><p className="eyebrow">학생 로그인</p><h1>우리 반에 들어가요</h1><p>내 번호와 내가 만든 비밀번호를 입력해 주세요.</p></div>
+        <div className="student-login-heading"><span className="pencil-mark" aria-hidden="true"><School /></span><p className="eyebrow">학생 로그인</p><h1>우리 반에 들어가요</h1><p>내 번호와 내가 만든 비밀번호를 입력해 주세요.</p></div>
         <form onSubmit={login} className="student-login-form">
           <div className={`remembered-class ${classRemembered ? "visible" : ""}`}>
             <label>학교<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="학교 이름" required /></label>

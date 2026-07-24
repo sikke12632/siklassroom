@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { BookOpen, BriefcaseBusiness, Home, LogOut, Plus, RefreshCw, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
 
 type TeacherActor = { type: "teacher"; id: string; email: string };
@@ -99,6 +101,11 @@ export function TeacherPortal() {
     <div className="teacher-shell">
       <aside className="teacher-sidebar">
         <Logo compact />
+        <nav className="primary-nav" aria-label="주요 메뉴">
+          <a className="active" href="#dashboard"><Home aria-hidden="true" /><span>홈</span></a>
+          <a href="#students"><UsersRound aria-hidden="true" /><span>학생 관리</span></a>
+          {selectedClassId && <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" /><span>우리 반 직업</span></a>}
+        </nav>
         <div className="sidebar-section-title">내 학급</div>
         <nav className="class-nav">
           {classes.map((item) => (
@@ -108,12 +115,16 @@ export function TeacherPortal() {
             </button>
           ))}
         </nav>
-        <button className="sidebar-add" onClick={() => setShowClassForm(true)}>+ 새 학급 만들기</button>
-        <div className="sidebar-account"><span>{actor.email}</span><button onClick={logout}>로그아웃</button></div>
+        <button className="sidebar-add" onClick={() => setShowClassForm(true)}><Plus aria-hidden="true" /> 새 학급 만들기</button>
+        <div className="sidebar-account">
+          <ThemeToggle />
+          <span>{actor.email}</span>
+          <button onClick={logout}><LogOut aria-hidden="true" />로그아웃</button>
+        </div>
       </aside>
 
       <main className="teacher-main">
-        <header className="mobile-teacher-header"><Logo compact /><button onClick={logout}>로그아웃</button></header>
+        <header className="mobile-teacher-header"><Logo compact /><div><ThemeToggle compact /><button onClick={logout} aria-label="로그아웃"><LogOut aria-hidden="true" /></button></div></header>
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
 
@@ -130,9 +141,9 @@ export function TeacherPortal() {
           }} />
         ) : classRoom && selectedSummary ? (
           <>
-            <section className="dashboard-heading">
+            <section className="dashboard-heading" id="dashboard">
               <div><p className="eyebrow">{classRoom.school_year}학년도</p><h1>{classLabel}</h1><p>{classRoom.school_name} · {classRoom.grade}학년 {classRoom.class_number}반</p></div>
-              <button className="button button-light" onClick={() => loadClass(classRoom.id)}>새로고침</button>
+              <button className="button button-light" onClick={() => loadClass(classRoom.id)}><RefreshCw aria-hidden="true" />새로고침</button>
             </section>
             <section className="setup-progress" aria-label="학급 준비 단계">
               <div className="done"><b>1</b><span>학급 만들기<small>완료</small></span></div>
@@ -143,7 +154,7 @@ export function TeacherPortal() {
             </section>
 
             <section className={`job-dashboard-card ${selectedSummary.job_student_count_changed ? "needs-review" : selectedSummary.job_status || "not_started"}`}>
-              <div className="job-dashboard-bear" aria-hidden="true"><span>●</span></div>
+              <div className="job-dashboard-icon" aria-hidden="true"><BriefcaseBusiness /></div>
               <div>
                 <p className="eyebrow">우리 반 운영</p>
                 <h2>우리 반 직업</h2>
@@ -184,7 +195,7 @@ export function TeacherPortal() {
                     }}
                   />
                 )}
-                <section className="panel roster-panel">
+                <section className="panel roster-panel" id="students">
                   <div className="panel-heading">
                     <div><p className="eyebrow">학생 계정</p><h2>우리 반 명단</h2><p>이름이나 번호를 고쳐도 같은 학생의 기록으로 이어집니다.</p></div>
                     <div className="button-row">
@@ -238,7 +249,7 @@ function TeacherAuth({ mode, setMode, onAuthenticated }: { mode: "login" | "sign
 
   return (
     <div className="auth-page">
-      <header><Logo /><a href="/student">학생 로그인</a></header>
+      <header><Logo /><div className="header-actions"><ThemeToggle compact /><a href="/student">학생 로그인</a></div></header>
       <main className="auth-layout">
         <section className="auth-promise"><p className="eyebrow">교사 계정</p><h1>{mode === "signup" ? "반가워요, 선생님." : mode === "forgot" ? "비밀번호를 다시 만들어요." : "우리 반 준비를 이어갈까요?"}</h1><p>학급과 학생 계정은 선생님 계정 안에서 안전하게 관리됩니다.</p><ul><li>여러 학급을 한 계정에서 관리</li><li>학생 비밀번호는 선생님도 볼 수 없음</li><li>이름·번호 수정 후에도 기록 유지</li></ul></section>
         <section className="auth-card">
@@ -270,7 +281,7 @@ function ClassCreateForm({ busy, onSubmit }: { busy: boolean; onSubmit: (input: 
     <section className="onboarding-card">
       <div className="onboarding-step">1 / 3</div><p className="eyebrow">첫 학급 만들기</p><h1>우리 반을 알려 주세요</h1><p>학생에게는 학교·학년·반만 보여요. 내부에서는 학급마다 안전한 고유 번호를 따로 사용합니다.</p>
       <form className="class-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ schoolName, schoolYear: Number(schoolYear), grade: Number(grade), classNumber: Number(classNumber), displayName }); }}>
-        <label className="wide">학교명<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="예: 오구초등학교" autoFocus required /></label>
+        <label className="wide">학교명<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="예: 새봄초등학교" autoFocus required /></label>
         <label>학년도<input type="number" min="2020" max="2100" value={schoolYear} onChange={(event) => setSchoolYear(event.target.value)} required /></label>
         <label>학년<select value={grade} onChange={(event) => setGrade(event.target.value)} required><option value="">선택</option>{[1,2,3,4,5,6].map((item) => <option key={item} value={item}>{item}학년</option>)}</select></label>
         <label>반<input type="number" min="1" max="30" value={classNumber} onChange={(event) => setClassNumber(event.target.value)} placeholder="예: 3" required /></label>
@@ -391,5 +402,5 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
   );
 }
 
-function LoadingScreen({ label }: { label: string }) { return <div className="loading-screen"><span className="loading-mark">59</span><p>{label}</p></div>; }
+function LoadingScreen({ label }: { label: string }) { return <div className="loading-screen"><span className="loading-mark"><BookOpen aria-hidden="true" /></span><p>{label}</p></div>; }
 function CenteredCard({ children }: { children: React.ReactNode }) { return <main className="centered-page"><section className="centered-card">{children}</section></main>; }

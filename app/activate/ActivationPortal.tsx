@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, postJson } from "@/lib/client-api";
 
 type ActivationInfo = {
@@ -37,7 +38,7 @@ export function ActivationPortal({ token }: { token: string }) {
 
   return (
     <main className="activation-page">
-      <header><Logo compact /></header>
+      <header><Logo compact /><ThemeToggle compact /></header>
       <section className="activation-card">
         {loading ? <div className="student-loading inline"><span>QR</span><p>내 카드를 확인하고 있어요</p></div> : error && !info ? <div className="expired-qr"><span>!</span><h1>이 QR은 사용할 수 없어요</h1><Notice message={error} tone="error" /><p>이미 사용했거나 새 QR이 발급되었을 수 있어요. 선생님께 새 카드를 받아 주세요.</p><a className="button button-light" href="/student">학생 로그인으로</a></div> : info && <>
           <div className="activation-progress"><span className="active">1. 내 정보 확인</span><i /><span className="active">2. 비밀번호 만들기</span><i /><span>3. 완료</span></div>

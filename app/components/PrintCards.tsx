@@ -40,7 +40,7 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
       <main className="print-sheet">
         {cards.map((card) => (
           <article className="qr-card" key={card.id}>
-            <div className="qr-card-heading"><span>오구학급</span><small>{card.purpose === "reset" ? "비밀번호 다시 설정" : "처음 등록"}</small></div>
+            <div className="qr-card-heading"><span>직업교실</span><small>{card.purpose === "reset" ? "비밀번호 다시 설정" : "처음 등록"}</small></div>
             <div className="qr-student"><b>{card.student_number}번</b><strong>{card.official_name}</strong></div>
             <div className="qr-code-wrap">
               {images[card.id] ? <Image src={images[card.id]} alt={`${card.student_number}번 ${card.official_name} 등록 QR`} width={320} height={320} unoptimized /> : <div className="qr-loading">QR 만드는 중</div>}

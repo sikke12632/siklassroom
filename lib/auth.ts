@@ -2,7 +2,7 @@ import { database, ensureSchema } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { ApiError } from "./responses";
 
-export const SESSION_COOKIE = "ogu_session";
+export const SESSION_COOKIE = "job_classroom_session";
 const TEACHER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const STUDENT_SESSION_MS = 4 * 60 * 60 * 1000;
 

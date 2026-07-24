@@ -1,5 +1,5 @@
 {
-  "name": "ogu-classroom",
+  "name": "job-classroom",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
+    "lucide-react": "^1.25.0",
     "next": "16.2.6",
     "qrcode": "^1.5.4",
     "react": "19.2.6",

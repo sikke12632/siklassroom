@@ -39,7 +39,7 @@ const signup = await request("/api/teacher/signup", {
   expected: 201,
 });
 let teacherCookie = cookieFrom(signup.response);
-assert.match(teacherCookie, /^ogu_session=/);
+assert.match(teacherCookie, /^job_classroom_session=/);
 
 const classCreated = await request("/api/classes", {
   cookie: teacherCookie,
