@@ -8,6 +8,7 @@ import {
   sumJobCapacity,
   type ClassJobDraft,
 } from "../lib/job-catalog";
+import { assignmentPeriod, randomCandidate, seoulServerTime } from "../lib/seoul-time";
 
 test("26명 균형형 추천은 항상 같은 26자리를 만든다", () => {
   const first = recommendJobs(26, { ...DEFAULT_SURVEY_ANSWERS, distribution: "balanced" });
@@ -89,4 +90,29 @@ test("관리자 기본 직업 설정은 이후 추천 입력에 반영된다", (
   const result = recommendJobs(8, { distribution: "shared" }, templates);
   assert.equal(result.jobs.some((job) => job.templateId === "classroom-cleaner"), false);
   assert.equal(result.jobs.some((job) => job.templateId === "milk-manager"), true);
+});
+
+test("Cloudflare 서버 시각을 서울 표준시로 바꿔 현재 월을 자동 선택한다", () => {
+  const epochMs = Date.parse("2026-07-24T17:18:00.000Z");
+  const serverTime = seoulServerTime(epochMs);
+  assert.equal(serverTime.date, "2026-07-25");
+  assert.equal(serverTime.monthValue, "2026-07");
+  assert.equal(serverTime.timeZone, "Asia/Seoul");
+  assert.deepEqual(
+    assignmentPeriod({ epochMs }),
+    {
+      year: 2026,
+      month: 7,
+      monthValue: "2026-07",
+      label: "2026년 7월",
+      serverTime,
+    },
+  );
+});
+
+test("랜덤 배정은 체크한 희망자 안에서만 한 명을 고른다", () => {
+  const hopefuls = ["학생1", "학생2", "학생3"];
+  assert.equal(randomCandidate(hopefuls, () => 0), "학생1");
+  assert.equal(randomCandidate(hopefuls, () => 0.5), "학생2");
+  assert.equal(randomCandidate(hopefuls, () => 0.999999), "학생3");
 });

@@ -97,6 +97,32 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS class_jobs_class_idx ON class_jobs(class_id)`,
   `CREATE INDEX IF NOT EXISTS class_jobs_template_idx ON class_jobs(template_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_assignment_periods (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
+    assignment_year INTEGER NOT NULL, assignment_month INTEGER NOT NULL,
+    assignment_type TEXT NOT NULL DEFAULT 'initial',
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_assignment_periods_period_uq
+    ON class_job_assignment_periods(class_id, assignment_year, assignment_month, assignment_type)`,
+  `CREATE INDEX IF NOT EXISTS class_job_assignment_periods_class_idx
+    ON class_job_assignment_periods(class_id)`,
+  `CREATE TABLE IF NOT EXISTS student_job_assignments (
+    id TEXT PRIMARY KEY, period_id TEXT NOT NULL, class_id TEXT NOT NULL,
+    class_job_id TEXT NOT NULL, student_id TEXT NOT NULL,
+    assignment_method TEXT NOT NULL, assigned_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    FOREIGN KEY (period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (class_job_id) REFERENCES class_jobs(id),
+    FOREIGN KEY (student_id) REFERENCES students(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS student_job_assignments_period_student_uq
+    ON student_job_assignments(period_id, student_id)`,
+  `CREATE INDEX IF NOT EXISTS student_job_assignments_period_job_idx
+    ON student_job_assignments(period_id, class_job_id)`,
+  `CREATE INDEX IF NOT EXISTS student_job_assignments_class_idx
+    ON student_job_assignments(class_id)`,
   `CREATE TABLE IF NOT EXISTS schools (
     id TEXT PRIMARY KEY, office_code TEXT NOT NULL, school_code TEXT NOT NULL,
     official_name TEXT NOT NULL, normalized_name TEXT NOT NULL, search_name TEXT NOT NULL,
@@ -187,6 +213,7 @@ export async function ensureSchema(): Promise<void> {
       const statements = schemaStatements.map((sql) => db.prepare(sql));
       await db.batch(statements);
       await bootstrapExistingTeachers(db);
+      await bootstrapInitialSchools(db);
     })().catch((error) => {
       schemaReady = null;
       throw error;
@@ -241,6 +268,44 @@ async function bootstrapExistingTeachers(db: D1Database) {
        WHERE school_id IS NULL AND manual_school_request_id IS NULL`,
     ),
     db.prepare(`INSERT INTO system_migrations (key, applied_at) VALUES (?, ?)`).bind(key, now),
+  ]);
+}
+
+async function bootstrapInitialSchools(db: D1Database) {
+  const now = Date.now();
+  const schoolId = "school:B10:7091394";
+  await db.batch([
+    db.prepare(
+      `INSERT INTO schools (
+         id, office_code, school_code, official_name, normalized_name, search_name,
+         school_level, province_name, district_name, road_address, status, source,
+         source_updated_at, created_at, updated_at
+       ) VALUES (?, 'B10', '7091394', '서울서이초등학교', '서울서이초등학교', '서울서이초',
+                 '초등학교', '서울특별시', '서울특별시강남서초교육지원청',
+                 '서울특별시 서초구 서운로 35', 'active', 'neis', ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         official_name = excluded.official_name,
+         normalized_name = excluded.normalized_name,
+         search_name = excluded.search_name,
+         school_level = excluded.school_level,
+         province_name = excluded.province_name,
+         district_name = excluded.district_name,
+         road_address = excluded.road_address,
+         status = 'active',
+         source = 'neis',
+         source_updated_at = excluded.source_updated_at,
+         updated_at = excluded.updated_at`,
+    ).bind(schoolId, now, now, now),
+    db.prepare(
+      `INSERT OR IGNORE INTO school_aliases
+       (id, school_id, alias, normalized_alias, alias_type)
+       VALUES ('school-alias:B10:7091394:seoi', ?, '서이초', '서이초', 'common')`,
+    ).bind(schoolId),
+    db.prepare(
+      `INSERT OR IGNORE INTO school_aliases
+       (id, school_id, alias, normalized_alias, alias_type)
+       VALUES ('school-alias:B10:7091394:seoul-seoi', ?, '서울서이초', '서울서이초', 'short')`,
+    ).bind(schoolId),
   ]);
 }
 

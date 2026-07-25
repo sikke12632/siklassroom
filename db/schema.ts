@@ -249,6 +249,39 @@ export const classJobs = sqliteTable("class_jobs", {
   index("class_jobs_template_idx").on(table.templateId),
 ]);
 
+export const classJobAssignmentPeriods = sqliteTable("class_job_assignment_periods", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  assignmentYear: integer("assignment_year").notNull(),
+  assignmentMonth: integer("assignment_month").notNull(),
+  assignmentType: text("assignment_type").notNull().default("initial"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_assignment_periods_period_uq").on(
+    table.classId,
+    table.assignmentYear,
+    table.assignmentMonth,
+    table.assignmentType,
+  ),
+  index("class_job_assignment_periods_class_idx").on(table.classId),
+]);
+
+export const studentJobAssignments = sqliteTable("student_job_assignments", {
+  id: text("id").primaryKey(),
+  periodId: text("period_id").notNull().references(() => classJobAssignmentPeriods.id),
+  classId: text("class_id").notNull().references(() => classes.id),
+  classJobId: text("class_job_id").notNull().references(() => classJobs.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  assignmentMethod: text("assignment_method").notNull(),
+  assignedAt: integer("assigned_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("student_job_assignments_period_student_uq").on(table.periodId, table.studentId),
+  index("student_job_assignments_period_job_idx").on(table.periodId, table.classJobId),
+  index("student_job_assignments_class_idx").on(table.classId),
+]);
+
 export const systemAdminSessions = sqliteTable("system_admin_sessions", {
   id: text("id").primaryKey(),
   tokenHash: text("token_hash").notNull(),

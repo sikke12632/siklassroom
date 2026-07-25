@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, BriefcaseBusiness, CheckCircle2, Home, KeyRound, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
@@ -168,6 +168,9 @@ export function TeacherPortal() {
           <a className="active" href="#dashboard"><Home aria-hidden="true" /><span>홈</span></a>
           <a href="#students"><UsersRound aria-hidden="true" /><span>학생 관리</span></a>
           {selectedClassId && <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" /><span>우리 반 직업</span></a>}
+          {selectedClassId && selectedSummary?.job_status === "completed" && (
+            <a href={`/teacher/classes/${selectedClassId}/job-assignments`}><Dices aria-hidden="true" /><span>첫 직업 배정</span></a>
+          )}
         </nav>
         <div className="sidebar-section-title">내 학급</div>
         <nav className="class-nav">
@@ -232,9 +235,16 @@ export function TeacherPortal() {
                   <p><b>아직 직업을 정하지 않았어요.</b> 간단한 질문으로 추천받거나 직접 만들 수 있어요.</p>
                 )}
               </div>
-              <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/jobs`}>
-                {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
-              </a>
+              <div className="job-dashboard-actions">
+                {selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed && (
+                  <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/job-assignments`}>
+                    <Dices aria-hidden="true" />첫 직업 배정
+                  </a>
+                )}
+                <a className={`button ${selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed ? "button-light" : "button-primary"}`} href={`/teacher/classes/${classRoom.id}/jobs`}>
+                  {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "직업 확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
+                </a>
+              </div>
             </section>
 
             {students.length === 0 ? (

@@ -250,7 +250,7 @@ const jobClassCreated = await request("/api/classes", {
   expected: 201,
 });
 const jobClassId = jobClassCreated.data.class.id;
-await request(`/api/classes/${jobClassId}/students`, {
+const jobRoster = await request(`/api/classes/${jobClassId}/students`, {
   cookie: teacherCookie,
   method: "POST",
   body: {
@@ -358,6 +358,80 @@ const restored = await request(`/api/classes/${jobClassId}/job-setup`, { cookie:
 assert.equal(restored.data.setup.status, "completed");
 assert.ok(restored.data.setup.draftJobs.some((job) => job.source === "custom"));
 assert.ok(restored.data.templates.every((template) => template.name !== "우리 반 특별 환경지킴이"));
+
+const initialAssignmentBoard = await request(
+  `/api/classes/${jobClassId}/job-assignments`,
+  { cookie: teacherCookie },
+);
+assert.equal(initialAssignmentBoard.data.period.serverTime.timeZone, "Asia/Seoul");
+assert.equal(initialAssignmentBoard.data.period.monthValue, initialAssignmentBoard.data.period.serverTime.monthValue);
+assert.equal(initialAssignmentBoard.data.setupReady, true);
+assert.equal(initialAssignmentBoard.data.availableStudents.length, 26);
+const firstAssignmentJob = initialAssignmentBoard.data.jobs.find((job) => job.remainingCapacity > 0);
+assert.ok(firstAssignmentJob);
+const randomAssignment = await request(`/api/classes/${jobClassId}/job-assignments/random`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    year: initialAssignmentBoard.data.period.year,
+    month: initialAssignmentBoard.data.period.month,
+    classJobId: firstAssignmentJob.id,
+    candidateStudentIds: jobRoster.data.students.slice(0, 3).map((studentRow) => studentRow.id),
+  },
+  expected: 201,
+});
+assert.ok(jobRoster.data.students.slice(0, 3).some(
+  (studentRow) => studentRow.id === randomAssignment.data.assignment.student.id,
+));
+const afterRandom = await request(
+  `/api/classes/${jobClassId}/job-assignments?year=${initialAssignmentBoard.data.period.year}&month=${initialAssignmentBoard.data.period.month}`,
+  { cookie: teacherCookie },
+);
+assert.equal(afterRandom.data.availableStudents.length, 25);
+assert.ok(!afterRandom.data.availableStudents.some(
+  (studentRow) => studentRow.id === randomAssignment.data.assignment.student.id,
+));
+const manualStudent = afterRandom.data.availableStudents[0];
+const manualJob = afterRandom.data.jobs.find((job) => job.remainingCapacity > 0);
+const manualAssignment = await request(`/api/classes/${jobClassId}/job-assignments/manual`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    year: initialAssignmentBoard.data.period.year,
+    month: initialAssignmentBoard.data.period.month,
+    classJobId: manualJob.id,
+    studentId: manualStudent.id,
+  },
+  expected: 201,
+});
+assert.equal(manualAssignment.data.assignment.student.id, manualStudent.id);
+await request(`/api/classes/${jobClassId}/job-assignments/manual`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    year: initialAssignmentBoard.data.period.year,
+    month: initialAssignmentBoard.data.period.month,
+    classJobId: manualJob.id,
+    studentId: manualStudent.id,
+  },
+  expected: 409,
+});
+await request(`/api/classes/${jobClassId}/job-assignments`, {
+  cookie: outsiderCookie,
+  expected: 404,
+});
+await request(
+  `/api/classes/${jobClassId}/job-assignments/${randomAssignment.data.assignment.assignmentId}`,
+  { cookie: teacherCookie, method: "DELETE" },
+);
+const afterRemoval = await request(
+  `/api/classes/${jobClassId}/job-assignments?year=${initialAssignmentBoard.data.period.year}&month=${initialAssignmentBoard.data.period.month}`,
+  { cookie: teacherCookie },
+);
+assert.equal(afterRemoval.data.availableStudents.length, 25);
+assert.ok(afterRemoval.data.availableStudents.some(
+  (studentRow) => studentRow.id === randomAssignment.data.assignment.student.id,
+));
 
 const verification = await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`);
 assert.equal(verification.data.student.official_name, "김하늘");
@@ -502,4 +576,4 @@ const restoredLogin = await request("/api/teacher/login", {
 });
 await request("/api/classes", { cookie: cookieFrom(restoredLogin.response) });
 
-console.log("통합 흐름 검증 완료: 이메일·초대코드·학교·학급·학생·직업·권한·기존 흐름");
+console.log("통합 흐름 검증 완료: 이메일·초대코드·학교·학급·학생·직업·첫 배정·권한·기존 흐름");

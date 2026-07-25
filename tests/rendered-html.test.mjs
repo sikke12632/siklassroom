@@ -87,3 +87,21 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(portal, /\["계정", "학교", "학급"\]/);
   assert.match(portal, /"3 \/ 3"/);
 });
+
+test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제공한다", async () => {
+  const [database, schema, assignmentPage, assignmentApi] = await Promise.all([
+    readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/job-assignments/InitialJobAssignmentPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-assignments/random/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(database, /서울서이초등학교/);
+  assert.match(database, /'B10', '7091394'/);
+  assert.match(schema, /studentJobAssignments/);
+  assert.match(schema, /student_job_assignments_period_student_uq/);
+  assert.match(assignmentPage, /서버 표준시를 서울 시간으로 확인/);
+  assert.match(assignmentPage, /희망자 .* 중 1명 뽑기/);
+  assert.match(assignmentPage, /선택한 학생 배정·저장/);
+  assert.match(assignmentApi, /requireClassManagement/);
+  assert.match(assignmentApi, /ownedClass/);
+});
