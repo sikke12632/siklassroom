@@ -8,11 +8,18 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "deploy": "vinext deploy",
+    "deploy:check": "vinext deploy --dry-run",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs && tsx --test tests/job-center.test.ts tests/teacher-foundation.test.ts",
     "test:integration": "node tests/integration-flow.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "db:migrations:list:remote": "wrangler d1 migrations list DB --remote",
+    "cloudflare:login": "wrangler login",
+    "cloudflare:whoami": "wrangler whoami",
     "schools:prepare": "node scripts/prepare-schools.mjs"
   },
   "dependencies": {

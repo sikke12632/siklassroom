@@ -1,6 +1,6 @@
 # 직업교실
 
-교사가 학급과 학생 명단을 만들고, 학생이 일회용 QR로 자기 비밀번호를 직접 정하는 학급 계정 기반 서비스입니다. 현재 범위는 계정·학급·학생 신원·등록과 비밀번호 관리까지이며 급여, 은행, 직업, 게임 기능은 포함하지 않습니다.
+교사가 학급과 학생 명단을 만들고, 학생이 일회용 QR로 자기 비밀번호를 직접 정하며, 우리 반 직업을 추천·편집·확정하는 학급 계정 기반 서비스입니다. 급여, 은행, 평가, 경고, 직업 교체와 게임 기능은 아직 포함하지 않습니다.
 
 ## 구현 범위
 
@@ -11,6 +11,7 @@
 - 학생별 일회용 활성화/비밀번호 초기화 QR과 A4 카드 인쇄
 - 학교·학년·반·번호·비밀번호 학생 로그인
 - 학생 잠금·해제·명단 제외(기록 보존)
+- 학생 수에 맞춘 우리 반 직업 추천·직접 만들기·초안·확정
 - 교사와 학생의 서버 세션 및 소유권 기반 권한 분리
 - 로그인·비밀번호 재설정 요청 횟수 제한과 감사 로그
 
@@ -41,10 +42,13 @@ npm run test:integration
 
 ## 배포 환경
 
+- Cloudflare Worker 이름: `job-classroom`
 - D1 바인딩 이름: `DB`
 - 교사 비밀번호 재설정 메일(선택이 아니라 운영 전 필수):
   - `RESEND_API_KEY`
   - `MAIL_FROM` (예: `직업교실 <account@example.com>`)
+
+직접 배포 준비와 전환 순서는 [`docs/CLOUDFLARE_MIGRATION.md`](docs/CLOUDFLARE_MIGRATION.md)에 정리되어 있습니다. 현재 `chatgpt.site` 버전은 Cloudflare 직접 배포가 검증될 때까지 복구용으로 유지합니다.
 
 비밀번호 원문과 QR 토큰 원문은 저장하지 않습니다. 비밀번호는 PBKDF2-SHA-256으로, 세션·QR·재설정 토큰은 SHA-256 해시로 저장됩니다.
 
@@ -73,7 +77,7 @@ npm run test:integration
 
 ```bash
 npm run schools:prepare
-npx wrangler d1 execute <D1_DATABASE_NAME> --remote --file=.data/schools.sql
+npx wrangler d1 execute DB --remote --file=.data/schools.sql
 ```
 
 생성 SQL은 학교 행정표준코드를 기준으로 upsert하고, 재실행해도 중복을 만들지 않습니다. 최신 원본에서 사라진 학교는 삭제하지 않고 `inactive` 상태로 바꿔 기존 사용자 연결을 보존합니다. `.data/`는 Git에 포함되지 않습니다.
