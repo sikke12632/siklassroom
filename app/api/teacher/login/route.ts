@@ -4,6 +4,7 @@ import { verifyPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
 import { assertNotBlocked, clearFailures, recordFailure, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
+import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function POST(request: Request) {
   try {
@@ -33,6 +34,13 @@ export async function POST(request: Request) {
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
     await clearFailures(key);
+    await activateOpenTeacherRegistration(teacher.id);
+    if (isOpenTeacherRegistration() && teacher.teacher_access_status !== "revoked") {
+      const now = Date.now();
+      teacher.email_verified_at ??= now;
+      teacher.teacher_access_status = "invite_verified";
+      teacher.teacher_access_verified_at ??= now;
+    }
     const session = await createSession({ actorType: "teacher", teacherId: teacher.id }, request);
     return json({
       teacher: {
@@ -43,6 +51,7 @@ export async function POST(request: Request) {
         teacher_access_verified_at: teacher.teacher_access_verified_at,
         school_id: teacher.school_id,
         manual_school_request_id: teacher.manual_school_request_id,
+        registration_mode: isOpenTeacherRegistration() ? "open" : "verified",
       },
     }, 200, { "Set-Cookie": session.cookie });
   } catch (error) {

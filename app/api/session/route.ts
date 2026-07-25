@@ -1,12 +1,14 @@
 import { clearSessionCookie, endSession, getSession } from "@/lib/auth";
 import { apiFailure, json } from "@/lib/responses";
 import { database, ensureSchema } from "@/lib/database";
+import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function GET(request: Request) {
   try {
     const session = await getSession(request);
     if (!session) return json({ actor: null });
     if (session.actorType === "teacher" && session.teacherId) {
+      await activateOpenTeacherRegistration(session.teacherId);
       const teacher = await database().prepare(
         `SELECT t.id, t.email, t.email_verified_at, t.teacher_access_status,
                 t.teacher_access_verified_at, t.school_id, t.manual_school_request_id,
@@ -19,7 +21,13 @@ export async function GET(request: Request) {
          LEFT JOIN school_manual_requests r ON r.id = t.manual_school_request_id
          WHERE t.id = ? AND t.status = 'active'`,
       ).bind(session.teacherId).first();
-      return json({ actor: teacher ? { type: "teacher", ...teacher } : null });
+      return json({
+        actor: teacher ? {
+          type: "teacher",
+          ...teacher,
+          registration_mode: isOpenTeacherRegistration() ? "open" : "verified",
+        } : null,
+      });
     }
     if (session.actorType === "student" && session.studentId) {
       await ensureSchema();

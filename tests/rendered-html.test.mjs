@@ -67,3 +67,23 @@ test("이메일·초대코드·학교 상태를 분리하고 가입 단계를 �
   assert.match(schema, /schools_office_school_uq/);
   assert.match(migration, /teacher_access_after_invite_use/);
 });
+
+test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회하지 않는다", async () => {
+  const [openRegistration, signup, login, session, portal] = await Promise.all([
+    readFile(new URL("../lib/open-registration.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/signup/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/login/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/session/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(openRegistration, /OPEN_TEACHER_REGISTRATION/);
+  assert.match(openRegistration, /teacher_access_status != 'revoked'/);
+  assert.match(openRegistration, /teacher_open_registration_activated/);
+  assert.match(signup, /openRegistration\s*\?\s*undefined/);
+  assert.match(signup, /openRegistration \? "invite_verified" : "pending"/);
+  assert.match(login, /activateOpenTeacherRegistration/);
+  assert.match(session, /activateOpenTeacherRegistration/);
+  assert.match(portal, /mode === "signup" \? "가입하기"/);
+  assert.match(portal, /\["계정", "학교", "학급"\]/);
+  assert.match(portal, /"3 \/ 3"/);
+});

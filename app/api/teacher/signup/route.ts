@@ -5,6 +5,7 @@ import { normalizeEmail } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { issueEmailVerification } from "@/lib/teacher-verification";
 import { assertNotBlocked, recordFailure, throttleKey } from "@/lib/rate-limit";
+import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function POST(request: Request) {
   try {
@@ -16,22 +17,40 @@ export async function POST(request: Request) {
     const throttle = await throttleKey(request, "teacher-signup", email);
     await assertNotBlocked(throttle);
     await ensureSchema();
+    const openRegistration = isOpenTeacherRegistration();
     const existing = await database().prepare(
-      `SELECT id, password_hash, email_verified_at FROM teachers WHERE email = ?`,
-    ).bind(email).first<{ id: string; password_hash: string; email_verified_at: number | null }>();
+      `SELECT id, password_hash, email_verified_at, teacher_access_status,
+              teacher_access_verified_at, school_id, manual_school_request_id
+       FROM teachers WHERE email = ?`,
+    ).bind(email).first<{
+      id: string;
+      password_hash: string;
+      email_verified_at: number | null;
+      teacher_access_status: string;
+      teacher_access_verified_at: number | null;
+      school_id: string | null;
+      manual_school_request_id: string | null;
+    }>();
     if (existing) {
       if (!existing.email_verified_at && await verifyPassword(password, existing.password_hash)) {
+        await activateOpenTeacherRegistration(existing.id);
         const session = await createSession({ actorType: "teacher", teacherId: existing.id }, request);
-        const verification = await issueEmailVerification({ teacherId: existing.id, email, request });
+        const now = Date.now();
+        const openAccess = openRegistration && existing.teacher_access_status !== "revoked";
+        const verification = openRegistration
+          ? undefined
+          : await issueEmailVerification({ teacherId: existing.id, email, request });
         await recordFailure(throttle);
         return json({
           teacher: {
             id: existing.id,
             email,
-            email_verified_at: null,
-            teacher_access_status: "pending",
-            school_id: null,
-            manual_school_request_id: null,
+            email_verified_at: openRegistration ? now : null,
+            teacher_access_status: openAccess ? "invite_verified" : existing.teacher_access_status,
+            teacher_access_verified_at: openAccess ? (existing.teacher_access_verified_at ?? now) : existing.teacher_access_verified_at,
+            school_id: existing.school_id,
+            manual_school_request_id: existing.manual_school_request_id,
+            registration_mode: openRegistration ? "open" : "verified",
           },
           verification,
         }, 200, { "Set-Cookie": session.cookie });
@@ -42,21 +61,35 @@ export async function POST(request: Request) {
     const now = Date.now();
     await database().prepare(
       `INSERT INTO teachers
-       (id, email, password_hash, status, teacher_access_status, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 'pending', ?, ?)`,
-    ).bind(id, email, await hashPassword(password), now, now).run();
+       (id, email, password_hash, status, email_verified_at, teacher_access_status,
+        teacher_access_verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+    ).bind(
+      id,
+      email,
+      await hashPassword(password),
+      openRegistration ? now : null,
+      openRegistration ? "invite_verified" : "pending",
+      openRegistration ? now : null,
+      now,
+      now,
+    ).run();
     await audit({ action: "teacher_signup", teacherId: id });
     const session = await createSession({ actorType: "teacher", teacherId: id }, request);
-    const verification = await issueEmailVerification({ teacherId: id, email, request });
+    const verification = openRegistration
+      ? undefined
+      : await issueEmailVerification({ teacherId: id, email, request });
     await recordFailure(throttle);
     return json({
       teacher: {
         id,
         email,
-        email_verified_at: null,
-        teacher_access_status: "pending",
+        email_verified_at: openRegistration ? now : null,
+        teacher_access_status: openRegistration ? "invite_verified" : "pending",
+        teacher_access_verified_at: openRegistration ? now : null,
         school_id: null,
         manual_school_request_id: null,
+        registration_mode: openRegistration ? "open" : "verified",
       },
       verification,
     }, 201, { "Set-Cookie": session.cookie });

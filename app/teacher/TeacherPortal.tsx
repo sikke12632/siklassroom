@@ -20,6 +20,7 @@ type TeacherActor = {
   teacher_access_verified_at: number | null;
   school_id: string | null;
   manual_school_request_id: string | null;
+  registration_mode?: "open" | "verified";
   school_display_name?: string | null;
   school_province_name?: string | null;
   school_level?: string | null;
@@ -286,26 +287,28 @@ export function TeacherPortal() {
   );
 }
 
-function OnboardingShell({ step, icon, title, description, children, onLogout }: {
+function OnboardingShell({ step, steps, icon, title, description, children, onLogout }: {
   step: number;
+  steps?: string[];
   icon: React.ReactNode;
   title: string;
   description: string;
   children: React.ReactNode;
   onLogout: () => void;
 }) {
+  const stepLabels = steps ?? ["계정", "이메일", "초대코드", "학교", "학급"];
   return (
     <div className="auth-page onboarding-auth-page">
       <header><Logo /><div className="header-actions"><ThemeToggle compact /><button className="text-button" onClick={onLogout}>로그아웃</button></div></header>
       <main className="onboarding-gate-wrap">
         <section className="onboarding-gate">
           <div className="onboarding-gate-icon" aria-hidden="true">{icon}</div>
-          <div className="onboarding-step">{step} / 5</div>
+          <div className="onboarding-step">{step} / {stepLabels.length}</div>
           <p className="eyebrow">교사 가입 준비</p>
           <h1>{title}</h1>
           <p>{description}</p>
           <div className="account-steps" aria-label="가입 단계">
-            {["계정", "이메일", "초대코드", "학교", "학급"].map((label, index) => (
+            {stepLabels.map((label, index) => (
               <span key={label} className={index + 1 < step ? "done" : index + 1 === step ? "current" : ""}>
                 {index + 1 < step ? <CheckCircle2 aria-hidden="true" /> : index + 1}<small>{label}</small>
               </span>
@@ -471,7 +474,14 @@ function SchoolSelectionGate({ actor, onComplete, onLogout }: {
   }
 
   return (
-    <OnboardingShell step={4} icon={<School />} title="학교를 선택해 주세요" description={`${actor.email} 계정에 공식 학교를 연결합니다. 찾을 수 없으면 직접 입력할 수 있어요.`} onLogout={onLogout}>
+    <OnboardingShell
+      step={actor.registration_mode === "open" ? 2 : 4}
+      steps={actor.registration_mode === "open" ? ["계정", "학교", "학급"] : undefined}
+      icon={<School />}
+      title="학교를 선택해 주세요"
+      description={`${actor.email} 계정에 공식 학교를 연결합니다. 찾을 수 없으면 직접 입력할 수 있어요.`}
+      onLogout={onLogout}
+    >
       {!manual ? (
         <>
           <div className="school-filters">
@@ -559,7 +569,7 @@ function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
             {mode === "signup" && <label>비밀번호 확인<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required /></label>}
             <Notice message={error} tone="error" /><Notice message={message || notice || ""} tone="success" />
             {developmentUrl && <a className="dev-reset-link" href={developmentUrl}>개발 확인용 재설정 링크 열기</a>}
-            <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : mode === "login" ? "로그인" : mode === "signup" ? "가입하고 이메일 확인하기" : "재설정 메일 받기"}</button>
+            <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : mode === "login" ? "로그인" : mode === "signup" ? "가입하기" : "재설정 메일 받기"}</button>
           </form>
           {mode === "login" && <button className="text-button" onClick={() => setMode("forgot")}>비밀번호를 잊었어요</button>}
           {mode === "forgot" && <button className="text-button" onClick={() => setMode("login")}>로그인으로 돌아가기</button>}
@@ -576,7 +586,7 @@ function ClassCreateForm({ actor, busy, onSubmit }: { actor: TeacherActor; busy:
   const [displayName, setDisplayName] = useState("");
   return (
     <section className="onboarding-card">
-      <div className="onboarding-step">5 / 5</div><p className="eyebrow">학급 만들기</p><h1>우리 반을 알려 주세요</h1><p>학생에게는 학교·학년·반만 보여요. 내부에서는 학급마다 안전한 고유 번호를 따로 사용합니다.</p>
+      <div className="onboarding-step">{actor.registration_mode === "open" ? "3 / 3" : "5 / 5"}</div><p className="eyebrow">학급 만들기</p><h1>우리 반을 알려 주세요</h1><p>학생에게는 학교·학년·반만 보여요. 내부에서는 학급마다 안전한 고유 번호를 따로 사용합니다.</p>
       <div className="selected-school-summary"><School aria-hidden="true" /><div><small>{actor.school_pending ? "학교 확인 중" : "선택한 학교"}</small><strong>{actor.school_display_name}</strong><span>{actor.school_province_name} · {actor.school_level}</span></div></div>
       <form className="class-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ schoolYear: Number(schoolYear), grade: Number(grade), classNumber: Number(classNumber), displayName }); }}>
         <label>학년도<input type="number" min="2020" max="2100" value={schoolYear} onChange={(event) => setSchoolYear(event.target.value)} required /></label>

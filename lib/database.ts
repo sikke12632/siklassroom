@@ -8,6 +8,7 @@ export type RuntimeEnv = {
   SYSTEM_ADMIN_USERNAME?: string;
   SYSTEM_ADMIN_PASSWORD_HASH?: string;
   SYSTEM_ADMIN_PATH?: string;
+  OPEN_TEACHER_REGISTRATION?: string;
 };
 
 let schemaReady: Promise<void> | null = null;
