@@ -66,7 +66,7 @@ npm run test:integration
 
 추가 운영 환경값:
 
-- `ADMIN_API_TOKEN`: 초대코드 발급·폐기와 제한된 학교 가져오기 API용 서버 비밀값
+- `SYSTEM_ADMIN_USERNAME`, `SYSTEM_ADMIN_PASSWORD_HASH`, `SYSTEM_ADMIN_PATH`: 운영자 로그인과 숨겨진 관리자 경로용 Worker Secrets
 - `NEIS_API_KEY`: 전국 학교 기준 데이터 동기화용 나이스 인증키
 
 초대코드 원문은 생성 응답에서 한 번만 확인할 수 있고 DB에는 해시만 저장됩니다. 관리자 API는 `Authorization: Bearer ...` 헤더가 필요하며 일반 교사 화면에는 노출하지 않습니다.

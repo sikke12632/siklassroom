@@ -39,9 +39,10 @@ export async function secureStringEqual(left: string, right: string): Promise<bo
 export async function hashPassword(password: string): Promise<string> {
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
+  const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt, iterations: PASSWORD_ITERATIONS },
+    { name: "PBKDF2", hash: "SHA-256", salt: saltBuffer, iterations: PASSWORD_ITERATIONS },
     key,
     256,
   );
@@ -55,9 +56,11 @@ export async function verifyPassword(password: string, stored: string | null): P
   const iterations = Number(iterationsText);
   if (!Number.isInteger(iterations) || iterations < 100_000) return false;
   try {
+    const salt = base64UrlToBytes(saltText);
+    const saltBuffer = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
     const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
     const actual = new Uint8Array(await crypto.subtle.deriveBits(
-      { name: "PBKDF2", hash: "SHA-256", salt: base64UrlToBytes(saltText), iterations },
+      { name: "PBKDF2", hash: "SHA-256", salt: saltBuffer, iterations },
       key,
       256,
     ));

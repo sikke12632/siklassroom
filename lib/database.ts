@@ -4,8 +4,10 @@ export type RuntimeEnv = {
   DB?: D1Database;
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
-  ADMIN_API_TOKEN?: string;
   NEIS_API_KEY?: string;
+  SYSTEM_ADMIN_USERNAME?: string;
+  SYSTEM_ADMIN_PASSWORD_HASH?: string;
+  SYSTEM_ADMIN_PATH?: string;
 };
 
 let schemaReady: Promise<void> | null = null;

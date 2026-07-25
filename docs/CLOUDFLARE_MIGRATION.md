@@ -30,7 +30,7 @@ npm run cloudflare:whoami
 
 - `RESEND_API_KEY`: 인증 메일 발송용
 - `MAIL_FROM`: Resend에서 확인된 발신 주소
-- `ADMIN_API_TOKEN`: 초대코드·학교 가져오기 관리자 API용 긴 무작위 값
+- `SYSTEM_ADMIN_USERNAME`, `SYSTEM_ADMIN_PASSWORD_HASH`, `SYSTEM_ADMIN_PATH`: 운영자 로그인과 숨겨진 관리자 경로용 Worker Secrets
 - `NEIS_API_KEY`: 나이스 학교기본정보 동기화용
 
 값이 준비되면 다음 명령으로 Cloudflare에 비밀값을 올립니다.

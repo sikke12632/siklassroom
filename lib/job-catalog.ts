@@ -267,11 +267,15 @@ function totalCapacity(jobs: ClassJobDraft[]) {
   return jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
 }
 
-export function recommendJobs(studentCount: number, rawAnswers?: Partial<SurveyAnswers> | null): JobPlanResult {
+export function recommendJobs(
+  studentCount: number,
+  rawAnswers?: Partial<SurveyAnswers> | null,
+  templates: JobTemplate[] = JOB_TEMPLATES,
+): JobPlanResult {
   if (studentCount < 1) return { jobs: [], reasons: ["먼저 학생 명단을 등록해 주세요."] };
   const answers = normalizedAnswers(rawAnswers);
   const included = new Set(answers.includeJobIds);
-  const candidates = JOB_TEMPLATES
+  const candidates = templates
     .filter((template) => templateAllowed(template, answers, included))
     .sort((left, right) => templateScore(right, answers, included) - templateScore(left, answers, included) || left.id.localeCompare(right.id));
   const desiredCount = Math.max(included.size, targetJobCount(studentCount, answers.distribution));
@@ -292,7 +296,7 @@ export function recommendJobs(studentCount: number, rawAnswers?: Partial<SurveyA
   while (remaining > 0) {
     let changed = false;
     for (const job of expandable) {
-      const template = JOB_TEMPLATES.find((item) => item.id === job.templateId);
+      const template = templates.find((item) => item.id === job.templateId);
       if (!template || job.memberCapacity >= template.recommendedMaxMembers) continue;
       job.memberCapacity += 1;
       remaining -= 1;
@@ -323,13 +327,17 @@ export function recommendJobs(studentCount: number, rawAnswers?: Partial<SurveyA
   return { jobs, reasons };
 }
 
-export function adjustJobsToStudentCount(studentCount: number, sourceJobs: ClassJobDraft[]): JobPlanResult {
+export function adjustJobsToStudentCount(
+  studentCount: number,
+  sourceJobs: ClassJobDraft[],
+  templates: JobTemplate[] = JOB_TEMPLATES,
+): JobPlanResult {
   const jobs = sourceJobs.map((job, index) => ({ ...job, memberCapacity: Math.max(1, Math.floor(job.memberCapacity)), sortOrder: index }));
   const before = totalCapacity(jobs);
   const reasons: string[] = [];
   if (studentCount < 1) return { jobs, reasons: ["학생 명단이 비어 있어 자리를 조정하지 않았어요."] };
   if (!jobs.length) {
-    const fallback = recommendJobs(studentCount, DEFAULT_SURVEY_ANSWERS);
+    const fallback = recommendJobs(studentCount, DEFAULT_SURVEY_ANSWERS, templates);
     return { jobs: fallback.jobs, reasons: ["선택한 직업이 없어 균형형 추천으로 새 구성을 준비했어요.", ...fallback.reasons] };
   }
 
@@ -339,7 +347,7 @@ export function adjustJobsToStudentCount(studentCount: number, sourceJobs: Class
     while (remaining > 0) {
       let changed = false;
       for (const job of expandable) {
-        const template = JOB_TEMPLATES.find((item) => item.id === job.templateId);
+        const template = templates.find((item) => item.id === job.templateId);
         const preferredMax = template?.recommendedMaxMembers ?? Math.max(2, job.memberCapacity);
         if (job.memberCapacity >= preferredMax) continue;
         job.memberCapacity += 1;

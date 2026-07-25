@@ -3,6 +3,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BookOpen, GraduationCap, School } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
+import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
+import { StudentEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, postJson } from "@/lib/client-api";
@@ -64,6 +66,7 @@ export function StudentPortal() {
   if (student) return (
     <main className="student-page student-home">
       <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><button className="student-logout" onClick={logout}>로그아웃</button></div></header>
+      <AnnouncementBanner />
       <section className="student-welcome">
         <span className="student-avatar">{student.student_number}</span>
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>
@@ -79,7 +82,7 @@ export function StudentPortal() {
     <main className="student-login-page">
       <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><a href="/teacher">선생님 입구</a></div></header>
       <section className="student-login-card">
-        <div className="student-login-heading"><span className="pencil-mark" aria-hidden="true"><School /></span><p className="eyebrow">학생 로그인</p><h1>우리 반에 들어가요</h1><p>내 번호와 내가 만든 비밀번호를 입력해 주세요.</p></div>
+        <div className="student-login-heading"><span className="pencil-mark" aria-hidden="true"><School /></span><StudentEntryIntro /></div>
         <form onSubmit={login} className="student-login-form">
           <div className={`remembered-class ${classRemembered ? "visible" : ""}`}>
             <label>학교<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="학교 이름" required /></label>

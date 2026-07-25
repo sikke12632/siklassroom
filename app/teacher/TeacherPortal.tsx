@@ -3,6 +3,8 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { BookOpen, BriefcaseBusiness, CheckCircle2, Home, KeyRound, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
+import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
+import { TeacherEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
@@ -185,6 +187,7 @@ export function TeacherPortal() {
 
       <main className="teacher-main">
         <header className="mobile-teacher-header"><Logo compact /><div><ThemeToggle compact /><button onClick={logout} aria-label="로그아웃"><LogOut aria-hidden="true" /></button></div></header>
+        <AnnouncementBanner />
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
 
@@ -546,7 +549,7 @@ function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
     <div className="auth-page">
       <header><Logo /><div className="header-actions"><ThemeToggle compact /><a href="/student">학생 로그인</a></div></header>
       <main className="auth-layout">
-        <section className="auth-promise"><p className="eyebrow">교사 계정</p><h1>{mode === "signup" ? "반가워요, 선생님." : mode === "forgot" ? "비밀번호를 다시 만들어요." : "우리 반 준비를 이어갈까요?"}</h1><p>학급과 학생 계정은 선생님 계정 안에서 안전하게 관리됩니다.</p><ul><li>여러 학급을 한 계정에서 관리</li><li>학생 비밀번호는 선생님도 볼 수 없음</li><li>이름·번호 수정 후에도 기록 유지</li></ul></section>
+        <TeacherEntryIntro />
         <section className="auth-card">
           {mode !== "forgot" && <div className="segmented"><button className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>로그인</button><button className={mode === "signup" ? "active" : ""} onClick={() => setMode("signup")}>처음 가입</button></div>}
           <h2>{mode === "login" ? "교사 로그인" : mode === "signup" ? "교사 가입" : "비밀번호 찾기"}</h2>

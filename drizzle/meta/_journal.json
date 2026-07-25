@@ -22,6 +22,13 @@
       "when": 1784868646554,
       "tag": "0002_smooth_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1784962442872,
+      "tag": "0003_massive_warhawk",
+      "breakpoints": true
     }
   ]
 }

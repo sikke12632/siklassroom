@@ -7,8 +7,10 @@ const secondTeacherEmail = `other-${runId}@example.test`;
 const schoolName = `검증초${runId.slice(-6)}`;
 const firstPassword = "Teacher!234";
 const nextPassword = "Teacher!567";
-const adminToken = process.env.ADMIN_API_TOKEN;
-assert.ok(adminToken, "ADMIN_API_TOKEN 환경 변수가 필요합니다.");
+const adminUsername = process.env.SYSTEM_ADMIN_USERNAME;
+const adminPassword = process.env.SYSTEM_ADMIN_PASSWORD;
+const adminPath = process.env.SYSTEM_ADMIN_PATH;
+assert.ok(adminUsername && adminPassword && adminPath, "시스템 관리자 통합 테스트 환경 변수가 필요합니다.");
 
 function cookieFrom(response) {
   const value = response.headers.get("set-cookie");
@@ -35,6 +37,29 @@ async function request(path, { cookie = "", method = "GET", body, expected = 200
 }
 
 await request("/api/classes", { expected: 401 });
+await request("/ops/not-the-admin-path", { expected: 404 });
+await request(`/ops/${adminPath}`);
+await request("/api/admin/dashboard", { expected: 401 });
+for (let attempt = 0; attempt < 7; attempt += 1) {
+  await request("/api/admin/auth/login", {
+    method: "POST",
+    body: { username: `blocked-${runId}`, password: "wrong-password" },
+    expected: 401,
+  });
+}
+await request("/api/admin/auth/login", {
+  method: "POST",
+  body: { username: `blocked-${runId}`, password: "wrong-password" },
+  expected: 429,
+});
+const adminLogin = await request("/api/admin/auth/login", {
+  method: "POST",
+  body: { username: adminUsername, password: adminPassword },
+});
+const adminCookie = cookieFrom(adminLogin.response);
+const adminCsrf = adminLogin.data.csrfToken;
+assert.match(adminCookie, /^job_classroom_admin_session=/);
+assert.ok(adminCsrf);
 
 const signup = await request("/api/teacher/signup", {
   method: "POST",
@@ -75,8 +100,9 @@ await request("/api/teacher/email-verification/confirm", {
 });
 
 await request("/api/admin/schools/import", {
+  cookie: adminCookie,
   method: "POST",
-  headers: { authorization: `Bearer ${adminToken}` },
+  headers: { "x-admin-csrf": adminCsrf },
   body: {
     schools: [{
       officeCode: "TST",
@@ -96,8 +122,9 @@ assert.equal(search.data.schools.length, 1);
 const schoolId = search.data.schools[0].id;
 
 const sharedInvite = await request("/api/admin/invite-codes", {
+  cookie: adminCookie,
   method: "POST",
-  headers: { authorization: `Bearer ${adminToken}` },
+  headers: { "x-admin-csrf": adminCsrf },
   body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
   expected: 201,
 });
@@ -115,8 +142,9 @@ assert.deepEqual(parallelRedeem.map((response) => response.status).sort(), [200,
 for (const [cookie, response] of [[teacherCookie, parallelRedeem[0]], [outsiderCookie, parallelRedeem[1]]]) {
   if (response.status === 200) continue;
   const replacement = await request("/api/admin/invite-codes", {
+    cookie: adminCookie,
     method: "POST",
-    headers: { authorization: `Bearer ${adminToken}` },
+    headers: { "x-admin-csrf": adminCsrf },
     body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
     expected: 201,
   });
@@ -138,8 +166,9 @@ const manualCookie = cookieFrom(manualSignup.response);
 const manualEmailToken = new URL(manualSignup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", { method: "POST", body: { token: manualEmailToken } });
 const manualInvite = await request("/api/admin/invite-codes", {
+  cookie: adminCookie,
   method: "POST",
-  headers: { authorization: `Bearer ${adminToken}` },
+  headers: { "x-admin-csrf": adminCsrf },
   body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
   expected: 201,
 });
@@ -161,7 +190,7 @@ const manualSchool = await request("/api/schools/manual", {
   expected: 400,
 });
 assert.equal(manualSchool.data.code, "INVALID_SCHOOL_DETAIL");
-await request("/api/schools/manual", {
+const manualRequest = await request("/api/schools/manual", {
   cookie: manualCookie,
   method: "POST",
   body: {
@@ -172,6 +201,15 @@ await request("/api/schools/manual", {
   },
   expected: 201,
 });
+await request("/api/admin/school-requests", {
+  cookie: adminCookie,
+  method: "PATCH",
+  headers: { "x-admin-csrf": adminCsrf },
+  body: { id: manualRequest.data.request.id, action: "approve_new", note: "통합 테스트 신규 학교 승인" },
+});
+const manualSession = await request("/api/session", { cookie: manualCookie });
+assert.ok(manualSession.data.actor.school_id);
+assert.equal(manualSession.data.actor.manual_school_request_id, null);
 
 const classCreated = await request("/api/classes", {
   cookie: teacherCookie,
@@ -433,5 +471,35 @@ teacherCookie = cookieFrom(teacherLogin.response);
 const finalRoster = await request(`/api/classes/${classId}/students`, { cookie: teacherCookie });
 assert.equal(finalRoster.data.students[0].id, student.id);
 assert.equal(finalRoster.data.students[0].official_name, "김하늘");
+await request("/api/admin/dashboard", { cookie: teacherCookie, expected: 401 });
+
+await request("/api/admin/teachers", {
+  cookie: adminCookie,
+  method: "PATCH",
+  headers: { "x-admin-csrf": adminCsrf },
+  body: { id: signup.data.teacher.id, action: "revoke", note: "통합 테스트 권한 회수" },
+});
+await request("/api/classes", { cookie: teacherCookie, expected: 401 });
+await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: nextPassword },
+  expected: 200,
+}).then(({ response }) => request("/api/classes", {
+  cookie: cookieFrom(response),
+  method: "POST",
+  body: { schoolYear: 2099, grade: 6, classNumber: 30 },
+  expected: 403,
+}));
+await request("/api/admin/teachers", {
+  cookie: adminCookie,
+  method: "PATCH",
+  headers: { "x-admin-csrf": adminCsrf },
+  body: { id: signup.data.teacher.id, action: "reapprove", note: "통합 테스트 재승인" },
+});
+const restoredLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: nextPassword },
+});
+await request("/api/classes", { cookie: cookieFrom(restoredLogin.response) });
 
 console.log("통합 흐름 검증 완료: 이메일·초대코드·학교·학급·학생·직업·권한·기존 흐름");

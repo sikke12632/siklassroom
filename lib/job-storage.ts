@@ -8,6 +8,7 @@ import {
   sumJobCapacity,
   type ClassJobDraft,
   type JobCategory,
+  type JobTemplate,
   type SetupMode,
   type SurveyAnswers,
 } from "./job-catalog";
@@ -59,16 +60,7 @@ export async function ensureJobCenterSchema() {
        id, name, short_description, detailed_tasks, category,
        recommended_min_members, recommended_max_members, icon_key, default_priority, is_active
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-     ON CONFLICT(id) DO UPDATE SET
-       name = excluded.name,
-       short_description = excluded.short_description,
-       detailed_tasks = excluded.detailed_tasks,
-       category = excluded.category,
-       recommended_min_members = excluded.recommended_min_members,
-       recommended_max_members = excluded.recommended_max_members,
-       icon_key = excluded.icon_key,
-       default_priority = excluded.default_priority,
-       is_active = 1`,
+     ON CONFLICT(id) DO NOTHING`,
   ).bind(
     template.id,
     template.name,
@@ -80,6 +72,38 @@ export async function ensureJobCenterSchema() {
     template.iconKey,
     template.defaultPriority,
   )));
+}
+
+export async function loadJobTemplates(options: { activeOnly?: boolean } = {}): Promise<JobTemplate[]> {
+  await ensureJobCenterSchema();
+  const result = await database().prepare(
+    `SELECT id, name, short_description, detailed_tasks, category,
+            recommended_min_members, recommended_max_members, icon_key, default_priority
+     FROM job_templates
+     ${options.activeOnly ? "WHERE is_active = 1" : ""}
+     ORDER BY default_priority, id`,
+  ).all<{
+    id: string;
+    name: string;
+    short_description: string;
+    detailed_tasks: string;
+    category: JobCategory;
+    recommended_min_members: number;
+    recommended_max_members: number;
+    icon_key: string;
+    default_priority: number;
+  }>();
+  return result.results.map((row) => ({
+    id: row.id,
+    name: row.name,
+    shortDescription: row.short_description,
+    detailedTasks: row.detailed_tasks,
+    category: row.category,
+    recommendedMinMembers: Number(row.recommended_min_members),
+    recommendedMaxMembers: Number(row.recommended_max_members),
+    iconKey: row.icon_key,
+    defaultPriority: Number(row.default_priority),
+  }));
 }
 
 export async function eligibleStudentCount(classId: string) {

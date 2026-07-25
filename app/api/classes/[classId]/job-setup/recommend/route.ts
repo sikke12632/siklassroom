@@ -2,7 +2,7 @@ import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
 import { recommendJobs, type SurveyAnswers } from "@/lib/job-catalog";
-import { eligibleStudentCount } from "@/lib/job-storage";
+import { eligibleStudentCount, loadJobTemplates } from "@/lib/job-storage";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -15,7 +15,8 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       throw new ApiError(422, "학생을 한 명 이상 등록한 뒤 추천받을 수 있어요.", "NO_STUDENTS");
     }
     const body = await readJson<{ surveyAnswers?: Partial<SurveyAnswers> }>(request);
-    const plan = recommendJobs(studentCount, body.surveyAnswers);
+    const templates = await loadJobTemplates({ activeOnly: true });
+    const plan = recommendJobs(studentCount, body.surveyAnswers, templates);
     const jobs = plan.jobs.map((job) => ({
       ...job,
       id: `${classId}:${job.templateId ?? crypto.randomUUID()}`,

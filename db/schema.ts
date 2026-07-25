@@ -10,6 +10,8 @@ export const teachers = sqliteTable("teachers", {
   teacherAccessVerifiedAt: integer("teacher_access_verified_at"),
   schoolId: text("school_id"),
   manualSchoolRequestId: text("manual_school_request_id"),
+  teacherAccessNote: text("teacher_access_note"),
+  teacherAccessUpdatedAt: integer("teacher_access_updated_at"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [uniqueIndex("teachers_email_uq").on(table.email)]);
@@ -163,6 +165,8 @@ export const schoolManualRequests = sqliteTable("school_manual_requests", {
   linkedSchoolId: text("linked_school_id").references(() => schools.id),
   createdAt: integer("created_at").notNull(),
   reviewedAt: integer("reviewed_at"),
+  reviewedBy: text("reviewed_by"),
+  reviewNote: text("review_note"),
 }, (table) => [
   index("school_manual_requests_teacher_idx").on(table.submittedByTeacherId),
   index("school_manual_requests_lookup_idx").on(table.normalizedName, table.provinceName, table.status),
@@ -191,6 +195,7 @@ export const teacherInviteCodes = sqliteTable("teacher_invite_codes", {
   usedByTeacherId: text("used_by_teacher_id").references(() => teachers.id),
   revokedAt: integer("revoked_at"),
   createdAt: integer("created_at").notNull(),
+  memo: text("memo"),
 }, (table) => [
   uniqueIndex("teacher_invite_codes_hash_uq").on(table.codeHash),
   index("teacher_invite_codes_status_idx").on(table.status, table.expiresAt),
@@ -242,4 +247,45 @@ export const classJobs = sqliteTable("class_jobs", {
 }, (table) => [
   index("class_jobs_class_idx").on(table.classId),
   index("class_jobs_template_idx").on(table.templateId),
+]);
+
+export const systemAdminSessions = sqliteTable("system_admin_sessions", {
+  id: text("id").primaryKey(),
+  tokenHash: text("token_hash").notNull(),
+  csrfHash: text("csrf_hash").notNull(),
+  adminKey: text("admin_key").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+  lastSeenAt: integer("last_seen_at").notNull(),
+  revokedAt: integer("revoked_at"),
+}, (table) => [
+  uniqueIndex("system_admin_sessions_token_uq").on(table.tokenHash),
+  index("system_admin_sessions_admin_idx").on(table.adminKey),
+]);
+
+export const serviceAnnouncements = sqliteTable("service_announcements", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  audience: text("audience").notNull(),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("service_announcements_active_idx").on(table.isActive, table.audience),
+]);
+
+export const systemAdminAuditLogs = sqliteTable("system_admin_audit_logs", {
+  id: text("id").primaryKey(),
+  adminKey: text("admin_key").notNull(),
+  action: text("action").notNull(),
+  targetType: text("target_type"),
+  targetId: text("target_id"),
+  beforeJson: text("before_json"),
+  afterJson: text("after_json"),
+  success: integer("success", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  index("system_admin_audit_created_idx").on(table.createdAt),
+  index("system_admin_audit_target_idx").on(table.targetType, table.targetId),
 ]);

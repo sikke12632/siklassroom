@@ -2,7 +2,8 @@ import { database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { normalizeSchoolSearch } from "@/lib/schools";
-import { requireAdmin } from "@/lib/teacher-verification";
+import { auditSystemAdmin } from "@/lib/system-admin-audit";
+import { requireSystemAdmin } from "@/lib/system-admin-auth";
 
 type ImportSchool = {
   officeCode?: string;
@@ -16,7 +17,7 @@ type ImportSchool = {
 
 export async function POST(request: Request) {
   try {
-    await requireAdmin(request);
+    const admin = await requireSystemAdmin(request, { csrf: true });
     await ensureSchema();
     const body = await readJson<{ schools?: ImportSchool[] }>(request);
     if (!Array.isArray(body.schools) || !body.schools.length || body.schools.length > 25) {
@@ -64,6 +65,12 @@ export async function POST(request: Request) {
       now, now, now,
     ));
     await database().batch(statements);
+    await auditSystemAdmin({
+      adminKey: admin.adminKey,
+      action: "schools_imported",
+      targetType: "school",
+      after: { imported: rows.length },
+    });
     return json({ imported: rows.length, schools: rows.map(({ id, officialName }) => ({ id, officialName })) });
   } catch (error) {
     return apiFailure(error);

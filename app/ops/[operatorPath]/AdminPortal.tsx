@@ -1,0 +1,270 @@
+"use client";
+
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import { ClipboardList, KeyRound, LogOut, Megaphone, School, Settings2, ShieldCheck, UsersRound } from "lucide-react";
+import { Logo } from "@/app/components/Logo";
+import { Notice } from "@/app/components/Notice";
+import { ThemeToggle } from "@/app/components/ThemeToggle";
+
+type Tab = "home" | "invites" | "teachers" | "schools" | "jobs" | "notice" | "logs";
+type Summary = {
+  pendingTeachers: number;
+  activeTeachers: number;
+  revokedTeachers: number;
+  pendingSchools: number;
+  activeInviteCodes: number;
+  activeAnnouncements: number;
+};
+type InviteCode = {
+  id: string; status: string; expires_at: number; used_at: number | null;
+  used_by_email: string | null; created_at: number; memo: string | null;
+};
+type Teacher = {
+  id: string; email: string; status: string; email_verified_at: number | null;
+  teacher_access_status: string; teacher_access_note: string | null; created_at: number;
+  school_name: string | null; joined_with_invite: number;
+};
+type SchoolRequest = {
+  id: string; entered_name: string; province_name: string; school_level: string;
+  district_or_address: string | null; note: string | null; status: string;
+  teacher_email: string; created_at: number; linked_school_id: string | null;
+};
+type SchoolOption = { id: string; official_name: string; province_name: string; school_level: string; district_name: string | null };
+type JobTemplate = {
+  id: string; name: string; category: string; recommended_min_members: number;
+  recommended_max_members: number; default_priority: number; is_active: number;
+};
+type Announcement = { title: string; body: string; audience: string; is_active: number } | null;
+type AuditLog = {
+  id: string; admin_key: string; action: string; target_type: string | null;
+  target_id: string | null; success: number; created_at: number;
+};
+
+const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
+  { id: "home", label: "운영 현황", icon: <ShieldCheck /> },
+  { id: "invites", label: "초대코드", icon: <KeyRound /> },
+  { id: "teachers", label: "교사 권한", icon: <UsersRound /> },
+  { id: "schools", label: "학교 확인", icon: <School /> },
+  { id: "jobs", label: "기본 직업", icon: <Settings2 /> },
+  { id: "notice", label: "전체 공지", icon: <Megaphone /> },
+  { id: "logs", label: "작업 기록", icon: <ClipboardList /> },
+];
+
+function when(value: number | null) {
+  return value ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium", timeStyle: "short" }).format(value) : "—";
+}
+
+export function AdminPortal() {
+  const [loading, setLoading] = useState(true);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [csrfToken, setCsrfToken] = useState("");
+  const [tab, setTab] = useState<Tab>("home");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const request = useCallback(async <T,>(url: string, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    if (init.body) headers.set("Content-Type", "application/json");
+    if (init.method && init.method !== "GET") headers.set("x-admin-csrf", csrfToken);
+    const response = await fetch(url, { ...init, headers, credentials: "same-origin", cache: "no-store" });
+    const data = await response.json().catch(() => ({})) as T & { error?: string };
+    if (!response.ok) throw new Error(data.error || "요청을 처리하지 못했습니다.");
+    return data;
+  }, [csrfToken]);
+
+  useEffect(() => {
+    fetch("/api/admin/auth/session", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return null;
+        return response.json() as Promise<{ csrfToken: string }>;
+      })
+      .then((data) => {
+        if (data) {
+          setCsrfToken(data.csrfToken);
+          setAuthenticated(true);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function logout() {
+    await request("/api/admin/auth/session", { method: "DELETE" }).catch(() => null);
+    setAuthenticated(false);
+    setCsrfToken("");
+  }
+
+  if (loading) return <main className="admin-loading"><p>관리자 세션을 확인하고 있습니다.</p></main>;
+  if (!authenticated) {
+    return <AdminLogin onLogin={(token) => { setCsrfToken(token); setAuthenticated(true); }} />;
+  }
+
+  return (
+    <div className="admin-shell">
+      <aside className="admin-sidebar">
+        <Logo compact />
+        <div className="admin-badge">SYSTEM ADMIN</div>
+        <nav aria-label="관리자 메뉴">
+          {tabs.map((item) => (
+            <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => { setTab(item.id); setError(""); setMessage(""); }}>
+              {item.icon}<span>{item.label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="admin-account"><ThemeToggle /><button onClick={logout}><LogOut />로그아웃</button></div>
+      </aside>
+      <main className="admin-main">
+        <header><div><p className="eyebrow">서비스 운영자 전용</p><h1>{tabs.find((item) => item.id === tab)?.label}</h1></div></header>
+        <Notice message={error} tone="error" />
+        <Notice message={message} tone="success" />
+        {tab === "home" && <AdminHome request={request} onMove={setTab} />}
+        {tab === "invites" && <InviteManager request={request} onError={setError} onMessage={setMessage} />}
+        {tab === "teachers" && <TeacherManager request={request} onError={setError} onMessage={setMessage} />}
+        {tab === "schools" && <SchoolManager request={request} onError={setError} onMessage={setMessage} />}
+        {tab === "jobs" && <JobManager request={request} onError={setError} onMessage={setMessage} />}
+        {tab === "notice" && <NoticeManager request={request} onError={setError} onMessage={setMessage} />}
+        {tab === "logs" && <AuditManager request={request} />}
+      </main>
+    </div>
+  );
+}
+
+function AdminLogin({ onLogin }: { onLogin: (csrfToken: string) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const response = await fetch("/api/admin/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json() as { csrfToken?: string; error?: string };
+      if (!response.ok || !data.csrfToken) throw new Error(data.error || "로그인하지 못했습니다.");
+      setPassword("");
+      onLogin(data.csrfToken);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <main className="admin-login-page">
+      <section className="admin-login-card">
+        <Logo />
+        <div className="admin-login-icon"><ShieldCheck /></div>
+        <p className="eyebrow">서비스 운영자 전용</p>
+        <h1>관리자 로그인</h1>
+        <p>등록된 운영자 계정으로만 들어갈 수 있습니다.</p>
+        <form onSubmit={submit} className="form-stack">
+          <label>관리자 아이디<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required /></label>
+          <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required /></label>
+          <Notice message={error} tone="error" />
+          <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : "로그인"}</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+type Requester = <T>(url: string, init?: RequestInit) => Promise<T>;
+
+function AdminHome({ request, onMove }: { request: Requester; onMove: (tab: Tab) => void }) {
+  const [summary, setSummary] = useState<Summary | null>(null);
+  useEffect(() => { request<{ summary: Summary }>("/api/admin/dashboard").then((data) => setSummary(data.summary)); }, [request]);
+  const cards: Array<[keyof Summary, string, Tab]> = [
+    ["pendingTeachers", "승인 대기 교사", "teachers"],
+    ["activeTeachers", "이용 중 교사", "teachers"],
+    ["revokedTeachers", "권한 회수 교사", "teachers"],
+    ["pendingSchools", "확인 대기 학교", "schools"],
+    ["activeInviteCodes", "사용 가능한 초대코드", "invites"],
+    ["activeAnnouncements", "활성 공지", "notice"],
+  ];
+  return <section className="admin-summary-grid">{cards.map(([key, label, target]) => <button key={key} onClick={() => onMove(target)}><span>{label}</span><strong>{summary ? summary[key] : "…"}</strong><small>확인하기</small></button>)}</section>;
+}
+
+function InviteManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
+  const [codes, setCodes] = useState<InviteCode[]>([]);
+  const [expiresAt, setExpiresAt] = useState(() => new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10));
+  const [memo, setMemo] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const load = useCallback(() => request<{ codes: InviteCode[] }>("/api/admin/invite-codes").then((data) => setCodes(data.codes)), [request]);
+  useEffect(() => { load(); }, [load]);
+  async function create(event: FormEvent) {
+    event.preventDefault(); onError(""); setNewCode("");
+    try {
+      const data = await request<{ code: string }>("/api/admin/invite-codes", { method: "POST", body: JSON.stringify({ expiresAt: new Date(`${expiresAt}T23:59:59+09:00`).getTime(), memo }) });
+      setNewCode(data.code); setMemo(""); onMessage("초대코드를 만들었습니다. 원문은 지금 한 번만 표시됩니다."); load();
+    } catch (reason) { onError((reason as Error).message); }
+  }
+  async function revoke(id: string) {
+    try { await request("/api/admin/invite-codes", { method: "DELETE", body: JSON.stringify({ id }) }); onMessage("초대코드를 폐기했습니다."); load(); }
+    catch (reason) { onError((reason as Error).message); }
+  }
+  return <section className="admin-section"><form className="admin-inline-form" onSubmit={create}><label>만료일<input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} required /></label><label>용도·메모<input value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={120} /></label><button className="button button-primary">새 코드 발급</button></form>{newCode && <div className="one-time-secret"><b>한 번만 표시되는 코드</b><code>{newCode}</code><button onClick={() => navigator.clipboard.writeText(newCode)}>복사</button></div>}<div className="admin-table-wrap"><table><thead><tr><th>상태</th><th>메모</th><th>만료</th><th>사용 계정</th><th></th></tr></thead><tbody>{codes.map((code) => <tr key={code.id}><td>{code.status}</td><td>{code.memo || "—"}</td><td>{when(code.expires_at)}</td><td>{code.used_by_email || "—"}</td><td>{code.status === "active" && <button className="danger-link" onClick={() => revoke(code.id)}>폐기</button>}</td></tr>)}</tbody></table></div></section>;
+}
+
+function TeacherManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const load = useCallback(() => request<{ teachers: Teacher[] }>(`/api/admin/teachers?q=${encodeURIComponent(query)}&status=${status}`).then((data) => setTeachers(data.teachers)), [request, query, status]);
+  useEffect(() => { load(); }, [load]);
+  async function change(id: string, action: string) {
+    const note = prompt("관리자 메모(선택)") || "";
+    try { await request("/api/admin/teachers", { method: "PATCH", body: JSON.stringify({ id, action, note }) }); onMessage("교사 이용 권한을 변경했습니다."); load(); }
+    catch (reason) { onError((reason as Error).message); }
+  }
+  return <section className="admin-section"><div className="admin-filters"><input placeholder="이메일 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">전체 상태</option><option value="pending">승인 대기</option><option value="invite_verified">이용 중</option><option value="revoked">권한 회수</option></select></div><div className="admin-table-wrap"><table><thead><tr><th>교사</th><th>학교</th><th>가입일</th><th>이메일 확인</th><th>상태</th><th>처리</th></tr></thead><tbody>{teachers.map((teacher) => <tr key={teacher.id}><td><b>{teacher.email}</b><small>{teacher.joined_with_invite ? "초대코드 사용" : "관리자 승인"}</small></td><td>{teacher.school_name || "미선택"}</td><td>{when(teacher.created_at)}</td><td>{teacher.email_verified_at ? "완료" : "대기"}</td><td>{teacher.teacher_access_status}</td><td>{teacher.teacher_access_status === "pending" ? <button onClick={() => change(teacher.id, "approve")}>승인</button> : teacher.teacher_access_status === "revoked" ? <button onClick={() => change(teacher.id, "reapprove")}>재승인</button> : <button className="danger-link" onClick={() => change(teacher.id, "revoke")}>권한 회수</button>}</td></tr>)}</tbody></table></div></section>;
+}
+
+function SchoolManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
+  const [items, setItems] = useState<SchoolRequest[]>([]);
+  const [schools, setSchools] = useState<SchoolOption[]>([]);
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  const load = useCallback(() => request<{ requests: SchoolRequest[]; schools: SchoolOption[] }>("/api/admin/school-requests").then((data) => { setItems(data.requests); setSchools(data.schools); }), [request]);
+  useEffect(() => { load(); }, [load]);
+  async function review(id: string, action: string) {
+    const note = prompt("검토 메모(선택)") || "";
+    try { await request("/api/admin/school-requests", { method: "PATCH", body: JSON.stringify({ id, action, schoolId: selected[id], note }) }); onMessage("학교 확인 요청을 처리했습니다."); load(); }
+    catch (reason) { onError((reason as Error).message); }
+  }
+  return <section className="admin-section school-review-list">{items.map((item) => <article key={item.id} className="admin-review-card"><div><span className={`status-badge status-${item.status}`}>{item.status}</span><h2>{item.entered_name}</h2><p>{item.province_name} · {item.school_level} · {item.district_or_address || "지역 정보 없음"}</p><small>{item.teacher_email} · {when(item.created_at)}</small>{item.note && <blockquote>{item.note}</blockquote>}</div>{item.status === "pending" && <div className="admin-review-actions"><select value={selected[item.id] || ""} onChange={(e) => setSelected((current) => ({ ...current, [item.id]: e.target.value }))}><option value="">기존 공식 학교 선택</option>{schools.filter((school) => school.province_name === item.province_name && school.school_level === item.school_level).map((school) => <option value={school.id} key={school.id}>{school.official_name} · {school.district_name || ""}</option>)}</select><button disabled={!selected[item.id]} onClick={() => review(item.id, "link")}>공식 학교와 연결</button><button onClick={() => review(item.id, "approve_new")}>신규 학교 승인</button><button className="danger-link" onClick={() => review(item.id, "reject")}>반려</button></div>}</article>)}</section>;
+}
+
+function JobManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
+  const [templates, setTemplates] = useState<JobTemplate[]>([]);
+  const load = useCallback(() => request<{ templates: JobTemplate[] }>("/api/admin/job-templates").then((data) => setTemplates(data.templates)), [request]);
+  useEffect(() => { load(); }, [load]);
+  function updateLocal(id: string, patch: Partial<JobTemplate>) { setTemplates((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); }
+  async function save(item: JobTemplate) {
+    try { await request("/api/admin/job-templates", { method: "PATCH", body: JSON.stringify({ id: item.id, isActive: Boolean(item.is_active), recommendedMinMembers: item.recommended_min_members, recommendedMaxMembers: item.recommended_max_members, defaultPriority: item.default_priority }) }); onMessage(`${item.name} 설정을 저장했습니다.`); }
+    catch (reason) { onError((reason as Error).message); load(); }
+  }
+  return <section className="admin-section"><p className="admin-help">이 설정은 앞으로 새로 직업 구성을 시작하는 학급에만 적용됩니다.</p><div className="admin-table-wrap"><table><thead><tr><th>기본 직업</th><th>활성</th><th>최소 인원</th><th>최대 인원</th><th>우선순위</th><th></th></tr></thead><tbody>{templates.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.category}</small></td><td><input type="checkbox" checked={Boolean(item.is_active)} onChange={(e) => updateLocal(item.id, { is_active: e.target.checked ? 1 : 0 })} /></td><td><input type="number" min="1" max="60" value={item.recommended_min_members} onChange={(e) => updateLocal(item.id, { recommended_min_members: Number(e.target.value) })} /></td><td><input type="number" min="1" max="60" value={item.recommended_max_members} onChange={(e) => updateLocal(item.id, { recommended_max_members: Number(e.target.value) })} /></td><td><input type="number" min="1" max="999" value={item.default_priority} onChange={(e) => updateLocal(item.id, { default_priority: Number(e.target.value) })} /></td><td><button onClick={() => save(item)}>저장</button></td></tr>)}</tbody></table></div></section>;
+}
+
+function NoticeManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [audience, setAudience] = useState("all");
+  const [active, setActive] = useState(false);
+  useEffect(() => { request<{ announcement: Announcement }>("/api/admin/announcement").then(({ announcement }) => { if (announcement) { setTitle(announcement.title); setBody(announcement.body); setAudience(announcement.audience); setActive(Boolean(announcement.is_active)); } }); }, [request]);
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    try { await request("/api/admin/announcement", { method: "PATCH", body: JSON.stringify({ title, body, audience, isActive: active }) }); onMessage("전체 공지를 저장했습니다."); }
+    catch (reason) { onError((reason as Error).message); }
+  }
+  return <section className="admin-section admin-form-card"><form onSubmit={save} className="form-stack"><label>제목<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} required /></label><label>본문<textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={500} rows={6} required /></label><label>대상<select value={audience} onChange={(e) => setAudience(e.target.value)}><option value="all">전체</option><option value="teacher">교사</option><option value="student">학생</option></select></label><label className="check-row"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> 공지 사용</label><button className="button button-primary">공지 저장</button></form></section>;
+}
+
+function AuditManager({ request }: { request: Requester }) {
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  useEffect(() => { request<{ logs: AuditLog[] }>("/api/admin/audit-logs").then((data) => setLogs(data.logs)); }, [request]);
+  return <section className="admin-section"><div className="admin-table-wrap"><table><thead><tr><th>시각</th><th>행동</th><th>대상</th><th>결과</th></tr></thead><tbody>{logs.map((log) => <tr key={log.id}><td>{when(log.created_at)}</td><td><code>{log.action}</code></td><td>{log.target_type || "—"} {log.target_id ? `· ${log.target_id.slice(0, 10)}` : ""}</td><td>{log.success ? "성공" : "실패"}</td></tr>)}</tbody></table></div></section>;
+}

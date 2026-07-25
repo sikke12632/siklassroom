@@ -79,3 +79,14 @@ test("자동 맞춤은 부족·초과 자리를 정확히 조정하고 원본을
   assert.equal(sumJobCapacity(adjustJobsToStudentCount(2, source).jobs), 2);
   assert.deepEqual(source, original);
 });
+
+test("관리자 기본 직업 설정은 이후 추천 입력에 반영된다", () => {
+  const templates = JOB_TEMPLATES
+    .filter((template) => template.id !== "classroom-cleaner")
+    .map((template) => template.id === "milk-manager"
+      ? { ...template, defaultPriority: 1, recommendedMaxMembers: 8 }
+      : template);
+  const result = recommendJobs(8, { distribution: "shared" }, templates);
+  assert.equal(result.jobs.some((job) => job.templateId === "classroom-cleaner"), false);
+  assert.equal(result.jobs.some((job) => job.templateId === "milk-manager"), true);
+});

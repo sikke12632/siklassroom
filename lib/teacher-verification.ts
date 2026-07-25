@@ -1,5 +1,5 @@
-import { audit, database, ensureSchema, runtimeEnv } from "./database";
-import { randomToken, secureStringEqual, sha256 } from "./crypto";
+import { audit, database, ensureSchema } from "./database";
+import { randomToken, sha256 } from "./crypto";
 import { sendTeacherEmailVerification } from "./email";
 import { ApiError } from "./responses";
 import { generateInviteCode, normalizeInviteCode } from "./invite-code";
@@ -111,16 +111,7 @@ export async function redeemInviteCode(teacherId: string, value: unknown) {
   await audit({ action: "teacher_invite_verified", teacherId, detail: { inviteCodeId: result.id } });
 }
 
-export async function requireAdmin(request: Request) {
-  const configured = runtimeEnv().ADMIN_API_TOKEN;
-  const header = request.headers.get("authorization") ?? "";
-  const provided = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!configured || !provided || !(await secureStringEqual(configured, provided))) {
-    throw new ApiError(403, "관리자 권한이 필요합니다.", "ADMIN_REQUIRED");
-  }
-}
-
-export async function createInviteCode(input: { expiresAt: number; issuedBy?: string }) {
+export async function createInviteCode(input: { expiresAt: number; issuedBy?: string; memo?: string | null }) {
   const now = Date.now();
   if (!Number.isFinite(input.expiresAt) || input.expiresAt <= now + 60_000 || input.expiresAt > now + 365 * 24 * 60 * 60 * 1000) {
     throw new ApiError(400, "초대코드 만료일을 다시 확인해 주세요.", "INVALID_INVITE_EXPIRY");
@@ -128,8 +119,15 @@ export async function createInviteCode(input: { expiresAt: number; issuedBy?: st
   const rawCode = generateInviteCode();
   await database().prepare(
     `INSERT INTO teacher_invite_codes
-     (id, code_hash, status, issued_by, expires_at, created_at)
-     VALUES (?, ?, 'active', ?, ?, ?)`,
-  ).bind(crypto.randomUUID(), await sha256(normalizeInviteCode(rawCode)), input.issuedBy ?? "admin-api", input.expiresAt, now).run();
+     (id, code_hash, status, issued_by, expires_at, created_at, memo)
+     VALUES (?, ?, 'active', ?, ?, ?, ?)`,
+  ).bind(
+    crypto.randomUUID(),
+    await sha256(normalizeInviteCode(rawCode)),
+    input.issuedBy ?? "system-admin",
+    input.expiresAt,
+    now,
+    input.memo ?? null,
+  ).run();
   return rawCode;
 }
