@@ -2,7 +2,7 @@ import { audit, database, ensureSchema } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { ApiError } from "./responses";
 
-const TOKEN_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000;
+export const REGISTRATION_QR_LIFETIME_MS = 400 * 24 * 60 * 60 * 1000;
 
 export async function issueRegistrationToken(input: {
   studentId: string;
@@ -20,7 +20,7 @@ export async function issueRegistrationToken(input: {
   const rawToken = randomToken(32);
   const tokenHash = await sha256(rawToken);
   await database().batch([
-    database().prepare(`UPDATE registration_tokens SET revoked_at = ? WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`).bind(now, input.studentId),
+    database().prepare(`UPDATE registration_tokens SET revoked_at = ? WHERE student_id = ? AND revoked_at IS NULL`).bind(now, input.studentId),
     database().prepare(`UPDATE students SET qr_generation = ?, status = ?, updated_at = ? WHERE id = ?`).bind(
       generation,
       input.purpose === "reset" ? "reset_required" : student.status,
@@ -30,7 +30,7 @@ export async function issueRegistrationToken(input: {
     database().prepare(
       `INSERT INTO registration_tokens (id, student_id, token_hash, purpose, generation, expires_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(crypto.randomUUID(), input.studentId, tokenHash, input.purpose, generation, now + TOKEN_LIFETIME_MS, now),
+    ).bind(crypto.randomUUID(), input.studentId, tokenHash, input.purpose, generation, now + REGISTRATION_QR_LIFETIME_MS, now),
   ]);
   await audit({ action: `student_qr_${input.purpose}`, teacherId: input.teacherId, classId: input.classId, studentId: input.studentId, detail: { generation } });
   return rawToken;
@@ -51,8 +51,8 @@ export async function registrationRecord(rawToken: string) {
 }
 
 export function assertUsableRegistration(record: Record<string, string | number | null> | null) {
-  if (!record || record.used_at || record.revoked_at || Number(record.expires_at) <= Date.now() || Number(record.generation) !== Number(record.qr_generation)) {
-    throw new ApiError(410, "이 QR은 이미 사용되었거나 새 QR로 바뀌었어요. 선생님께 새 QR을 받아 주세요.", "QR_NOT_USABLE");
+  if (!record || record.revoked_at || Number(record.expires_at) <= Date.now() || Number(record.generation) !== Number(record.qr_generation)) {
+    throw new ApiError(410, "이 QR은 만료되었거나 새 QR로 바뀌었어요. 선생님께 현재 QR을 확인해 주세요.", "QR_NOT_USABLE");
   }
   if (record.status === "locked" || record.status === "excluded") {
     throw new ApiError(403, "지금은 등록할 수 없는 계정이에요. 선생님께 알려 주세요.", "STUDENT_DISABLED");

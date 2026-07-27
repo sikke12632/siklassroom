@@ -442,11 +442,11 @@ const activated = await request("/api/registration/complete", {
   body: { token: activationToken, password: "1357" },
 });
 let studentCookie = cookieFrom(activated.response);
-await request("/api/registration/complete", {
+const reusedActivation = await request("/api/registration/complete", {
   method: "POST",
   body: { token: activationToken, password: "2468" },
-  expected: 410,
 });
+studentCookie = cookieFrom(reusedActivation.response);
 
 const me = await request("/api/student/me", { cookie: studentCookie });
 assert.equal(me.data.student.id, student.id);
@@ -494,7 +494,7 @@ await request(`/api/students/${student.id}`, {
 await request("/api/student/me", { cookie: studentCookie, expected: 401 });
 await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "1357" },
+  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
   expected: 401,
 });
 await request(`/api/students/${student.id}`, {
@@ -505,7 +505,7 @@ await request(`/api/students/${student.id}`, {
 
 const relogin = await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "1357" },
+  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
 });
 studentCookie = cookieFrom(relogin.response);
 
@@ -516,13 +516,20 @@ const resetCard = await request(`/api/students/${student.id}/registration-token`
 });
 await request("/api/student/me", { cookie: studentCookie, expected: 401 });
 const resetToken = new URL(resetCard.data.card.activation_url).searchParams.get("token");
+await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`, {
+  expected: 410,
+});
 await request("/api/registration/complete", {
   method: "POST",
-  body: { token: resetToken, password: "2468" },
+  body: { token: resetToken, password: "9753" },
+});
+await request("/api/registration/complete", {
+  method: "POST",
+  body: { token: resetToken, password: "8642" },
 });
 await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "8642" },
 });
 
 const recovery = await request("/api/teacher/password/request", {

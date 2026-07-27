@@ -31,7 +31,7 @@ test("서비스의 보안·기록 원칙을 사용자에게 설명한다", async
   assert.match(schema, /students_class_number_uq/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Lax/);
-  assert.match(registration, /used_at IS NULL AND revoked_at IS NULL/);
+  assert.match(registration, /WHERE id = \? AND revoked_at IS NULL AND expires_at > \?/);
 });
 
 test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CSRF로 보호한다", async () => {
@@ -104,4 +104,34 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(assignmentPage, /선택한 학생 배정·저장/);
   assert.match(assignmentApi, /requireClassManagement/);
   assert.match(assignmentApi, /ownedClass/);
+});
+
+test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
+  const [portal, printCards, styles] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.ok(
+    portal.indexOf('data-dashboard-section="students"')
+      < portal.indexOf('data-dashboard-section="jobs"'),
+  );
+  assert.match(portal, /학생 명단 먼저 등록/);
+  assert.match(printCards, /document\.body\.classList\.add\("qr-printing"\)/);
+  assert.match(styles, /body\.qr-printing \.teacher-shell > :not\(\.print-overlay\)/);
+  assert.match(styles, /display: none !important/);
+});
+
+test("학생 개인 QR은 재발급 전까지 비밀번호 재설정에 다시 쓸 수 있다", async () => {
+  const [registration, complete, printCards, activation] = await Promise.all([
+    readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/registration/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/activate/ActivationPortal.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(registration, /REGISTRATION_QR_LIFETIME_MS = 400/);
+  assert.doesNotMatch(registration, /record\.used_at/);
+  assert.doesNotMatch(complete, /used_at IS NULL/);
+  assert.match(printCards, /학급 운영 중 다시 쓸 수 있는 개인 카드/);
+  assert.match(activation, /info\.isReturning/);
 });

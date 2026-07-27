@@ -18,6 +18,7 @@ export async function GET(request: Request) {
         display_name: record!.display_name,
       },
       purpose: record!.purpose,
+      isReturning: record!.status === "active" || record!.status === "reset_required",
     });
   } catch (error) {
     return apiFailure(error);

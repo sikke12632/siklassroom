@@ -360,7 +360,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .stat-grid small { font-size: var(--text-sm); }
 .stat-grid .attention { border-color: color-mix(in srgb, var(--color-warning) 42%, var(--color-border)); background: var(--color-warning-soft); }
 .stat-grid .attention strong { color: var(--color-warning); }
-.job-dashboard-card { display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: center; margin-bottom: 18px; padding: 24px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card); }
+.job-dashboard-card { display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: center; margin: 18px 0; padding: 24px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .job-dashboard-card.needs-review { border-color: color-mix(in srgb, var(--color-warning) 50%, var(--color-border)); }
 .job-dashboard-icon, .mode-icon, .message-icon { display: grid; place-items: center; width: 58px; height: 58px; border-radius: 50%; color: var(--color-icon); background: var(--color-icon-soft); }
 .job-dashboard-icon svg, .mode-icon svg, .message-icon svg { width: 28px; height: 28px; }
@@ -368,6 +368,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .job-dashboard-card p:not(.eyebrow) { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .job-dashboard-card p b { color: var(--color-text); }
 .job-dashboard-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.button.is-disabled { cursor: not-allowed; opacity: .55; pointer-events: none; }
 
 /* Student roster */
 .roster-panel { scroll-margin-top: 20px; overflow: hidden; }
@@ -902,10 +903,12 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 
 @media print {
   @page { size: A4; margin: 10mm; }
-  body { background: #ffffff !important; color: #10233b !important; }
+  html, body { min-height: 0 !important; background: #ffffff !important; color: #10233b !important; }
+  body.qr-printing .teacher-shell { display: block !important; min-height: 0 !important; background: #ffffff !important; }
+  body.qr-printing .teacher-shell > :not(.print-overlay) { display: none !important; }
   .no-print { display: none !important; }
-  .print-overlay { position: static; overflow: visible; background: #ffffff; }
-  .print-sheet { grid-template-columns: repeat(2, 1fr); width: 100%; padding: 0; gap: 8mm; }
+  .print-overlay { position: static !important; inset: auto !important; min-height: 0 !important; overflow: visible !important; background: #ffffff !important; }
+  .print-sheet { grid-template-columns: repeat(2, 1fr); width: 100%; margin: 0; padding: 0; gap: 8mm; }
   .qr-card { break-inside: avoid; border-color: #b8c0c8; background: #ffffff; color: #10233b; box-shadow: none; }
 }
 

@@ -99,7 +99,7 @@ export function StudentPortal() {
           <Notice message={error} tone="error" />
           <button className="button button-student button-large" disabled={busy}>{busy ? "들어가는 중…" : "들어가기 →"}</button>
         </form>
-        <a className="qr-help" href="/activate"><span>QR</span><div><b>처음 들어오나요?</b><small>선생님께 받은 QR로 비밀번호를 먼저 만들어요.</small></div><i>→</i></a>
+        <a className="qr-help" href="/activate"><span>QR</span><div><b>처음이거나 비밀번호를 잊었나요?</b><small>선생님께 받은 개인 QR로 비밀번호를 만들거나 다시 정해요.</small></div><i>→</i></a>
       </section>
     </main>
   );

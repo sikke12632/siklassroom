@@ -36,6 +36,13 @@
       "when": 1784975371761,
       "tag": "0004_organic_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785109987272,
+      "tag": "0005_reusable_student_qr",
+      "breakpoints": true
     }
   ]
 }

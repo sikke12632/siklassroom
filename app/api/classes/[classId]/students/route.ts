@@ -3,6 +3,7 @@ import { ownedClass } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
+import { REGISTRATION_QR_LIFETIME_MS } from "@/lib/registration";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 type StudentInput = { number?: number; name?: string };
@@ -59,7 +60,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       statements.push(database().prepare(
         `INSERT INTO registration_tokens (id, student_id, token_hash, purpose, generation, expires_at, created_at)
          VALUES (?, ?, ?, 'activate', 1, ?, ?)`,
-      ).bind(crypto.randomUUID(), row.id, row.tokenHash, now + 14 * 24 * 60 * 60 * 1000, now));
+      ).bind(crypto.randomUUID(), row.id, row.tokenHash, now + REGISTRATION_QR_LIFETIME_MS, now));
     }
     await database().batch(statements);
     await audit({ action: "students_bulk_created", teacherId, classId, detail: { count: issued.length } });

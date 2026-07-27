@@ -220,37 +220,11 @@ export function TeacherPortal() {
               <div className={activeCount === students.length && students.length ? "done" : students.length ? "current" : ""}><b>3</b><span>QR 등록<small>{students.length ? `${activeCount}/${students.length}명` : "대기"}</small></span></div>
             </section>
 
-            <section className={`job-dashboard-card ${selectedSummary.job_student_count_changed ? "needs-review" : selectedSummary.job_status || "not_started"}`}>
-              <div className="job-dashboard-icon" aria-hidden="true"><BriefcaseBusiness /></div>
-              <div>
-                <p className="eyebrow">우리 반 운영</p>
-                <h2>우리 반 직업</h2>
-                {selectedSummary.job_student_count_changed ? (
-                  <p><b>학생 명단이 달라졌어요.</b> 저장 당시 {selectedSummary.job_student_snapshot}명에서 현재 {selectedSummary.job_student_count}명으로 바뀌었어요.</p>
-                ) : selectedSummary.job_status === "completed" ? (
-                  <p><b>직업 구성이 확정됐어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리를 운영해요.</p>
-                ) : selectedSummary.job_status === "draft" ? (
-                  <p><b>저장한 초안이 있어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리부터 이어서 만들 수 있어요.</p>
-                ) : (
-                  <p><b>아직 직업을 정하지 않았어요.</b> 간단한 질문으로 추천받거나 직접 만들 수 있어요.</p>
-                )}
-              </div>
-              <div className="job-dashboard-actions">
-                {selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed && (
-                  <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/job-assignments`}>
-                    <Dices aria-hidden="true" />첫 직업 배정
-                  </a>
-                )}
-                <a className={`button ${selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed ? "button-light" : "button-primary"}`} href={`/teacher/classes/${classRoom.id}/jobs`}>
-                  {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "직업 확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
-                </a>
-              </div>
-            </section>
-
-            {students.length === 0 ? (
-              <RosterEditor onSaved={(newCards) => { setCards(newCards); setAddingStudents(false); loadClass(classRoom.id); loadClasses(classRoom.id); }} classId={classRoom.id} />
-            ) : (
-              <>
+            <div data-dashboard-section="students">
+              {students.length === 0 ? (
+                <RosterEditor onSaved={(newCards) => { setCards(newCards); setAddingStudents(false); loadClass(classRoom.id); loadClasses(classRoom.id); }} classId={classRoom.id} />
+              ) : (
+                <>
                 <section className="stat-grid">
                   <div><span>전체 학생</span><strong>{students.length}</strong><small>명</small></div>
                   <div><span>등록 완료</span><strong>{activeCount}</strong><small>명</small></div>
@@ -275,7 +249,7 @@ export function TeacherPortal() {
                     <div className="button-row">
                       <button className="button button-light" onClick={() => setAddingStudents((value) => !value)}>{addingStudents ? "추가 취소" : "전입생 추가"}</button>
                       <button className="button button-primary" disabled={!pendingCount && !students.some((s) => s.status === "reset_required")} onClick={async () => {
-                        if (!confirm("등록 전 학생의 기존 QR을 모두 무효로 하고 새 QR을 만들까요?")) return;
+                        if (!confirm("등록 전 학생의 기존 QR을 새 개인 QR로 바꿀까요? 새로 발급하면 이전 QR은 무효가 됩니다.")) return;
                         setBusy(true); setError("");
                         try {
                           const data = await postJson<{ cards: RegistrationCard[] }>(`/api/classes/${classRoom.id}/registration-tokens`, {});
@@ -287,8 +261,44 @@ export function TeacherPortal() {
                   </div>
                   <StudentTable students={students} busy={busy} onBusy={setBusy} onError={setError} onMessage={setMessage} onCards={setCards} onReload={() => { loadClass(classRoom.id); loadClasses(classRoom.id); }} />
                 </section>
-              </>
-            )}
+                </>
+              )}
+            </div>
+
+            <section data-dashboard-section="jobs" className={`job-dashboard-card ${selectedSummary.job_student_count_changed ? "needs-review" : selectedSummary.job_status || "not_started"}`}>
+              <div className="job-dashboard-icon" aria-hidden="true"><BriefcaseBusiness /></div>
+              <div>
+                <p className="eyebrow">우리 반 운영</p>
+                <h2>우리 반 직업</h2>
+                {students.length === 0 ? (
+                  <p><b>학생 명단을 먼저 등록해 주세요.</b> 학생 수를 기준으로 직업과 자리를 구성해요.</p>
+                ) : selectedSummary.job_student_count_changed ? (
+                  <p><b>학생 명단이 달라졌어요.</b> 저장 당시 {selectedSummary.job_student_snapshot}명에서 현재 {selectedSummary.job_student_count}명으로 바뀌었어요.</p>
+                ) : selectedSummary.job_status === "completed" ? (
+                  <p><b>직업 구성이 확정됐어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리를 운영해요.</p>
+                ) : selectedSummary.job_status === "draft" ? (
+                  <p><b>저장한 초안이 있어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리부터 이어서 만들 수 있어요.</p>
+                ) : (
+                  <p><b>아직 직업을 정하지 않았어요.</b> 간단한 질문으로 추천받거나 직접 만들 수 있어요.</p>
+                )}
+              </div>
+              <div className="job-dashboard-actions">
+                {students.length === 0 ? (
+                  <span className="button button-light is-disabled" aria-disabled="true">학생 명단 먼저 등록</span>
+                ) : (
+                  <>
+                    {selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed && (
+                      <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/job-assignments`}>
+                        <Dices aria-hidden="true" />첫 직업 배정
+                      </a>
+                    )}
+                    <a className={`button ${selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed ? "button-light" : "button-primary"}`} href={`/teacher/classes/${classRoom.id}/jobs`}>
+                      {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "직업 확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
+                    </a>
+                  </>
+                )}
+              </div>
+            </section>
           </>
         ) : <LoadingScreen label="학급 정보를 불러오고 있어요" />}
       </main>
@@ -665,7 +675,7 @@ function RosterEditor({ classId, onSaved, onCancel }: { classId: string; onSaved
       </div>
       <button className="add-row-button" onClick={() => setRows((current) => [...current, emptyDraft(String((Number(current.at(-1)?.number) || current.length) + 1))])}>+ 학생 행 추가</button>
       <Notice message={error} tone="error" />
-      <div className="panel-footer"><p>저장하면 학생마다 일회용 등록 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
+      <div className="panel-footer"><p>저장하면 학생마다 학급 운영 중 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
     </section>
   );
 }
@@ -685,12 +695,12 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
   }
   async function issueCard(student: Student) {
     const isReset = student.status === "active";
-    if (isReset && !confirm(`${student.student_number}번 ${student.official_name} 학생의 기존 비밀번호를 초기화할까요? 학생은 새 QR로 비밀번호를 다시 정하게 됩니다.`)) return;
+    if (isReset && !confirm(`${student.student_number}번 ${student.official_name} 학생에게 새 QR을 발급할까요? 이전 QR과 기존 로그인은 무효가 되고 새 QR로 비밀번호를 다시 정하게 됩니다.`)) return;
     onBusy(true); onError("");
     try {
       const data = await postJson<{ card: RegistrationCard }>(`/api/students/${student.id}/registration-token`, {});
       onCards([data.card]);
-      onMessage(isReset ? "기존 로그인은 종료했고 새 비밀번호 설정 QR을 만들었어요." : "이전 QR을 무효로 하고 새 QR을 만들었어요.");
+      onMessage(isReset ? "이전 QR과 기존 로그인을 무효로 하고 새 개인 QR을 만들었어요." : "이전 QR을 무효로 하고 새 개인 QR을 만들었어요.");
       onReload();
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
@@ -706,7 +716,7 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
-                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "비밀번호 초기화" : "QR 재발급"}</button>}
+                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "새 QR 발급" : "QR 재발급"}</button>}
                 {student.status === "locked" ? <button onClick={() => updateStudent(student, { status: student.activated_at ? "active" : "pending" })}>잠금 해제</button> : student.status !== "excluded" && <button onClick={() => updateStudent(student, { status: "locked" })}>잠금</button>}
                 {student.status !== "excluded" && <button className="danger-link" onClick={() => { if (confirm("학생을 명단에서 제외할까요? 기록은 삭제하지 않고 보존합니다.")) updateStudent(student, { status: "excluded" }); }}>제외</button>}
               </>}
