@@ -295,6 +295,61 @@ export const studentJobAssignments = sqliteTable("student_job_assignments", {
   index("student_job_assignments_class_idx").on(table.classId),
 ]);
 
+export const classJobMonthClosures = sqliteTable("class_job_month_closures", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  sourcePeriodId: text("source_period_id").notNull().references(() => classJobAssignmentPeriods.id),
+  sourceYear: integer("source_year").notNull(),
+  sourceMonth: integer("source_month").notNull(),
+  status: text("status").notNull().default("closed"),
+  closedByTeacherId: text("closed_by_teacher_id").notNull().references(() => teachers.id),
+  closedAt: integer("closed_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_month_closures_source_uq").on(table.sourcePeriodId),
+  index("class_job_month_closures_class_idx").on(table.classId, table.closedAt),
+]);
+
+export const classJobMonthResults = sqliteTable("class_job_month_results", {
+  id: text("id").primaryKey(),
+  closureId: text("closure_id").notNull().references(() => classJobMonthClosures.id),
+  classId: text("class_id").notNull().references(() => classes.id),
+  studentId: text("student_id").notNull(),
+  studentNumber: integer("student_number").notNull(),
+  studentName: text("student_name").notNull(),
+  classJobId: text("class_job_id").notNull(),
+  jobName: text("job_name").notNull(),
+  jobGrade: text("job_grade").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_month_results_student_uq").on(table.closureId, table.studentId),
+  index("class_job_month_results_closure_idx").on(table.closureId, table.studentNumber),
+  index("class_job_month_results_class_idx").on(table.classId),
+]);
+
+export const classJobChoiceSessions = sqliteTable("class_job_choice_sessions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  closureId: text("closure_id").notNull().references(() => classJobMonthClosures.id),
+  targetYear: integer("target_year").notNull(),
+  targetMonth: integer("target_month").notNull(),
+  status: text("status").notNull().default("draft"),
+  orderMode: text("order_mode").notNull().default("roster"),
+  orderJson: text("order_json").notNull(),
+  studentCountSnapshot: integer("student_count_snapshot").notNull(),
+  jobSetupRevision: integer("job_setup_revision").notNull(),
+  revision: integer("revision").notNull().default(0),
+  confirmedPeriodId: text("confirmed_period_id").references(() => classJobAssignmentPeriods.id),
+  confirmedByTeacherId: text("confirmed_by_teacher_id").references(() => teachers.id),
+  confirmedAt: integer("confirmed_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_choice_sessions_closure_uq").on(table.closureId),
+  uniqueIndex("class_job_choice_sessions_target_uq").on(table.classId, table.targetYear, table.targetMonth),
+  index("class_job_choice_sessions_class_idx").on(table.classId, table.updatedAt),
+]);
+
 export const classCalendars = sqliteTable("class_calendars", {
   classId: text("class_id").primaryKey().references(() => classes.id),
   schoolYear: integer("school_year").notNull(),

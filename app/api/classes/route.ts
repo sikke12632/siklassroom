@@ -24,6 +24,21 @@ export async function GET(request: Request) {
                 WHERE p.class_id = c.id AND p.assignment_type = 'initial'
                 ORDER BY p.confirmed_at DESC, p.updated_at DESC LIMIT 1
               ), 'not_started') AS assignment_status,
+              (
+                SELECT choice.status FROM class_job_choice_sessions choice
+                WHERE choice.class_id = c.id
+                ORDER BY choice.updated_at DESC, choice.target_year DESC, choice.target_month DESC LIMIT 1
+              ) AS monthly_choice_status,
+              (
+                SELECT choice.target_year FROM class_job_choice_sessions choice
+                WHERE choice.class_id = c.id
+                ORDER BY choice.updated_at DESC, choice.target_year DESC, choice.target_month DESC LIMIT 1
+              ) AS monthly_choice_target_year,
+              (
+                SELECT choice.target_month FROM class_job_choice_sessions choice
+                WHERE choice.class_id = c.id
+                ORDER BY choice.updated_at DESC, choice.target_year DESC, choice.target_month DESC LIMIT 1
+              ) AS monthly_choice_target_month,
               CASE
                 WHEN j.status IS NOT NULL
                   AND j.status <> 'not_started'

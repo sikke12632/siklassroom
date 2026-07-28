@@ -155,3 +155,58 @@ test("학생 개인 QR은 재발급 전까지 비밀번호 재설정에 다시 �
   assert.match(printCards, /학급 운영 중 다시 쓸 수 있는 개인 카드/);
   assert.match(activation, /info\.isReturning/);
 });
+
+test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게 확정한다", async () => {
+  const [
+    schema,
+    migration,
+    runtimeSchema,
+    page,
+    portal,
+    boardApi,
+    closeApi,
+    startApi,
+    shuffleApi,
+    completeApi,
+  ] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0007_flat_human_fly.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/MonthlyJobChoicePortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/monthly-job-choice/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/monthly-job-choice/close/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/monthly-job-choice/start/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/monthly-job-choice/shuffle/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/monthly-job-choice/complete/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(schema, /classJobMonthClosures/);
+  assert.match(schema, /classJobMonthResults/);
+  assert.match(schema, /classJobChoiceSessions/);
+  for (const source of [migration, runtimeSchema]) {
+    assert.match(source, /class_job_month_closures/);
+    assert.match(source, /class_job_month_results/);
+    assert.match(source, /class_job_choice_sessions/);
+  }
+
+  assert.match(page, /MonthlyJobChoicePortal/);
+  assert.match(portal, /window\.localStorage/);
+  assert.match(portal, /monthly-job-choice\/complete/);
+  assert.match(portal, /expectedRevision/);
+  assert.match(portal, /expectedJobSetupRevision|jobSetupRevision/);
+  assert.match(portal, /현재 차례|currentStudent/);
+  assert.match(portal, /다음 학생|nextStudent/);
+  assert.match(portal, /남은 자리|remainingCapacity/);
+  assert.match(portal, /선택 완료|completedCount|completedStudents/);
+
+  assert.match(boardApi, /requireTeacher|requireClassManagement/);
+  assert.match(boardApi, /ownedClass/);
+  for (const mutationApi of [closeApi, startApi, shuffleApi, completeApi]) {
+    assert.match(mutationApi, /requireClassManagement/);
+    assert.match(mutationApi, /ownedClass/);
+  }
+  assert.match(shuffleApi, /expectedRevision/);
+  assert.match(completeApi, /expectedRevision/);
+  assert.match(completeApi, /expectedJobSetupRevision/);
+});

@@ -9,6 +9,12 @@ import {
   type ClassJobDraft,
 } from "../lib/job-catalog";
 import { chooseSecureCandidate, secureRandomIndex } from "../lib/local-job-assignment";
+import {
+  nextJobMonth,
+  sortChoiceOrder,
+  suggestJobGrade,
+  type ChoiceOrderItem,
+} from "../lib/monthly-job-choice-rules";
 import { assignmentPeriod, randomCandidate, seoulServerTime } from "../lib/seoul-time";
 
 test("26명 균형형 추천은 항상 같은 26자리를 만든다", () => {
@@ -126,4 +132,48 @@ test("로컬 추첨은 브라우저 보안 난수로 선택하고 편향 없는 
   assert.equal(secureRandomIndex(3, fillFive), 2);
   assert.equal(chooseSecureCandidate(["학생1", "학생2", "학생3"], fillFive), "학생3");
   assert.throws(() => secureRandomIndex(0, fillFive), /한 명 이상/);
+});
+
+test("12월 다음 직업 월은 다음 해 1월로 넘어간다", () => {
+  assert.deepEqual(nextJobMonth(2026, 11), { year: 2026, month: 12 });
+  assert.deepEqual(nextJobMonth(2026, 12), { year: 2027, month: 1 });
+  assert.throws(() => nextJobMonth(2026, 13), /올바른 연도와 월/);
+});
+
+test("다음 달 직업 선택은 C, B, A, 새 학생, D 순서다", () => {
+  const source: ChoiceOrderItem[] = [
+    { studentId: "d", studentNumber: 5, studentName: "다은", previousJobName: "기록원", previousGrade: "D" },
+    { studentId: "new", studentNumber: 4, studentName: "나래", previousJobName: null, previousGrade: "NEW" },
+    { studentId: "a", studentNumber: 3, studentName: "가온", previousJobName: "은행원", previousGrade: "A" },
+    { studentId: "b", studentNumber: 2, studentName: "보라", previousJobName: "기자", previousGrade: "B" },
+    { studentId: "c", studentNumber: 1, studentName: "초롱", previousJobName: "환경미화원", previousGrade: "C" },
+  ];
+
+  assert.deepEqual(
+    sortChoiceOrder(source).map((student) => student.previousGrade),
+    ["C", "B", "A", "NEW", "D"],
+  );
+});
+
+test("같은 등급 학생은 번호순이며 같은 입력은 항상 같은 순서를 만든다", () => {
+  const source: ChoiceOrderItem[] = [
+    { studentId: "s-12", studentNumber: 12, studentName: "하늘", previousJobName: "기자", previousGrade: "B" },
+    { studentId: "s-2", studentNumber: 2, studentName: "나무", previousJobName: "기자", previousGrade: "B" },
+    { studentId: "s-7", studentNumber: 7, studentName: "바다", previousJobName: "기자", previousGrade: "B" },
+  ];
+  const original = structuredClone(source);
+  const first = sortChoiceOrder(source).map((student) => student.studentId);
+  const second = sortChoiceOrder(source).map((student) => student.studentId);
+
+  assert.deepEqual(first, ["s-2", "s-7", "s-12"]);
+  assert.deepEqual(second, first);
+  assert.deepEqual(source, original);
+});
+
+test("대표 직업의 등급 추천은 A, B, C 업무 규칙을 따른다", () => {
+  assert.equal(suggestJobGrade({ templateId: "banker", name: "은행원" }), "A");
+  assert.equal(suggestJobGrade({ templateId: "class-reporter", name: "학급 기자" }), "B");
+  assert.equal(suggestJobGrade({ templateId: "classroom-cleaner", name: "환경미화원" }), "C");
+  assert.equal(suggestJobGrade({ templateId: null, name: "디지털 기기 관리원" }), "A");
+  assert.equal(suggestJobGrade({ templateId: null, name: "분리수거원" }), "C");
 });

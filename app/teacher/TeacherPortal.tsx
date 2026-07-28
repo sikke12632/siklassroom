@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
@@ -33,6 +33,9 @@ type ClassRoom = {
   job_student_count?: number; job_status?: "not_started" | "draft" | "completed";
   job_count?: number; job_capacity?: number; job_student_snapshot?: number; job_student_count_changed?: number;
   calendar_saved?: number; assignment_status?: "not_started" | "draft" | "confirmed";
+  monthly_choice_status?: "draft" | "confirmed" | null;
+  monthly_choice_target_year?: number | null;
+  monthly_choice_target_month?: number | null;
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
@@ -160,6 +163,22 @@ export function TeacherPortal() {
   const pendingCount = students.filter((student) => student.status === "pending").length;
   const activeCount = students.filter((student) => student.status === "active").length;
   const attentionCount = students.filter((student) => student.status === "reset_required" || student.status === "locked").length;
+  const monthlyChoiceReady = Boolean(
+    selectedSummary
+      && Number(selectedSummary.job_student_count ?? 0) > 0
+      && selectedSummary.job_status === "completed"
+      && !selectedSummary.job_student_count_changed
+      && selectedSummary.assignment_status === "confirmed",
+  );
+  const monthlyChoiceBlockedReason = Number(selectedSummary?.job_student_count ?? 0) < 1
+    ? "학생 명단을 먼저 등록해 주세요."
+    : selectedSummary?.job_status !== "completed"
+      ? "우리 반 직업을 먼저 확정해 주세요."
+      : selectedSummary.job_student_count_changed
+        ? "달라진 학생 수에 맞춰 직업 정원을 먼저 조정해 주세요."
+        : selectedSummary?.assignment_status !== "confirmed"
+          ? "첫 직업 배정을 먼저 확정해 주세요."
+          : "";
 
   return (
     <div className="teacher-shell">
@@ -171,6 +190,20 @@ export function TeacherPortal() {
           {selectedClassId && <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" /><span>우리 반 직업</span></a>}
           {selectedClassId && selectedSummary?.job_status === "completed" && (
             <a href={`/teacher/classes/${selectedClassId}/job-assignments`}><Dices aria-hidden="true" /><span>첫 직업 배정</span></a>
+          )}
+          {selectedClassId && (
+            monthlyChoiceReady ? (
+              <a href={`/teacher/classes/${selectedClassId}/monthly-jobs`}><ListOrdered aria-hidden="true" /><span>다음 달 직업 선정</span></a>
+            ) : (
+              <a
+                aria-disabled="true"
+                tabIndex={-1}
+                title={monthlyChoiceBlockedReason}
+                style={{ opacity: 0.5, pointerEvents: "none" }}
+              >
+                <ListOrdered aria-hidden="true" /><span>다음 달 직업 선정</span>
+              </a>
+            )
           )}
         </nav>
         <div className="sidebar-section-title">내 학급</div>
@@ -301,6 +334,39 @@ export function TeacherPortal() {
                       {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "직업 확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
                     </a>
                   </>
+                )}
+              </div>
+            </section>
+
+            <section className={`job-dashboard-card ${monthlyChoiceReady ? selectedSummary.monthly_choice_status || "not_started" : "needs-review"}`}>
+              <div className="job-dashboard-icon" aria-hidden="true"><ListOrdered /></div>
+              <div>
+                <p className="eyebrow">월별 운영</p>
+                <h2>다음 달 직업 선정</h2>
+                {!monthlyChoiceReady ? (
+                  <p><b>아직 준비가 필요해요.</b> {monthlyChoiceBlockedReason}</p>
+                ) : selectedSummary.monthly_choice_status === "draft" ? (
+                  <p><b>선택 진행 중이에요.</b> 현재 차례부터 바로 이어서 진행할 수 있어요.</p>
+                ) : selectedSummary.monthly_choice_status === "confirmed"
+                  && selectedSummary.monthly_choice_target_year
+                  && selectedSummary.monthly_choice_target_month ? (
+                    <p><b>{selectedSummary.monthly_choice_target_year}년 {selectedSummary.monthly_choice_target_month}월 확정 완료</b> 학생별 직업과 남은 자리를 확인할 수 있어요.</p>
+                  ) : (
+                    <p><b>지난달 결과로 다음 달 순서를 준비해요.</b> 학생이 한 명씩 남은 직업을 고를 수 있어요.</p>
+                  )}
+              </div>
+              <div className="job-dashboard-actions">
+                {monthlyChoiceReady ? (
+                  <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/monthly-jobs`}>
+                    <ListOrdered aria-hidden="true" />
+                    {selectedSummary.monthly_choice_status === "draft"
+                      ? "선택 이어 하기"
+                      : selectedSummary.monthly_choice_status === "confirmed"
+                        ? "확정 결과 보기"
+                        : "다음 달 선정 시작"}
+                  </a>
+                ) : (
+                  <span className="button button-light is-disabled" aria-disabled="true">{monthlyChoiceBlockedReason}</span>
                 )}
               </div>
             </section>

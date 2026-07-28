@@ -14,8 +14,9 @@ type StudentInfo = {
   school_name: string; school_year: number; grade: number; class_number: number; display_name: string | null;
   current_job?: {
     id: string; name: string; description: string;
-    first_job_start_date: string; first_job_end_date: string;
-    assignment_method: "random" | "manual"; confirmed_at: number;
+    first_job_start_date: string | null; first_job_end_date: string | null;
+    assignment_method: "random" | "manual" | "choice"; confirmed_at: number;
+    assignmentYear: number; assignmentMonth: number; assignmentType: "initial" | "monthly";
   } | null;
 };
 
@@ -85,14 +86,18 @@ export function StudentPortal() {
           <div className="student-job-card">
             <span><BriefcaseBusiness aria-hidden="true" /></span>
             <div>
-              <small>나의 첫 직업</small>
+              <small>{student.current_job.assignmentType === "monthly"
+                ? `${student.current_job.assignmentYear}년 ${student.current_job.assignmentMonth}월 나의 직업`
+                : "나의 첫 직업"}</small>
               <h2>{student.current_job.name}</h2>
               <p>{student.current_job.description}</p>
-              <b>{student.current_job.first_job_start_date} ~ {student.current_job.first_job_end_date}</b>
+              {student.current_job.first_job_start_date && student.current_job.first_job_end_date && (
+                <b>{student.current_job.first_job_start_date} ~ {student.current_job.first_job_end_date}</b>
+              )}
             </div>
           </div>
         ) : (
-          <div className="future-card"><b>첫 직업 배정을 기다리고 있어요</b><p>선생님이 배정을 최종 확정하면 이 화면에서 바로 확인할 수 있어요.</p></div>
+          <div className="future-card"><b>직업 배정을 기다리고 있어요</b><p>선생님이 이번 직업을 최종 확정하면 이 화면에서 바로 확인할 수 있어요.</p></div>
         )}
       </section>
     </main>

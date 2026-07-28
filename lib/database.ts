@@ -151,6 +151,52 @@ const schemaStatements = [
     ON student_job_assignments(period_id, class_job_id)`,
   `CREATE INDEX IF NOT EXISTS student_job_assignments_class_idx
     ON student_job_assignments(class_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_month_closures (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, source_period_id TEXT NOT NULL,
+    source_year INTEGER NOT NULL, source_month INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'closed', closed_by_teacher_id TEXT NOT NULL,
+    closed_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (source_period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (closed_by_teacher_id) REFERENCES teachers(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_month_closures_source_uq
+    ON class_job_month_closures(source_period_id)`,
+  `CREATE INDEX IF NOT EXISTS class_job_month_closures_class_idx
+    ON class_job_month_closures(class_id, closed_at)`,
+  `CREATE TABLE IF NOT EXISTS class_job_month_results (
+    id TEXT PRIMARY KEY, closure_id TEXT NOT NULL, class_id TEXT NOT NULL,
+    student_id TEXT NOT NULL, student_number INTEGER NOT NULL, student_name TEXT NOT NULL,
+    class_job_id TEXT NOT NULL, job_name TEXT NOT NULL, job_grade TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (closure_id) REFERENCES class_job_month_closures(id),
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_month_results_student_uq
+    ON class_job_month_results(closure_id, student_id)`,
+  `CREATE INDEX IF NOT EXISTS class_job_month_results_closure_idx
+    ON class_job_month_results(closure_id, student_number)`,
+  `CREATE INDEX IF NOT EXISTS class_job_month_results_class_idx
+    ON class_job_month_results(class_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_choice_sessions (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, closure_id TEXT NOT NULL,
+    target_year INTEGER NOT NULL, target_month INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft', order_mode TEXT NOT NULL DEFAULT 'roster',
+    order_json TEXT NOT NULL, student_count_snapshot INTEGER NOT NULL,
+    job_setup_revision INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+    confirmed_period_id TEXT, confirmed_by_teacher_id TEXT, confirmed_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (closure_id) REFERENCES class_job_month_closures(id),
+    FOREIGN KEY (confirmed_period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (confirmed_by_teacher_id) REFERENCES teachers(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_choice_sessions_closure_uq
+    ON class_job_choice_sessions(closure_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_choice_sessions_target_uq
+    ON class_job_choice_sessions(class_id, target_year, target_month)`,
+  `CREATE INDEX IF NOT EXISTS class_job_choice_sessions_class_idx
+    ON class_job_choice_sessions(class_id, updated_at)`,
   `CREATE TABLE IF NOT EXISTS job_assignment_candidates (
     id TEXT PRIMARY KEY, period_id TEXT NOT NULL, class_job_id TEXT NOT NULL,
     student_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,

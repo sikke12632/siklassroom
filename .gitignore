@@ -45,6 +45,7 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /.codex-tmp/
+/.monthly-dev*.log
 /tsconfig.tsbuildinfo
 /outputs/
 /work/
