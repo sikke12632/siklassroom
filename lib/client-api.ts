@@ -18,6 +18,10 @@ export function patchJson<T>(url: string, body: unknown) {
   return api<T>(url, { method: "PATCH", body: JSON.stringify(body) });
 }
 
+export function putJson<T>(url: string, body: unknown) {
+  return api<T>(url, { method: "PUT", body: JSON.stringify(body) });
+}
+
 export function friendlyStatus(status: string) {
   return ({
     pending: "등록 전",

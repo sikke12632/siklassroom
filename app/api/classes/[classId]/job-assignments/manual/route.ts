@@ -1,9 +1,8 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
-import { createManualAssignment } from "@/lib/job-assignments";
+import { createManualAssignments } from "@/lib/job-assignments";
 import { apiFailure, json, readJson } from "@/lib/responses";
-import { assignmentPeriod } from "@/lib/seoul-time";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
@@ -11,32 +10,33 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
     const body = await readJson<{
-      year?: unknown;
-      month?: unknown;
       classJobId?: unknown;
+      studentIds?: unknown;
       studentId?: unknown;
+      requestId?: unknown;
     }>(request);
-    const period = assignmentPeriod({ year: body.year, month: body.month });
-    const result = await createManualAssignment({
+    const studentIds = Array.isArray(body.studentIds)
+      ? body.studentIds
+      : body.studentId ? [body.studentId] : [];
+    const result = await createManualAssignments({
       classId,
-      year: period.year,
-      month: period.month,
       classJobId: body.classJobId,
-      studentId: body.studentId,
+      studentIds,
+      requestId: body.requestId,
     });
     await audit({
       action: "job_assignment_manual",
       teacherId,
       classId,
-      studentId: result.student.id,
       detail: {
         classJobId: result.job.id,
-        assignmentId: result.assignmentId,
-        year: period.year,
-        month: period.month,
+        studentIds: result.students.map((student) => student.id),
+        assignmentCount: result.assignmentCount,
+        requestId: body.requestId,
+        idempotent: result.idempotent,
       },
     });
-    return json({ assignment: result, period }, 201);
+    return json({ assignment: result }, result.idempotent ? 200 : 201);
   } catch (error) {
     return apiFailure(error);
   }

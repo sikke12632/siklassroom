@@ -14,7 +14,10 @@ export async function GET(request: Request, context: { params: Promise<{ classId
       year: url.searchParams.get("year"),
       month: url.searchParams.get("month"),
     });
-    const board = await loadInitialAssignmentBoard(classId, period.year, period.month);
+    const board = await loadInitialAssignmentBoard(classId, {
+      year: url.searchParams.has("year") ? period.year : undefined,
+      month: url.searchParams.has("month") ? period.month : undefined,
+    });
     return json({ class: classRoom, period, ...board });
   } catch (error) {
     return apiFailure(error);

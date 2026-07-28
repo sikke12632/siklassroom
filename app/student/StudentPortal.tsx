@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { BookOpen, GraduationCap, School } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, GraduationCap, School } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { StudentEntryIntro } from "@/app/components/EntryIntro";
@@ -12,6 +12,11 @@ import { api, postJson } from "@/lib/client-api";
 type StudentInfo = {
   id: string; official_name: string; student_number: number; class_id: string;
   school_name: string; school_year: number; grade: number; class_number: number; display_name: string | null;
+  current_job?: {
+    id: string; name: string; description: string;
+    first_job_start_date: string; first_job_end_date: string;
+    assignment_method: "random" | "manual"; confirmed_at: number;
+  } | null;
 };
 
 const preferenceKey = "job_classroom_student_class_v1";
@@ -37,7 +42,11 @@ export function StudentPortal() {
     });
     api<{ actor: (StudentInfo & { type: "student" }) | { type: "teacher" } | null }>("/api/session")
       .then(({ actor }) => {
-        if (actor?.type === "student") setStudent(actor);
+        if (actor?.type === "student") {
+          api<{ student: StudentInfo }>("/api/student/me")
+            .then((data) => setStudent(data.student))
+            .catch(() => setStudent(actor));
+        }
         if (actor?.type === "teacher") setTeacherSession(true);
       })
       .finally(() => setLoading(false));
@@ -72,7 +81,19 @@ export function StudentPortal() {
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>
         <h1>{student.official_name}님,<br />직업교실에 잘 들어왔어요!</h1>
         <div className="student-id-card"><span>내 공식 정보</span><strong>{student.student_number}번 · {student.official_name}</strong><small>이름과 번호는 선생님만 고칠 수 있어요.</small></div>
-        <div className="future-card"><b>우리 반 기능을 준비하고 있어요</b><p>다음 단계에서 직업과 학급 운영 기능이 이 계정에 연결됩니다.</p></div>
+        {student.current_job ? (
+          <div className="student-job-card">
+            <span><BriefcaseBusiness aria-hidden="true" /></span>
+            <div>
+              <small>나의 첫 직업</small>
+              <h2>{student.current_job.name}</h2>
+              <p>{student.current_job.description}</p>
+              <b>{student.current_job.first_job_start_date} ~ {student.current_job.first_job_end_date}</b>
+            </div>
+          </div>
+        ) : (
+          <div className="future-card"><b>첫 직업 배정을 기다리고 있어요</b><p>선생님이 배정을 최종 확정하면 이 화면에서 바로 확인할 수 있어요.</p></div>
+        )}
       </section>
     </main>
   );

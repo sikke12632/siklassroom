@@ -42,6 +42,8 @@ type SetupResponse = {
   categories: Record<JobCategory, string>;
   setup: JobSetupState;
   studentCountChanged: boolean;
+  assignmentStatus: "not_started" | "draft" | "confirmed";
+  assignmentCount: number;
 };
 
 const emptySurvey: SurveyAnswers = {
@@ -290,6 +292,14 @@ export function JobSetupPortal({ classId }: { classId: string }) {
       setError(`자리 ${capacity}개를 학생 ${data.studentCount}명과 맞춘 뒤 확정해 주세요.`);
       return;
     }
+    if (data.assignmentStatus === "confirmed") {
+      setError("첫 직업 배정이 이미 확정되어 초기 설정에서 직업과 정원을 바꿀 수 없어요.");
+      return;
+    }
+    const acknowledgeAssignmentImpact = data.assignmentCount > 0
+      ? confirm(`진행 중인 첫 직업 배정 ${data.assignmentCount}건이 있어요.\n직업과 정원을 다시 확정하면 임시 배정이 초기화됩니다. 계속할까요?`)
+      : false;
+    if (data.assignmentCount > 0 && !acknowledgeAssignmentImpact) return;
     setBusy(true);
     setError("");
     try {
@@ -298,6 +308,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
         setupMode: mode,
         surveyAnswers: survey,
         jobs,
+        acknowledgeAssignmentImpact,
       });
       window.location.href = "/teacher";
     } catch (reason) {

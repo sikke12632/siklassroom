@@ -16,6 +16,14 @@ export async function GET(request: Request) {
               COALESCE(j.selected_job_count, 0) AS job_count,
               COALESCE(j.selected_capacity, 0) AS job_capacity,
               COALESCE(j.student_count_snapshot, 0) AS job_student_snapshot,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM class_calendars cc WHERE cc.class_id = c.id
+              ) THEN 1 ELSE 0 END AS calendar_saved,
+              COALESCE((
+                SELECT p.status FROM class_job_assignment_periods p
+                WHERE p.class_id = c.id AND p.assignment_type = 'initial'
+                ORDER BY p.confirmed_at DESC, p.updated_at DESC LIMIT 1
+              ), 'not_started') AS assignment_status,
               CASE
                 WHEN j.status IS NOT NULL
                   AND j.status <> 'not_started'

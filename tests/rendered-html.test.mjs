@@ -89,21 +89,32 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
 });
 
 test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제공한다", async () => {
-  const [database, schema, assignmentPage, assignmentApi] = await Promise.all([
+  const [database, schema, assignmentPage, calendarPage, winnerPage, assignmentApi, completeApi] = await Promise.all([
     readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/teacher/classes/[classId]/job-assignments/InitialJobAssignmentPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/job-assignments/CalendarSetup.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/job-assignments/WinnerCelebration.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/classes/[classId]/job-assignments/random/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-assignments/complete/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(database, /서울서이초등학교/);
   assert.match(database, /'B10', '7091394'/);
   assert.match(schema, /studentJobAssignments/);
   assert.match(schema, /student_job_assignments_period_student_uq/);
-  assert.match(assignmentPage, /서버 표준시를 서울 시간으로 확인/);
-  assert.match(assignmentPage, /희망자 .* 중 1명 뽑기/);
-  assert.match(assignmentPage, /선택한 학생 배정·저장/);
+  assert.match(schema, /classCalendars/);
+  assert.match(schema, /jobAssignmentCandidates/);
+  assert.match(calendarPage, /Cloudflare 서버 시각을 대한민국 표준시로 보정/);
+  assert.match(calendarPage, /달력 저장하고 직업 배정으로/);
+  assert.match(assignmentPage, /모두 선택/);
+  assert.match(assignmentPage, /추첨 시작 · 희망자/);
+  assert.match(assignmentPage, /이 직업 배정 저장/);
+  assert.match(assignmentPage, /첫 직업 배정 확정/);
+  assert.match(winnerPage, /연출 건너뛰기/);
+  assert.match(winnerPage, /당첨!/);
   assert.match(assignmentApi, /requireClassManagement/);
   assert.match(assignmentApi, /ownedClass/);
+  assert.match(completeApi, /completeInitialAssignments/);
 });
 
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {

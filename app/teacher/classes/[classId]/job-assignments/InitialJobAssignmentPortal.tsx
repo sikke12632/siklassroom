@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   BriefcaseBusiness,
   CalendarDays,
   Check,
+  CircleAlert,
   Dices,
   RefreshCw,
   RotateCcw,
@@ -15,7 +16,9 @@ import {
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { api, postJson } from "@/lib/client-api";
+import { api, postJson, putJson } from "@/lib/client-api";
+import { CalendarSetup, type CalendarState } from "./CalendarSetup";
+import { WinnerCelebration, type Winner } from "./WinnerCelebration";
 
 type Student = {
   id: string;
@@ -30,6 +33,7 @@ type AssignedStudent = {
   studentNumber: number;
   name: string;
   method: "random" | "manual";
+  sequence: number;
 };
 
 type Job = {
@@ -47,6 +51,7 @@ type Assignment = {
   class_job_id: string;
   student_id: string;
   assignment_method: "random" | "manual";
+  assignment_sequence: number;
   assigned_at: number;
   job_name: string;
   student_number: number;
@@ -67,27 +72,42 @@ type AssignmentResponse = {
     month: number;
     monthValue: string;
     label: string;
-    serverTime: {
-      epochMs: number;
-      iso: string;
-      date: string;
-      year: number;
-      month: number;
-      day: number;
-      monthValue: string;
-      label: string;
-      timeZone: "Asia/Seoul";
-    };
+    serverTime: CalendarState["serverTime"];
   };
   setupReady: boolean;
   setupStatus: "not_started" | "draft" | "completed";
+  calendar: CalendarState;
+  assignmentPeriodRecord: {
+    id: string;
+    mode: "random" | "manual" | null;
+    status: "draft" | "confirmed";
+    confirmed_at: number | null;
+    revision: number;
+  } | null;
+  mode: "random" | "manual" | null;
+  status: "not_started" | "draft" | "confirmed";
+  revision: number;
   students: Student[];
   availableStudents: Student[];
   assignments: Assignment[];
+  candidateStudentIdsByJob: Record<string, string[]>;
+  preflight: {
+    ready: boolean;
+    errors: Array<{ code: string; message: string; action?: string }>;
+    studentCount: number;
+    seatCount: number;
+    seatDifference: number;
+    confirmed: boolean;
+  };
+  summary: {
+    totalStudents: number;
+    assignedCount: number;
+    availableCount: number;
+    remainingSeats: number;
+    canComplete: boolean;
+  };
   jobs: Job[];
 };
-
-type Mode = "random" | "manual";
 
 function classLabel(classRoom: AssignmentResponse["class"] | null) {
   if (!classRoom) return "우리 반";
@@ -95,35 +115,56 @@ function classLabel(classRoom: AssignmentResponse["class"] | null) {
     || `${classRoom.school_name} ${classRoom.grade}학년 ${classRoom.class_number}반`;
 }
 
+function SetupProgress({ data }: { data: AssignmentResponse }) {
+  const steps = [
+    { label: "학생 명단", done: data.students.length > 0 },
+    { label: "직업 만들기", done: data.setupReady },
+    { label: "달력 설정", done: data.calendar.saved },
+    { label: "첫 직업 배정", done: data.status === "confirmed", current: data.calendar.saved && data.status !== "confirmed" },
+    { label: "설정 완료", done: data.status === "confirmed" },
+  ];
+  return (
+    <nav className="assignment-setup-progress" aria-label="초기 설정 진행 단계">
+      {steps.map((step, index) => (
+        <div key={step.label} className={step.done ? "done" : step.current ? "current" : ""}>
+          <span>{step.done ? <Check aria-hidden="true" /> : index + 1}</span>
+          <b>{step.label}</b>
+        </div>
+      ))}
+    </nav>
+  );
+}
+
 export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
   const [data, setData] = useState<AssignmentResponse | null>(null);
-  const [monthValue, setMonthValue] = useState("");
-  const [mode, setMode] = useState<Mode>("random");
   const [selectedJobId, setSelectedJobId] = useState("");
   const [candidateIds, setCandidateIds] = useState<string[]>([]);
-  const [selectedStudentId, setSelectedStudentId] = useState("");
+  const [manualStudentIds, setManualStudentIds] = useState<string[]>([]);
+  const [showCalendar, setShowCalendar] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [candidateSaving, setCandidateSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [drawnStudent, setDrawnStudent] = useState<{ name: string; number: number; job: string } | null>(null);
+  const [winner, setWinner] = useState<Winner | null>(null);
+  const [winnerCandidates, setWinnerCandidates] = useState<string[]>([]);
+  const candidateSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const selectedJobRef = useRef("");
 
-  const load = useCallback(async (requestedMonth?: string) => {
+  const load = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
-      const [year, month] = requestedMonth?.split("-") ?? [];
-      const query = year && month ? `?year=${year}&month=${month}` : "";
-      const next = await api<AssignmentResponse>(
-        `/api/classes/${classId}/job-assignments${query}`,
-      );
+      const next = await api<AssignmentResponse>(`/api/classes/${classId}/job-assignments`);
       setData(next);
-      setMonthValue(next.period.monthValue);
-      setSelectedJobId((current) => {
-        const selected = next.jobs.find((job) => job.id === current && job.remainingCapacity > 0);
-        return selected ? selected.id : next.jobs.find((job) => job.remainingCapacity > 0)?.id ?? "";
-      });
-      setCandidateIds([]);
-      setSelectedStudentId("");
+      const selected = next.jobs.find((job) => job.id === selectedJobRef.current && job.remainingCapacity > 0);
+      const nextJobId = selected?.id
+        ?? next.jobs.find((job) => job.remainingCapacity > 0)?.id
+        ?? next.jobs[0]?.id
+        ?? "";
+      selectedJobRef.current = nextJobId;
+      setSelectedJobId(nextJobId);
+      setCandidateIds(next.mode === "random" ? next.candidateStudentIdsByJob[nextJobId] ?? [] : []);
+      setManualStudentIds([]);
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -136,26 +177,87 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     return () => cancelAnimationFrame(frame);
   }, [load]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      api<{ serverTime: CalendarState["serverTime"] }>("/api/time")
+        .then(({ serverTime }) => setData((current) => current
+          ? { ...current, calendar: { ...current.calendar, serverTime } }
+          : current))
+        .catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const selectedJob = useMemo(
     () => data?.jobs.find((job) => job.id === selectedJobId) ?? null,
     [data, selectedJobId],
   );
-  const assignedCount = data?.assignments.length ?? 0;
-  const totalStudents = data?.students.length ?? 0;
+
+  function queueCandidateSave(next: string[]) {
+    if (!selectedJobId) return;
+    setCandidateSaving(true);
+    candidateSaveQueue.current = candidateSaveQueue.current
+      .then(() => putJson(`/api/classes/${classId}/job-assignments/candidates`, {
+        classJobId: selectedJobId,
+        studentIds: next,
+      }))
+      .catch((reason) => {
+        setError((reason as Error).message);
+        return load();
+      })
+      .finally(() => setCandidateSaving(false));
+  }
+
+  function setCandidates(next: string[]) {
+    setCandidateIds(next);
+    queueCandidateSave(next);
+  }
 
   function toggleCandidate(studentId: string) {
-    setCandidateIds((current) => current.includes(studentId)
-      ? current.filter((id) => id !== studentId)
-      : [...current, studentId]);
+    const next = candidateIds.includes(studentId)
+      ? candidateIds.filter((id) => id !== studentId)
+      : [...candidateIds, studentId];
+    setCandidates(next);
+  }
+
+  function toggleManualStudent(studentId: string) {
+    if (!selectedJob) return;
+    if (manualStudentIds.includes(studentId)) {
+      setManualStudentIds((current) => current.filter((id) => id !== studentId));
+      return;
+    }
+    if (manualStudentIds.length >= selectedJob.remainingCapacity) {
+      setError(`${selectedJob.name}의 남은 정원은 ${selectedJob.remainingCapacity}명입니다.`);
+      return;
+    }
+    setError("");
+    setManualStudentIds((current) => [...current, studentId]);
+  }
+
+  async function chooseMode(mode: "random" | "manual") {
+    setBusy(true);
+    setError("");
+    try {
+      await putJson(`/api/classes/${classId}/job-assignments/mode`, { mode });
+      setMessage(mode === "random" ? "희망자 추첨 방식으로 시작합니다." : "직접 배정 방식으로 시작합니다.");
+      await load();
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function drawRandom() {
-    if (!data || !selectedJob) return;
+    if (!data || !selectedJob || !candidateIds.length) return;
+    const candidateNames = data.availableStudents
+      .filter((student) => candidateIds.includes(student.id))
+      .map((student) => student.official_name);
     setBusy(true);
     setError("");
     setMessage("");
-    setDrawnStudent(null);
     try {
+      await candidateSaveQueue.current;
       const result = await postJson<{
         assignment: {
           job: { name: string };
@@ -163,40 +265,57 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
           candidateCount: number;
         };
       }>(`/api/classes/${classId}/job-assignments/random`, {
-        year: data.period.year,
-        month: data.period.month,
         classJobId: selectedJob.id,
         candidateStudentIds: candidateIds,
+        requestId: crypto.randomUUID(),
       });
-      setDrawnStudent({
+      const nextWinner = {
         name: result.assignment.student.official_name,
         number: result.assignment.student.student_number,
         job: result.assignment.job.name,
-      });
-      setMessage(`${result.assignment.candidateCount}명의 희망자 중 한 명을 공정하게 뽑아 저장했어요.`);
-      await load(data.period.monthValue);
+      };
+      setWinnerCandidates(candidateNames);
+      setWinner(nextWinner);
+      setMessage(`${result.assignment.candidateCount}명의 희망자 중 당첨자 한 명을 서버에서 공정하게 뽑아 저장했어요.`);
+      await load();
     } catch (reason) {
       setError((reason as Error).message);
+      await load();
     } finally {
       setBusy(false);
     }
   }
 
   async function assignManual() {
-    if (!data || !selectedJob || !selectedStudentId) return;
+    if (!selectedJob || !manualStudentIds.length) return;
     setBusy(true);
     setError("");
     setMessage("");
     try {
-      const student = data.availableStudents.find((item) => item.id === selectedStudentId);
       await postJson(`/api/classes/${classId}/job-assignments/manual`, {
-        year: data.period.year,
-        month: data.period.month,
         classJobId: selectedJob.id,
-        studentId: selectedStudentId,
+        studentIds: manualStudentIds,
+        requestId: crypto.randomUUID(),
       });
-      setMessage(`${student?.student_number}번 ${student?.official_name} 학생을 ${selectedJob.name}에 배정하고 저장했어요.`);
-      await load(data.period.monthValue);
+      setMessage(`${manualStudentIds.length}명을 ${selectedJob.name}에 한 번에 저장했어요.`);
+      setManualStudentIds([]);
+      await load();
+    } catch (reason) {
+      setError((reason as Error).message);
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeAssignment(assignment: Assignment) {
+    if (!confirm(`${assignment.student_number}번 ${assignment.student_name} 학생의 ${assignment.job_name} 배정을 취소할까요? 학생과 자리가 모두 복구됩니다.`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/classes/${classId}/job-assignments/${assignment.id}`, { method: "DELETE" });
+      setMessage("배정을 취소했어요. 학생이 다시 선택 가능 목록으로 돌아왔습니다.");
+      await load();
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -204,16 +323,18 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     }
   }
 
-  async function removeAssignment(assignment: Assignment) {
-    if (!confirm(`${assignment.student_number}번 ${assignment.student_name} 학생의 ${assignment.job_name} 배정을 취소할까요?`)) return;
+  async function completeAssignments() {
+    if (!data?.summary.canComplete) return;
+    if (!confirm(`${data.summary.totalStudents}명 모두의 첫 직업 배정을 확정할까요?\n확정하면 학생 화면에 직업이 공개되고 초기 설정이 완료됩니다.`)) return;
     setBusy(true);
     setError("");
     try {
-      await api(`/api/classes/${classId}/job-assignments/${assignment.id}`, { method: "DELETE" });
-      setMessage("배정을 취소했어요. 학생이 다시 배정 풀에 들어왔어요.");
-      await load(data?.period.monthValue);
+      await postJson(`/api/classes/${classId}/job-assignments/complete`, {});
+      setMessage("첫 직업 배정을 확정했어요. 이제 학생 화면에 각자의 직업이 공개됩니다.");
+      await load();
     } catch (reason) {
       setError((reason as Error).message);
+      await load();
     } finally {
       setBusy(false);
     }
@@ -226,10 +347,15 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
         <Notice message={error} tone="error" />
         {error
           ? <a className="button button-primary" href="/teacher">교사 대시보드로</a>
-          : <p>첫 직업 배정 화면을 준비하고 있어요…</p>}
+          : <p>달력과 첫 직업 배정 화면을 준비하고 있어요…</p>}
       </main>
     );
   }
+
+  const lastRandom = [...data.assignments]
+    .filter((assignment) => assignment.assignment_method === "random")
+    .sort((a, b) => b.assignment_sequence - a.assignment_sequence)[0];
+  const studentOrder = [...data.assignments].sort((a, b) => a.student_number - b.student_number);
 
   return (
     <div className="job-page assignment-page">
@@ -237,7 +363,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
         <Logo compact />
         <div>
           <strong>{classLabel(data.class)}</strong>
-          <span>첫 직업 배정</span>
+          <span>달력 · 첫 직업 배정</span>
         </div>
         <div className="job-topbar-actions">
           <ThemeToggle compact />
@@ -246,110 +372,136 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
       </header>
 
       <main className="job-main assignment-main">
-        <section className="assignment-heading">
-          <div>
-            <p className="eyebrow">달력과 연결된 첫 배정</p>
-            <h1>{data.period.label} 첫 직업을 정해요</h1>
-            <p>
-              서버 표준시를 서울 시간으로 확인해 현재 월을 자동 선택했어요.
-              배정된 학생은 다음 선택과 추첨 풀에서 자동으로 빠집니다.
-            </p>
-          </div>
-          <div className="assignment-calendar">
-            <label htmlFor="assignment-month"><CalendarDays aria-hidden="true" />배정 월</label>
-            <input
-              id="assignment-month"
-              type="month"
-              min="2020-01"
-              max="2100-12"
-              value={monthValue}
-              disabled={busy}
-              onChange={(event) => {
-                const next = event.target.value;
-                setMonthValue(next);
-                setDrawnStudent(null);
-                load(next);
-              }}
-            />
-            <small>
-              <Check aria-hidden="true" />
-              서버 확인: {data.period.serverTime.label} · {data.period.serverTime.timeZone}
-            </small>
-          </div>
-        </section>
-
+        <SetupProgress data={data} />
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
 
         {!data.setupReady ? (
           <section className="assignment-blocked panel">
             <span className="mode-icon" aria-hidden="true"><BriefcaseBusiness /></span>
-            <p className="eyebrow">먼저 할 일</p>
-            <h2>우리 반 직업을 확정해 주세요</h2>
-            <p>
-              {data.setupStatus === "draft"
-                ? "저장한 직업 초안을 학생 수에 맞춰 확정하면 바로 첫 배정을 시작할 수 있어요."
-                : "배정할 직업이 아직 없어요. 추천받거나 직접 만든 뒤 최종 확정해 주세요."}
-            </p>
-            <a className="button button-primary" href={`/teacher/classes/${classId}/jobs`}>
-              직업 설정으로 이동
-            </a>
+            <p className="eyebrow">2단계 · 직업 만들기</p>
+            <h2>우리 반 직업을 먼저 확정해 주세요</h2>
+            <p>학생 수와 직업 자리 수를 정확히 맞춘 뒤 달력과 첫 배정을 시작할 수 있어요.</p>
+            <a className="button button-primary" href={`/teacher/classes/${classId}/jobs`}>직업 설정으로 이동</a>
+          </section>
+        ) : showCalendar || !data.calendar.saved ? (
+          <CalendarSetup
+            classId={classId}
+            initial={data.calendar}
+            onCancel={data.calendar.saved ? () => setShowCalendar(false) : undefined}
+            onSaved={() => {
+              setShowCalendar(false);
+              setMessage("달력을 저장했어요. 이제 첫 직업 배정 방식을 선택해 주세요.");
+              load();
+            }}
+          />
+        ) : data.preflight.errors.length ? (
+          <section className="assignment-blocked panel preflight-blocked">
+            <CircleAlert aria-hidden="true" />
+            <p className="eyebrow">배정 전 확인</p>
+            <h2>학생 수와 직업 자리 수를 맞춰 주세요</h2>
+            {data.preflight.errors.map((item) => <p key={item.code}>{item.message}</p>)}
+            <div className="button-row">
+              <a className="button button-primary" href={`/teacher/classes/${classId}/jobs`}>직업 설정으로 돌아가기</a>
+              <button className="button button-light" onClick={() => setShowCalendar(true)}>달력 다시 보기</button>
+            </div>
+          </section>
+        ) : !data.mode && data.status !== "confirmed" ? (
+          <section className="assignment-mode-choice">
+            <div>
+              <p className="eyebrow">4단계 · 첫 직업 배정</p>
+              <h1>첫 직업을 어떻게 배정할까요?</h1>
+              <p>나중에 방식을 바꿔도 이미 저장된 배정 결과는 그대로 유지됩니다.</p>
+            </div>
+            <div className="assignment-mode-cards">
+              <button disabled={busy} onClick={() => chooseMode("random")}>
+                <span><Dices aria-hidden="true" /></span>
+                <h2>희망자 중에서 랜덤으로 뽑기</h2>
+                <p>손들기 등으로 희망자를 조사한 뒤, 화면에서 체크하고 한 명씩 추첨합니다.</p>
+                <b>희망자 추첨 시작 →</b>
+              </button>
+              <button disabled={busy} onClick={() => chooseMode("manual")}>
+                <span><UserCheck aria-hidden="true" /></span>
+                <h2>선생님이 직접 배정하기</h2>
+                <p>직업마다 맡을 학생을 직접 선택하고 정원 안에서 한 번에 저장합니다.</p>
+                <b>직접 배정 시작 →</b>
+              </button>
+            </div>
+            <div className="calendar-summary-strip">
+              <CalendarDays aria-hidden="true" />
+              <span><b>{data.calendar.firstJobStartDate} ~ {data.calendar.firstJobEndDate}</b> · 대한민국 표준시</span>
+              <button onClick={() => setShowCalendar(true)}>달력 수정</button>
+            </div>
+          </section>
+        ) : data.status === "confirmed" ? (
+          <section className="assignment-confirmed">
+            <div className="assignment-complete-hero panel">
+              <span><Check aria-hidden="true" /></span>
+              <p className="eyebrow">5단계 · 설정 완료</p>
+              <h1>첫 직업 배정을 확정했어요</h1>
+              <p>{data.summary.totalStudents}명 모두에게 직업이 공개됐습니다. 이후 변경은 운영 화면의 정식 절차에서 진행해 주세요.</p>
+              <a className="button button-primary button-large" href="/teacher">교사 운영 화면으로</a>
+            </div>
+            <AssignmentReview assignments={studentOrder} jobs={data.jobs} />
           </section>
         ) : (
           <>
-            <section className="assignment-status" aria-label="배정 현황">
-              <div><UsersRound aria-hidden="true" /><span>전체 학생<strong>{totalStudents}명</strong></span></div>
-              <div><UserCheck aria-hidden="true" /><span>배정 완료<strong>{assignedCount}명</strong></span></div>
-              <div><RefreshCw aria-hidden="true" /><span>배정 대기<strong>{data.availableStudents.length}명</strong></span></div>
-              <div className={assignedCount === totalStudents && totalStudents > 0 ? "complete" : ""}>
-                <Check aria-hidden="true" /><span>진행률<strong>{totalStudents ? Math.round(assignedCount / totalStudents * 100) : 0}%</strong></span>
+            <section className="assignment-heading">
+              <div>
+                <p className="eyebrow">4단계 · 첫 직업 배정</p>
+                <h1>{data.mode === "random" ? "희망자 중 한 명씩 뽑아요" : "학생을 직접 배정해요"}</h1>
+                <p>모든 변경은 서버에서 학생 중복과 정원을 다시 검사한 뒤 저장됩니다.</p>
+              </div>
+              <div className="assignment-calendar">
+                <label><CalendarDays aria-hidden="true" />첫 직업 운영 기간</label>
+                <strong>{data.calendar.firstJobStartDate} ~ {data.calendar.firstJobEndDate}</strong>
+                <small><Check aria-hidden="true" />서버 확인: {data.calendar.serverTime.fullLabel}</small>
+                <button onClick={() => {
+                  if (data.assignments.length && !confirm("달력을 수정해도 이미 저장된 임시 배정은 유지됩니다. 달력 화면으로 이동할까요?")) return;
+                  setShowCalendar(true);
+                }}>달력 수정</button>
               </div>
             </section>
 
+            <section className="assignment-status" aria-label="배정 현황">
+              <div><UsersRound aria-hidden="true" /><span>전체 학생<strong>{data.summary.totalStudents}명</strong></span></div>
+              <div><UserCheck aria-hidden="true" /><span>배정 완료<strong>{data.summary.assignedCount}명</strong></span></div>
+              <div><RefreshCw aria-hidden="true" /><span>선택 가능<strong>{data.summary.availableCount}명</strong></span></div>
+              <div className={data.summary.remainingSeats === 0 ? "complete" : ""}>
+                <BriefcaseBusiness aria-hidden="true" /><span>남은 자리<strong>{data.summary.remainingSeats}개</strong></span>
+              </div>
+            </section>
+
+            <div className="assignment-toolbar">
+              <span>현재 방식: <b>{data.mode === "random" ? "희망자 추첨" : "직접 배정"}</b></span>
+              <div>
+                {lastRandom && <button disabled={busy} onClick={() => removeAssignment(lastRandom)}><RotateCcw />마지막 추첨 취소</button>}
+                <button disabled={busy} onClick={() => chooseMode(data.mode === "random" ? "manual" : "random")}>배정 방식 변경</button>
+                <button disabled={busy} onClick={load}><RefreshCw />최신 배정표</button>
+              </div>
+            </div>
+
             <section className="assignment-layout">
               <div className="assignment-workspace panel">
-                <div className="assignment-mode-tabs" role="tablist" aria-label="배정 방법">
-                  <button
-                    role="tab"
-                    aria-selected={mode === "random"}
-                    className={mode === "random" ? "active" : ""}
-                    onClick={() => {
-                      setMode("random");
-                      setSelectedStudentId("");
-                      setMessage("");
-                    }}
-                  >
-                    <Dices aria-hidden="true" />랜덤으로 뽑기
-                  </button>
-                  <button
-                    role="tab"
-                    aria-selected={mode === "manual"}
-                    className={mode === "manual" ? "active" : ""}
-                    onClick={() => {
-                      setMode("manual");
-                      setCandidateIds([]);
-                      setMessage("");
-                    }}
-                  >
-                    <UserCheck aria-hidden="true" />선생님이 선택
-                  </button>
-                </div>
-
                 <div className="assignment-step">
                   <span>1</span>
-                  <div><h2>직업 선택</h2><p>남은 자리가 있는 직업을 골라 주세요.</p></div>
+                  <div><h2>직업 선택</h2><p>상태와 남은 자리를 확인해 직업을 골라 주세요.</p></div>
                 </div>
                 <div className="assignment-job-grid">
                   {data.jobs.map((job) => (
                     <button
                       key={job.id}
-                      className={selectedJobId === job.id ? "selected" : ""}
+                      className={[
+                        selectedJobId === job.id ? "selected" : "",
+                        job.remainingCapacity === 0 ? "filled" : job.assignedCount ? "partial" : "empty",
+                      ].filter(Boolean).join(" ")}
                       disabled={job.remainingCapacity === 0 || busy}
                       onClick={() => {
+                        selectedJobRef.current = job.id;
                         setSelectedJobId(job.id);
-                        setCandidateIds([]);
-                        setSelectedStudentId("");
-                        setDrawnStudent(null);
+                        setCandidateIds(data.mode === "random" ? data.candidateStudentIdsByJob[job.id] ?? [] : []);
+                        setManualStudentIds([]);
+                        setError("");
                       }}
                     >
                       <span><BriefcaseBusiness aria-hidden="true" /></span>
@@ -363,34 +515,39 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 <div className="assignment-step">
                   <span>2</span>
                   <div>
-                    <h2>{mode === "random" ? "희망자 체크" : "학생 선택"}</h2>
-                    <p>
-                      {mode === "random"
-                        ? "이 직업을 희망한 학생만 체크하면 그 안에서 한 명을 뽑아요."
-                        : "직업에 배정할 학생 한 명을 직접 선택해요."}
-                    </p>
+                    <h2>{data.mode === "random" ? "희망자 체크" : "학생 선택"}</h2>
+                    <p>{data.mode === "random"
+                      ? "아직 미배정인 희망 학생을 체크해 한 명씩 추첨합니다."
+                      : `남은 정원 안에서 여러 학생을 선택해 한 번에 저장할 수 있어요.`}</p>
                   </div>
                 </div>
+
+                {data.mode === "random" && data.availableStudents.length > 0 && (
+                  <div className="candidate-tools">
+                    <span>선택 {candidateIds.length}명 {candidateSaving && "· 저장 중…"}</span>
+                    <button disabled={busy} onClick={() => setCandidates(data.availableStudents.map((student) => student.id))}>모두 선택</button>
+                    <button disabled={busy} onClick={() => setCandidates([])}>모두 해제</button>
+                  </div>
+                )}
 
                 {data.availableStudents.length ? (
                   <div className="assignment-student-grid">
                     {data.availableStudents.map((student) => {
-                      const checked = mode === "random"
+                      const checked = data.mode === "random"
                         ? candidateIds.includes(student.id)
-                        : selectedStudentId === student.id;
+                        : manualStudentIds.includes(student.id);
                       return (
                         <label key={student.id} className={checked ? "selected" : ""}>
                           <input
-                            type={mode === "random" ? "checkbox" : "radio"}
-                            name={mode === "manual" ? "assignment-student" : undefined}
+                            type="checkbox"
                             checked={checked}
                             disabled={busy || !selectedJob}
-                            onChange={() => mode === "random"
+                            onChange={() => data.mode === "random"
                               ? toggleCandidate(student.id)
-                              : setSelectedStudentId(student.id)}
+                              : toggleManualStudent(student.id)}
                           />
                           <span>{student.student_number}</span>
-                          <b>{student.official_name}</b>
+                          <b title={student.official_name}>{student.official_name}</b>
                           <Check aria-hidden="true" />
                         </label>
                       );
@@ -399,41 +556,32 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 ) : (
                   <div className="assignment-empty">
                     <Check aria-hidden="true" />
-                    <h3>{totalStudents ? "모든 학생의 첫 직업을 배정했어요" : "등록된 학생이 없어요"}</h3>
-                    <p>{totalStudents ? "아래 배정표에서 결과를 확인할 수 있어요." : "학생 명단을 먼저 등록해 주세요."}</p>
-                  </div>
-                )}
-
-                {drawnStudent && (
-                  <div className="draw-result" role="status">
-                    <Dices aria-hidden="true" />
-                    <span><small>{drawnStudent.job} 당첨</small><strong>{drawnStudent.number}번 {drawnStudent.name}</strong></span>
+                    <h3>모든 학생의 첫 직업을 배정했어요</h3>
+                    <p>배정표를 검토한 뒤 최종 확정해 주세요.</p>
                   </div>
                 )}
 
                 <div className="assignment-action">
-                  <span>
-                    {selectedJob
-                      ? `${selectedJob.name} · ${selectedJob.remainingCapacity}자리 남음`
-                      : "남은 자리가 있는 직업을 선택해 주세요"}
-                  </span>
-                  {mode === "random" ? (
+                  <span>{selectedJob
+                    ? `${selectedJob.name} · ${selectedJob.remainingCapacity}자리 남음`
+                    : "남은 자리가 있는 직업을 선택해 주세요"}</span>
+                  {data.mode === "random" ? (
                     <button
                       className="button button-primary button-large"
-                      disabled={busy || !selectedJob || candidateIds.length === 0}
+                      disabled={busy || candidateSaving || !selectedJob || candidateIds.length === 0 || selectedJob.remainingCapacity === 0}
                       onClick={drawRandom}
                     >
                       <Dices aria-hidden="true" />
-                      {busy ? "뽑는 중…" : `희망자 ${candidateIds.length}명 중 1명 뽑기`}
+                      {busy ? "서버에서 뽑는 중…" : candidateIds.length ? `추첨 시작 · 희망자 ${candidateIds.length}명` : "희망자를 선택해 주세요"}
                     </button>
                   ) : (
                     <button
                       className="button button-primary button-large"
-                      disabled={busy || !selectedJob || !selectedStudentId}
+                      disabled={busy || !selectedJob || manualStudentIds.length === 0 || manualStudentIds.length > selectedJob.remainingCapacity}
                       onClick={assignManual}
                     >
                       <UserCheck aria-hidden="true" />
-                      {busy ? "저장 중…" : "선택한 학생 배정·저장"}
+                      {busy ? "저장 중…" : `이 직업 배정 저장 · ${manualStudentIds.length}명`}
                     </button>
                   )}
                 </div>
@@ -441,9 +589,9 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
 
               <aside className="assignment-roster panel">
                 <div>
-                  <p className="eyebrow">{data.period.label}</p>
-                  <h2>현재 첫 배정표</h2>
-                  <p>학생을 취소하면 즉시 배정 풀로 돌아옵니다.</p>
+                  <p className="eyebrow">현재 임시 배정표</p>
+                  <h2>직업별 배정</h2>
+                  <p>확정 전에는 취소하거나 방식을 바꿀 수 있어요.</p>
                 </div>
                 {data.jobs.map((job) => (
                   <section key={job.id}>
@@ -455,7 +603,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                       <ul>
                         {job.assignedStudents.map((student) => (
                           <li key={student.assignmentId}>
-                            <span><b>{student.studentNumber}번</b> {student.name}<small>{student.method === "random" ? "랜덤" : "선택"}</small></span>
+                            <span><b>{student.studentNumber}번</b> {student.name}<small>{student.method === "random" ? "추첨" : "직접"}</small></span>
                             <button
                               aria-label={`${student.name} 학생 배정 취소`}
                               disabled={busy}
@@ -472,9 +620,67 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 ))}
               </aside>
             </section>
+
+            {data.summary.assignedCount > 0 && (
+              <section className="assignment-final-review panel">
+                <div>
+                  <p className="eyebrow">최종 확인</p>
+                  <h2>학생 번호순 배정표</h2>
+                  <p>전체 학생과 남은 자리가 모두 0이 되어야 확정할 수 있어요.</p>
+                </div>
+                <div className="student-assignment-list">
+                  {studentOrder.map((assignment) => (
+                    <span key={assignment.id}><b>{assignment.student_number}번 {assignment.student_name}</b><small>{assignment.job_name}</small></span>
+                  ))}
+                </div>
+                <button
+                  className="button button-primary button-large"
+                  disabled={busy || !data.summary.canComplete}
+                  onClick={completeAssignments}
+                >
+                  <Check aria-hidden="true" />
+                  {data.summary.canComplete
+                    ? `첫 직업 배정 확정 · ${data.summary.totalStudents}명`
+                    : `미배정 ${data.summary.availableCount}명 · 남은 자리 ${data.summary.remainingSeats}개`}
+                </button>
+              </section>
+            )}
           </>
         )}
       </main>
+      {winner && (
+        <WinnerCelebration
+          winner={winner}
+          candidateNames={winnerCandidates}
+          onClose={() => setWinner(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function AssignmentReview({ assignments, jobs }: { assignments: Assignment[]; jobs: Job[] }) {
+  return (
+    <div className="assignment-review-grid">
+      <section className="panel">
+        <p className="eyebrow">학생 번호순</p>
+        <h2>학생별 배정표</h2>
+        <div className="student-assignment-list">
+          {assignments.map((assignment) => (
+            <span key={assignment.id}><b>{assignment.student_number}번 {assignment.student_name}</b><small>{assignment.job_name}</small></span>
+          ))}
+        </div>
+      </section>
+      <section className="panel">
+        <p className="eyebrow">직업별</p>
+        <h2>직업별 배정표</h2>
+        {jobs.map((job) => (
+          <div className="confirmed-job-row" key={job.id}>
+            <b>{job.name}</b>
+            <span>{job.assignedStudents.map((student) => `${student.studentNumber}번 ${student.name}`).join(", ")}</span>
+          </div>
+        ))}
+      </section>
     </div>
   );
 }

@@ -295,8 +295,30 @@ export async function completeJobSetup(input: {
   surveyAnswers?: Partial<SurveyAnswers> | null;
   jobs: unknown;
   studentCount: number;
+  acknowledgeAssignmentImpact?: boolean;
 }) {
   await ensureSetupRow(input.classId);
+  const assignmentState = await database().prepare(
+    `SELECT p.id, p.status, COUNT(a.id) AS assignment_count
+     FROM class_job_assignment_periods p
+     LEFT JOIN student_job_assignments a ON a.period_id = p.id
+     WHERE p.class_id = ? AND p.assignment_type = 'initial'
+     GROUP BY p.id ORDER BY p.updated_at DESC LIMIT 1`,
+  ).bind(input.classId).first<{ id: string; status: string; assignment_count: number }>();
+  if (assignmentState?.status === "confirmed") {
+    throw new ApiError(
+      409,
+      "첫 직업 배정이 이미 확정되어 초기 설정에서 직업과 정원을 바꿀 수 없어요.",
+      "ASSIGNMENT_CONFIRMED",
+    );
+  }
+  if (Number(assignmentState?.assignment_count ?? 0) > 0 && !input.acknowledgeAssignmentImpact) {
+    throw new ApiError(
+      409,
+      "진행 중인 첫 직업 배정이 있어요. 직업을 다시 확정하면 임시 배정을 초기화합니다.",
+      "ASSIGNMENT_IMPACT_CONFIRM_REQUIRED",
+    );
+  }
   if (input.studentCount < 1) {
     throw new ApiError(400, "학생을 한 명 이상 등록한 뒤 직업을 확정해 주세요.", "NO_STUDENTS");
   }
@@ -342,6 +364,17 @@ export async function completeJobSetup(input: {
 
   const db = database();
   await db.batch([
+    ...(assignmentState?.id && Number(assignmentState.assignment_count) > 0
+      ? [
+        db.prepare(`DELETE FROM job_assignment_candidates WHERE period_id = ?`).bind(assignmentState.id),
+        db.prepare(`DELETE FROM student_job_assignments WHERE period_id = ?`).bind(assignmentState.id),
+        db.prepare(
+          `UPDATE class_job_assignment_periods
+           SET mode = NULL, revision = revision + 1, updated_at = ?
+           WHERE id = ? AND status = 'draft'`,
+        ).bind(now, assignmentState.id),
+      ]
+      : []),
     db.prepare(`UPDATE class_jobs SET is_active = 0, updated_at = ? WHERE class_id = ?`).bind(now, input.classId),
     ...jobs.map((job, index) => db.prepare(
       `INSERT INTO class_jobs (

@@ -342,6 +342,8 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .setup-progress .done, .setup-progress .current { color: var(--color-success); }
 .setup-progress .done b { color: var(--color-primary-text); background: var(--color-success); }
 .setup-progress .current b { color: var(--color-warning); background: var(--color-warning-soft); }
+.setup-progress-five { overflow-x: auto; }
+.setup-progress-five > div { min-width: 110px; }
 .panel, .onboarding-card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card); }
 .onboarding-card { width: min(100%, 780px); margin: 40px auto; padding: clamp(28px, 5vw, 52px); }
 .onboarding-card h1 { margin-bottom: 8px; font-size: 2.3rem; letter-spacing: -.045em; }
@@ -738,6 +740,129 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 .assignment-roster li button { display: flex; align-items: center; gap: 4px; min-height: 32px; padding: 5px 7px; border: 0; border-radius: var(--radius-sm); color: var(--color-danger); background: var(--color-danger-soft); font-size: .68rem; }
 .assignment-roster li button svg { width: 13px; }
 .unassigned-job { margin: 9px 0 0 41px; color: var(--color-text-subtle); font-size: var(--text-xs); }
+.assignment-setup-progress { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-bottom: 22px; }
+.assignment-setup-progress > div { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 11px 13px; border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-muted); background: var(--color-surface); }
+.assignment-setup-progress span { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%; background: var(--color-surface-subtle); font-size: var(--text-xs); font-weight: 800; }
+.assignment-setup-progress svg { width: 15px; }
+.assignment-setup-progress b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-xs); }
+.assignment-setup-progress .done { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 38%, var(--color-border)); background: var(--color-success-soft); }
+.assignment-setup-progress .done span { color: white; background: var(--color-success); }
+.assignment-setup-progress .current { color: var(--color-primary); border-color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary); background: var(--color-primary-soft); }
+.assignment-setup-progress .current span { color: var(--color-primary-text); background: var(--color-primary); }
+.preflight-blocked > svg { width: 48px; color: var(--color-danger); }
+.assignment-mode-choice > div:first-child { max-width: 720px; margin: 34px auto 24px; text-align: center; }
+.assignment-mode-choice h1 { margin-bottom: 8px; font-size: clamp(2rem, 4.2vw, 3rem); }
+.assignment-mode-choice > div:first-child > p:last-child { color: var(--color-text-muted); }
+.assignment-mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 1040px; margin: 0 auto; }
+.assignment-mode-cards > button { min-height: 320px; padding: 32px; border: 1px solid var(--color-border); border-radius: var(--radius-xl); color: var(--color-text); background: var(--color-surface-raised); box-shadow: var(--shadow-card); text-align: left; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.assignment-mode-cards > button:hover { transform: translateY(-3px); border-color: var(--color-primary); box-shadow: var(--shadow-float); }
+.assignment-mode-cards > button > span { display: grid; place-items: center; width: 70px; height: 70px; margin-bottom: 26px; border-radius: 22px; color: var(--color-primary); background: var(--color-primary-soft); }
+.assignment-mode-cards svg { width: 34px; height: 34px; }
+.assignment-mode-cards h2 { font-size: clamp(1.35rem, 2.4vw, 1.85rem); }
+.assignment-mode-cards p { min-height: 58px; color: var(--color-text-muted); line-height: 1.7; }
+.assignment-mode-cards b { color: var(--color-primary); }
+.calendar-summary-strip { display: flex; align-items: center; justify-content: center; gap: 10px; max-width: 1040px; margin: 18px auto 0; padding: 14px; color: var(--color-text-muted); }
+.calendar-summary-strip > svg { width: 20px; color: var(--color-primary); }
+.calendar-summary-strip button, .assignment-calendar button { min-height: 34px; padding: 5px 9px; border: 0; border-radius: var(--radius-sm); color: var(--color-primary); background: var(--color-primary-soft); font-size: var(--text-xs); font-weight: 700; }
+.assignment-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.assignment-toolbar > span { color: var(--color-text-muted); font-size: var(--text-sm); }
+.assignment-toolbar > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.assignment-toolbar button { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; padding: 7px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); background: var(--color-surface-raised); font-size: var(--text-xs); font-weight: 700; }
+.assignment-toolbar svg { width: 15px; }
+.candidate-tools { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin: -3px 0 10px; }
+.candidate-tools span { margin-right: auto; color: var(--color-text-muted); font-size: var(--text-xs); }
+.candidate-tools button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-primary); background: var(--color-surface-raised); font-size: var(--text-xs); font-weight: 700; }
+.assignment-job-grid button.partial { border-color: color-mix(in srgb, var(--color-info) 42%, var(--color-border)); }
+.assignment-job-grid button.filled { color: var(--color-success); background: var(--color-success-soft); }
+.assignment-final-review { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; align-items: end; margin-top: 18px; padding: 24px; }
+.assignment-final-review > div:first-child { grid-column: 1 / -1; }
+.assignment-final-review h2 { margin-bottom: 4px; }
+.assignment-final-review p:last-child { margin: 0; color: var(--color-text-muted); }
+.student-assignment-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+.student-assignment-list > span { display: grid; min-width: 0; gap: 2px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--color-surface-subtle); }
+.student-assignment-list b, .student-assignment-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.student-assignment-list b { font-size: var(--text-sm); }
+.student-assignment-list small { color: var(--color-info); }
+.assignment-complete-hero { max-width: 780px; margin: 34px auto 22px; padding: 48px; text-align: center; }
+.assignment-complete-hero > span { display: grid; place-items: center; width: 72px; height: 72px; margin: 0 auto 20px; border-radius: 50%; color: white; background: var(--color-success); box-shadow: 0 0 0 12px var(--color-success-soft); }
+.assignment-complete-hero > span svg { width: 36px; }
+.assignment-complete-hero h1 { font-size: clamp(2rem, 5vw, 3.1rem); }
+.assignment-complete-hero > p:not(.eyebrow) { color: var(--color-text-muted); }
+.assignment-review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.assignment-review-grid > section { padding: 24px; }
+.assignment-review-grid .student-assignment-list { grid-template-columns: 1fr 1fr; }
+.confirmed-job-row { display: grid; grid-template-columns: 140px 1fr; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--color-border); }
+.confirmed-job-row span { color: var(--color-text-muted); }
+
+.calendar-setup { padding: 30px; }
+.calendar-setup-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 22px; align-items: center; margin-bottom: 24px; }
+.calendar-setup-heading h1 { margin-bottom: 6px; font-size: clamp(1.85rem, 4vw, 2.65rem); }
+.calendar-setup-heading > div:first-child > p:last-child { margin: 0; color: var(--color-text-muted); }
+.server-date-card { display: grid; grid-template-columns: auto 1fr; min-width: 330px; gap: 2px 10px; padding: 16px; border: 1px solid var(--color-success); border-radius: var(--radius-lg); background: var(--color-success-soft); }
+.server-date-card > svg { grid-row: 1 / 4; width: 28px; color: var(--color-success); }
+.server-date-card span, .server-date-card small { color: var(--color-text-muted); font-size: var(--text-xs); }
+.server-date-card strong { font-size: var(--text-lg); }
+.calendar-settings-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+.calendar-settings-grid label, .calendar-day-editor label { display: grid; gap: 6px; }
+.calendar-settings-grid label > span, .calendar-day-editor label > span { color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 700; }
+.calendar-settings-grid input { font-weight: 700; }
+.calendar-editor { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 18px; }
+.calendar-month { overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); }
+.calendar-month > header { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; padding: 12px; border-bottom: 1px solid var(--color-border); }
+.calendar-month > header h2 { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; font-size: var(--text-lg); }
+.calendar-month > header h2 svg { width: 20px; color: var(--color-primary); }
+.calendar-month > header button { display: grid; place-items: center; min-height: 42px; border: 0; border-radius: var(--radius-sm); color: var(--color-text); background: var(--color-surface-subtle); }
+.calendar-weekdays, .calendar-days { display: grid; grid-template-columns: repeat(7, 1fr); }
+.calendar-weekdays { border-bottom: 1px solid var(--color-border); }
+.calendar-weekdays span { padding: 10px; color: var(--color-text-muted); text-align: center; font-size: var(--text-xs); font-weight: 700; }
+.calendar-weekdays span:first-child, .calendar-weekdays span:last-child { color: var(--color-danger); }
+.calendar-days > i, .calendar-days > button { min-height: 92px; border: 0; border-right: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); background: transparent; }
+.calendar-days > button { position: relative; display: grid; align-content: start; justify-items: start; gap: 4px; padding: 9px; color: var(--color-text); text-align: left; }
+.calendar-days > button:nth-child(7n) { border-right: 0; }
+.calendar-days > button b { font-size: var(--text-sm); }
+.calendar-days > button small { padding: 2px 6px; border-radius: 999px; color: var(--color-success); background: var(--color-success-soft); font-size: .63rem; }
+.calendar-days > button.off { background: var(--color-surface-subtle); }
+.calendar-days > button.off small { color: var(--color-danger); background: var(--color-danger-soft); }
+.calendar-days > button em { max-width: 100%; overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; font-size: .62rem; font-style: normal; }
+.calendar-days > button.today::after { content: "오늘"; position: absolute; top: 7px; right: 7px; color: var(--color-primary); font-size: .58rem; font-weight: 800; }
+.calendar-days > button.today { box-shadow: inset 0 0 0 2px var(--color-primary); }
+.calendar-days > button.selected { z-index: 1; box-shadow: inset 0 0 0 3px var(--color-focus); }
+.calendar-day-editor { padding: 22px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-subtle); }
+.calendar-day-editor h3 { font-size: var(--text-xl); }
+.calendar-day-editor > small { display: block; margin-top: 16px; color: var(--color-text-muted); line-height: 1.6; }
+.day-type-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 18px 0; }
+.day-type-toggle button { min-height: 46px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text-muted); background: var(--color-surface-raised); font-weight: 700; }
+.day-type-toggle button.active { color: var(--color-primary); border-color: var(--color-primary); background: var(--color-primary-soft); }
+.calendar-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+
+.winner-overlay { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; overflow: hidden; padding: 24px; color: white; background: radial-gradient(circle at center, #342060 0%, #111327 46%, #050710 100%); }
+.winner-rays { position: absolute; width: 120vmax; height: 120vmax; background: repeating-conic-gradient(from 0deg, transparent 0deg 10deg, rgba(255,214,95,.13) 10deg 14deg); animation: winner-rays 12s linear infinite; }
+.winner-tools { position: absolute; z-index: 3; top: max(18px, env(safe-area-inset-top)); right: 20px; display: flex; gap: 8px; }
+.winner-tools button { display: inline-flex; align-items: center; gap: 5px; min-height: 40px; padding: 7px 11px; border: 1px solid rgba(255,255,255,.25); border-radius: 999px; color: white; background: rgba(7,9,20,.65); font-size: var(--text-xs); }
+.winner-tools svg { width: 16px; }
+.winner-stage { position: relative; z-index: 2; display: grid; justify-items: center; width: min(100%, 900px); text-align: center; }
+.winner-stage > svg:not(.winner-crown) { width: 54px; color: #ffe280; animation: winner-pulse .6s ease-in-out infinite alternate; }
+.winner-stage p { margin: 18px 0 6px; color: #ffe799; font-size: clamp(1rem, 2.6vw, 1.55rem); font-weight: 800; }
+.winner-stage strong { max-width: 100%; overflow-wrap: anywhere; font-size: clamp(3.2rem, 11vw, 8.8rem); letter-spacing: -.07em; text-shadow: 0 0 30px rgba(255,217,88,.55); }
+.winner-stage > span { margin-top: 18px; color: rgba(255,255,255,.66); }
+.winner-stage h2 { margin: 6px 0 30px; color: #ffe16c; font-size: clamp(2rem, 6vw, 4.8rem); text-shadow: 0 0 24px rgba(255,209,53,.7); }
+.winner-crown { width: clamp(76px, 12vw, 140px); height: auto; color: #ffd84f; filter: drop-shadow(0 0 18px rgba(255,216,79,.8)); animation: winner-crown .8s cubic-bezier(.17,.89,.32,1.49); }
+.winner-confetti { --x: calc(var(--piece) * 3.33%); position: absolute; z-index: 1; top: -8%; left: var(--x); width: 10px; height: 22px; border-radius: 3px; background: hsl(calc(var(--piece) * 43deg) 90% 62%); animation: winner-confetti calc(2.4s + var(--piece) * .025s) linear infinite; animation-delay: calc(var(--piece) * -.11s); }
+.winner-overlay.shuffling .winner-confetti { opacity: .35; }
+.winner-overlay.revealed::after { content: ""; position: absolute; inset: 0; background: white; pointer-events: none; animation: winner-flash .72s ease-out forwards; }
+@keyframes winner-rays { to { transform: rotate(360deg); } }
+@keyframes winner-pulse { to { transform: scale(1.16); filter: drop-shadow(0 0 18px #ffe680); } }
+@keyframes winner-crown { from { transform: translateY(-80px) rotate(-16deg) scale(.2); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes winner-confetti { to { transform: translate3d(0, 115vh, 0) rotate(820deg); } }
+@keyframes winner-flash { from { opacity: .92; } to { opacity: 0; } }
+
+.student-job-card { display: grid; grid-template-columns: auto 1fr; gap: 16px; margin-top: 22px; padding: 22px; border: 1px solid var(--color-primary); border-radius: var(--radius-xl); background: var(--color-primary-soft); text-align: left; }
+.student-job-card > span { display: grid; place-items: center; width: 56px; height: 56px; border-radius: var(--radius-lg); color: var(--color-primary-text); background: var(--color-primary); }
+.student-job-card svg { width: 28px; }
+.student-job-card small { color: var(--color-primary); font-weight: 800; }
+.student-job-card h2 { margin: 3px 0; font-size: var(--text-xl); }
+.student-job-card p { margin: 0 0 8px; color: var(--color-text-muted); }
+.student-job-card b { font-size: var(--text-xs); }
 @keyframes draw-result-in {
   from { transform: scale(.97); opacity: 0; }
   to { transform: scale(1); opacity: 1; }
@@ -796,6 +921,12 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   .assignment-layout { grid-template-columns: 1fr; }
   .assignment-roster { position: static; }
   .assignment-student-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .assignment-setup-progress { grid-template-columns: repeat(5, minmax(130px, 1fr)); overflow-x: auto; padding-bottom: 4px; }
+  .calendar-setup-heading, .calendar-editor { grid-template-columns: 1fr; }
+  .server-date-card { min-width: 0; }
+  .calendar-settings-grid { grid-template-columns: 1fr 1fr; }
+  .assignment-review-grid { grid-template-columns: 1fr; }
+  .student-assignment-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 @media (max-width: 620px) {
@@ -883,6 +1014,23 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   .assignment-action { align-items: stretch; flex-direction: column; }
   .assignment-action .button { width: 100%; }
   .assignment-blocked { padding: 30px 18px; }
+  .assignment-mode-cards { grid-template-columns: 1fr; }
+  .assignment-mode-cards > button { min-height: 250px; padding: 24px; }
+  .calendar-summary-strip, .assignment-toolbar, .calendar-actions { align-items: stretch; flex-direction: column; }
+  .assignment-toolbar > div { display: grid; grid-template-columns: 1fr 1fr; }
+  .calendar-setup { padding: 20px 14px; }
+  .calendar-settings-grid { grid-template-columns: 1fr; }
+  .calendar-days > i, .calendar-days > button { min-height: 70px; }
+  .calendar-days > button { padding: 6px; }
+  .calendar-days > button em { display: none; }
+  .calendar-days > button.today::after { display: none; }
+  .student-assignment-list, .assignment-review-grid .student-assignment-list { grid-template-columns: 1fr 1fr; }
+  .assignment-final-review { grid-template-columns: 1fr; padding: 18px; }
+  .assignment-final-review .button { width: 100%; }
+  .candidate-tools { flex-wrap: wrap; }
+  .winner-tools { left: 12px; right: 12px; justify-content: space-between; }
+  .winner-stage strong { font-size: clamp(3rem, 17vw, 6rem); }
+  .confirmed-job-row { grid-template-columns: 1fr; gap: 3px; }
   .editor-footer span { order: -1; width: 100%; text-align: center; }
   .stage-actions { flex-wrap: wrap; }
   .stage-actions .text-button { order: 3; width: 100%; }

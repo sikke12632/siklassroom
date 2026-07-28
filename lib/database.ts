@@ -26,6 +26,7 @@ const schemaStatements = [
     school_normalized TEXT NOT NULL, school_id TEXT, manual_school_request_id TEXT,
     school_year INTEGER NOT NULL, grade INTEGER NOT NULL,
     class_number INTEGER NOT NULL, display_name TEXT, status TEXT NOT NULL DEFAULT 'active',
+    time_zone TEXT NOT NULL DEFAULT 'Asia/Seoul', setup_stage TEXT NOT NULL DEFAULT 'roster',
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     FOREIGN KEY (teacher_id) REFERENCES teachers(id)
   )`,
@@ -97,12 +98,35 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS class_jobs_class_idx ON class_jobs(class_id)`,
   `CREATE INDEX IF NOT EXISTS class_jobs_template_idx ON class_jobs(template_id)`,
+  `CREATE TABLE IF NOT EXISTS class_calendars (
+    class_id TEXT PRIMARY KEY, school_year INTEGER NOT NULL,
+    time_zone TEXT NOT NULL DEFAULT 'Asia/Seoul',
+    class_start_date TEXT NOT NULL, first_job_start_date TEXT NOT NULL,
+    first_job_end_date TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+    saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS class_calendar_days (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, calendar_date TEXT NOT NULL,
+    day_type TEXT NOT NULL DEFAULT 'class', memo TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_calendar_days_class_date_uq
+    ON class_calendar_days(class_id, calendar_date)`,
+  `CREATE INDEX IF NOT EXISTS class_calendar_days_class_idx
+    ON class_calendar_days(class_id)`,
   `CREATE TABLE IF NOT EXISTS class_job_assignment_periods (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
     assignment_year INTEGER NOT NULL, assignment_month INTEGER NOT NULL,
     assignment_type TEXT NOT NULL DEFAULT 'initial',
+    mode TEXT, status TEXT NOT NULL DEFAULT 'draft',
+    calendar_revision INTEGER, first_job_start_date TEXT, first_job_end_date TEXT,
+    confirmed_at INTEGER, confirmed_by_teacher_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-    FOREIGN KEY (class_id) REFERENCES classes(id)
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (confirmed_by_teacher_id) REFERENCES teachers(id)
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS class_job_assignment_periods_period_uq
     ON class_job_assignment_periods(class_id, assignment_year, assignment_month, assignment_type)`,
@@ -111,7 +135,9 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS student_job_assignments (
     id TEXT PRIMARY KEY, period_id TEXT NOT NULL, class_id TEXT NOT NULL,
     class_job_id TEXT NOT NULL, student_id TEXT NOT NULL,
-    assignment_method TEXT NOT NULL, assigned_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    assignment_method TEXT NOT NULL, request_id TEXT,
+    assignment_sequence INTEGER NOT NULL DEFAULT 0,
+    assigned_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
     FOREIGN KEY (period_id) REFERENCES class_job_assignment_periods(id),
     FOREIGN KEY (class_id) REFERENCES classes(id),
     FOREIGN KEY (class_job_id) REFERENCES class_jobs(id),
@@ -119,10 +145,23 @@ const schemaStatements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS student_job_assignments_period_student_uq
     ON student_job_assignments(period_id, student_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS student_job_assignments_period_request_uq
+    ON student_job_assignments(period_id, request_id)`,
   `CREATE INDEX IF NOT EXISTS student_job_assignments_period_job_idx
     ON student_job_assignments(period_id, class_job_id)`,
   `CREATE INDEX IF NOT EXISTS student_job_assignments_class_idx
     ON student_job_assignments(class_id)`,
+  `CREATE TABLE IF NOT EXISTS job_assignment_candidates (
+    id TEXT PRIMARY KEY, period_id TEXT NOT NULL, class_job_id TEXT NOT NULL,
+    student_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (class_job_id) REFERENCES class_jobs(id),
+    FOREIGN KEY (student_id) REFERENCES students(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS job_assignment_candidates_period_job_student_uq
+    ON job_assignment_candidates(period_id, class_job_id, student_id)`,
+  `CREATE INDEX IF NOT EXISTS job_assignment_candidates_period_idx
+    ON job_assignment_candidates(period_id)`,
   `CREATE TABLE IF NOT EXISTS schools (
     id TEXT PRIMARY KEY, office_code TEXT NOT NULL, school_code TEXT NOT NULL,
     official_name TEXT NOT NULL, normalized_name TEXT NOT NULL, search_name TEXT NOT NULL,
@@ -203,6 +242,14 @@ export async function ensureSchema(): Promise<void> {
         db.prepare(schemaStatements[0]),
         db.prepare(schemaStatements[1]),
       ]);
+      await db.batch(
+        schemaStatements
+          .filter((sql) => (
+            sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
+            || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
+          ))
+          .map((sql) => db.prepare(sql)),
+      );
       await ensureColumn(db, "teachers", "email_verified_at", "INTEGER");
       await ensureColumn(db, "teachers", "teacher_access_status", "TEXT NOT NULL DEFAULT 'pending'");
       await ensureColumn(db, "teachers", "teacher_access_verified_at", "INTEGER");
@@ -210,6 +257,18 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "teachers", "manual_school_request_id", "TEXT");
       await ensureColumn(db, "classes", "school_id", "TEXT");
       await ensureColumn(db, "classes", "manual_school_request_id", "TEXT");
+      await ensureColumn(db, "classes", "time_zone", "TEXT NOT NULL DEFAULT 'Asia/Seoul'");
+      await ensureColumn(db, "classes", "setup_stage", "TEXT NOT NULL DEFAULT 'roster'");
+      await ensureColumn(db, "class_job_assignment_periods", "mode", "TEXT");
+      await ensureColumn(db, "class_job_assignment_periods", "status", "TEXT NOT NULL DEFAULT 'draft'");
+      await ensureColumn(db, "class_job_assignment_periods", "calendar_revision", "INTEGER");
+      await ensureColumn(db, "class_job_assignment_periods", "first_job_start_date", "TEXT");
+      await ensureColumn(db, "class_job_assignment_periods", "first_job_end_date", "TEXT");
+      await ensureColumn(db, "class_job_assignment_periods", "confirmed_at", "INTEGER");
+      await ensureColumn(db, "class_job_assignment_periods", "confirmed_by_teacher_id", "TEXT");
+      await ensureColumn(db, "class_job_assignment_periods", "revision", "INTEGER NOT NULL DEFAULT 0");
+      await ensureColumn(db, "student_job_assignments", "request_id", "TEXT");
+      await ensureColumn(db, "student_job_assignments", "assignment_sequence", "INTEGER NOT NULL DEFAULT 0");
       const statements = schemaStatements.map((sql) => db.prepare(sql));
       await db.batch(statements);
       await bootstrapExistingTeachers(db);
@@ -222,7 +281,12 @@ export async function ensureSchema(): Promise<void> {
   await schemaReady;
 }
 
-async function ensureColumn(db: D1Database, table: "teachers" | "classes", column: string, definition: string) {
+async function ensureColumn(
+  db: D1Database,
+  table: "teachers" | "classes" | "class_job_assignment_periods" | "student_job_assignments",
+  column: string,
+  definition: string,
+) {
   const info = await db.prepare(`PRAGMA table_info(${table})`).all<{ name: string }>();
   if (info.results.some((item) => item.name === column)) return;
   await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();

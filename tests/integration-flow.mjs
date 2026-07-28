@@ -367,16 +367,34 @@ assert.equal(initialAssignmentBoard.data.period.serverTime.timeZone, "Asia/Seoul
 assert.equal(initialAssignmentBoard.data.period.monthValue, initialAssignmentBoard.data.period.serverTime.monthValue);
 assert.equal(initialAssignmentBoard.data.setupReady, true);
 assert.equal(initialAssignmentBoard.data.availableStudents.length, 26);
+assert.equal(initialAssignmentBoard.data.calendar.saved, false);
+const jobCalendar = await request(`/api/classes/${jobClassId}/calendar`, { cookie: teacherCookie });
+await request(`/api/classes/${jobClassId}/calendar`, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    schoolYear: year,
+    classStartDate: jobCalendar.data.calendar.classStartDate,
+    firstJobStartDate: jobCalendar.data.calendar.firstJobStartDate,
+    firstJobEndDate: jobCalendar.data.calendar.firstJobEndDate,
+    days: jobCalendar.data.calendar.days.map(({ date, dayType, memo }) => ({ date, dayType, memo })),
+  },
+});
+await request(`/api/classes/${jobClassId}/job-assignments/mode`, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: { mode: "random" },
+});
 const firstAssignmentJob = initialAssignmentBoard.data.jobs.find((job) => job.remainingCapacity > 0);
 assert.ok(firstAssignmentJob);
 const randomAssignment = await request(`/api/classes/${jobClassId}/job-assignments/random`, {
   cookie: teacherCookie,
   method: "POST",
   body: {
-    year: initialAssignmentBoard.data.period.year,
-    month: initialAssignmentBoard.data.period.month,
     classJobId: firstAssignmentJob.id,
     candidateStudentIds: jobRoster.data.students.slice(0, 3).map((studentRow) => studentRow.id),
+    requestId: crypto.randomUUID(),
   },
   expected: 201,
 });
@@ -384,7 +402,7 @@ assert.ok(jobRoster.data.students.slice(0, 3).some(
   (studentRow) => studentRow.id === randomAssignment.data.assignment.student.id,
 ));
 const afterRandom = await request(
-  `/api/classes/${jobClassId}/job-assignments?year=${initialAssignmentBoard.data.period.year}&month=${initialAssignmentBoard.data.period.month}`,
+  `/api/classes/${jobClassId}/job-assignments`,
   { cookie: teacherCookie },
 );
 assert.equal(afterRandom.data.availableStudents.length, 25);
@@ -397,22 +415,20 @@ const manualAssignment = await request(`/api/classes/${jobClassId}/job-assignmen
   cookie: teacherCookie,
   method: "POST",
   body: {
-    year: initialAssignmentBoard.data.period.year,
-    month: initialAssignmentBoard.data.period.month,
     classJobId: manualJob.id,
-    studentId: manualStudent.id,
+    studentIds: [manualStudent.id],
+    requestId: crypto.randomUUID(),
   },
   expected: 201,
 });
-assert.equal(manualAssignment.data.assignment.student.id, manualStudent.id);
+assert.equal(manualAssignment.data.assignment.students[0].id, manualStudent.id);
 await request(`/api/classes/${jobClassId}/job-assignments/manual`, {
   cookie: teacherCookie,
   method: "POST",
   body: {
-    year: initialAssignmentBoard.data.period.year,
-    month: initialAssignmentBoard.data.period.month,
     classJobId: manualJob.id,
-    studentId: manualStudent.id,
+    studentIds: [manualStudent.id],
+    requestId: crypto.randomUUID(),
   },
   expected: 409,
 });
@@ -425,7 +441,7 @@ await request(
   { cookie: teacherCookie, method: "DELETE" },
 );
 const afterRemoval = await request(
-  `/api/classes/${jobClassId}/job-assignments?year=${initialAssignmentBoard.data.period.year}&month=${initialAssignmentBoard.data.period.month}`,
+  `/api/classes/${jobClassId}/job-assignments`,
   { cookie: teacherCookie },
 );
 assert.equal(afterRemoval.data.availableStudents.length, 25);

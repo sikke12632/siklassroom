@@ -91,61 +91,148 @@ await request(`/api/classes/${classId}/job-setup/complete`, {
   },
 });
 
-const board = await request(`/api/classes/${classId}/job-assignments`);
-assert.equal(board.period.serverTime.timeZone, "Asia/Seoul");
-assert.equal(board.period.monthValue, board.period.serverTime.monthValue);
+let board = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(board.calendar.serverTime.timeZone, "Asia/Seoul");
+assert.equal(board.calendar.saved, false);
 assert.equal(board.availableStudents.length, 3);
 assert.equal(board.setupReady, true);
+assert.ok(board.preflight.errors.some((item) => item.code === "CALENDAR_REQUIRED"));
 
+const initialCalendar = await request(`/api/classes/${classId}/calendar`);
+assert.equal(initialCalendar.calendar.serverTime.timeZone, "Asia/Seoul");
+assert.equal(initialCalendar.calendar.days.length >= 28, true);
+assert.ok(initialCalendar.calendar.days.some((day) => day.isWeekend && day.dayType === "off"));
+const calendarSaved = await request(`/api/classes/${classId}/calendar`, {
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    schoolYear: year,
+    classStartDate: initialCalendar.calendar.classStartDate,
+    firstJobStartDate: initialCalendar.calendar.firstJobStartDate,
+    firstJobEndDate: initialCalendar.calendar.firstJobEndDate,
+    days: initialCalendar.calendar.days.map(({ date, dayType, memo }) => ({ date, dayType, memo })),
+  },
+});
+assert.equal(calendarSaved.calendar.saved, true);
+assert.equal(calendarSaved.calendar.revision, 1);
+
+board = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(board.preflight.ready, true);
+assert.equal(board.mode, null);
+await request(`/api/classes/${classId}/job-assignments/mode`, {
+  method: "PUT",
+  body: { mode: "random" },
+});
+await request(`/api/classes/${classId}/job-assignments/candidates`, {
+  method: "PUT",
+  body: {
+    classJobId: board.jobs[0].id,
+    studentIds: roster.students.slice(0, 2).map((student) => student.id),
+  },
+});
+const withCandidates = await request(`/api/classes/${classId}/job-assignments`);
+assert.deepEqual(
+  withCandidates.candidateStudentIdsByJob[board.jobs[0].id],
+  roster.students.slice(0, 2).map((student) => student.id),
+);
+
+const randomRequestId = crypto.randomUUID();
 const randomResult = await request(`/api/classes/${classId}/job-assignments/random`, {
   method: "POST",
   body: {
-    year: board.period.year,
-    month: board.period.month,
     classJobId: board.jobs[0].id,
     candidateStudentIds: roster.students.slice(0, 2).map((student) => student.id),
+    requestId: randomRequestId,
   },
   expected: 201,
 });
 assert.ok(roster.students.slice(0, 2).some(
   (student) => student.id === randomResult.assignment.student.id,
 ));
+const repeatedRandom = await request(`/api/classes/${classId}/job-assignments/random`, {
+  method: "POST",
+  body: {
+    classJobId: board.jobs[0].id,
+    candidateStudentIds: roster.students.slice(0, 2).map((student) => student.id),
+    requestId: randomRequestId,
+  },
+});
+assert.equal(repeatedRandom.assignment.student.id, randomResult.assignment.student.id);
 
-const afterRandom = await request(
-  `/api/classes/${classId}/job-assignments?year=${board.period.year}&month=${board.period.month}`,
-);
+const afterRandom = await request(`/api/classes/${classId}/job-assignments`);
 assert.equal(afterRandom.availableStudents.length, 2);
+assert.ok(!Object.values(afterRandom.candidateStudentIdsByJob).flat().includes(randomResult.assignment.student.id));
+await request(`/api/classes/${classId}/job-assignments/mode`, {
+  method: "PUT",
+  body: { mode: "manual" },
+});
+const modeChanged = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(modeChanged.mode, "manual");
+assert.equal(modeChanged.assignments.length, 1);
+
+await request(`/api/classes/${classId}/job-assignments/manual`, {
+  method: "POST",
+  body: {
+    classJobId: afterRandom.jobs[1].id,
+    studentIds: afterRandom.availableStudents.map((student) => student.id),
+    requestId: crypto.randomUUID(),
+  },
+  expected: 409,
+});
+const afterRejectedBatch = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(afterRejectedBatch.assignments.length, 1);
+
 const manualStudent = afterRandom.availableStudents[0];
 await request(`/api/classes/${classId}/job-assignments/manual`, {
   method: "POST",
   body: {
-    year: board.period.year,
-    month: board.period.month,
     classJobId: afterRandom.jobs[1].id,
-    studentId: manualStudent.id,
+    studentIds: [manualStudent.id],
+    requestId: crypto.randomUUID(),
   },
   expected: 201,
 });
+const lastStudent = afterRandom.availableStudents.find((student) => student.id !== manualStudent.id);
 await request(`/api/classes/${classId}/job-assignments/manual`, {
   method: "POST",
   body: {
-    year: board.period.year,
-    month: board.period.month,
     classJobId: afterRandom.jobs[2].id,
-    studentId: manualStudent.id,
+    studentIds: [lastStudent.id],
+    requestId: crypto.randomUUID(),
   },
-  expected: 409,
+  expected: 201,
 });
+const readyToComplete = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(readyToComplete.summary.availableCount, 0);
+assert.equal(readyToComplete.summary.remainingSeats, 0);
+assert.equal(readyToComplete.summary.canComplete, true);
+
+const teacherCookie = cookie;
+const activationToken = new URL(roster.students[0].activation_url).searchParams.get("token");
+await request("/api/registration/complete", {
+  method: "POST",
+  body: { token: activationToken, password: "2468" },
+});
+const studentCookie = cookie;
+const beforeConfirmation = await request("/api/student/me");
+assert.equal(beforeConfirmation.student.current_job, null);
+
+cookie = teacherCookie;
+await request(`/api/classes/${classId}/job-assignments/complete`, {
+  method: "POST",
+  body: {},
+});
+const confirmed = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(confirmed.status, "confirmed");
+assert.equal(confirmed.assignments.length, 3);
 await request(
   `/api/classes/${classId}/job-assignments/${randomResult.assignment.assignmentId}`,
-  { method: "DELETE" },
+  { method: "DELETE", expected: 409 },
 );
-const afterRemoval = await request(
-  `/api/classes/${classId}/job-assignments?year=${board.period.year}&month=${board.period.month}`,
-);
-assert.equal(afterRemoval.availableStudents.length, 2);
-assert.ok(afterRemoval.availableStudents.some(
-  (student) => student.id === randomResult.assignment.student.id,
-));
 
-console.log("첫 배정 통합 검증 완료: 학교 검색·서울 표준시·랜덤·직접 선택·중복 차단·취소");
+cookie = studentCookie;
+const afterConfirmation = await request("/api/student/me");
+assert.ok(afterConfirmation.student.current_job);
+assert.equal(typeof afterConfirmation.student.current_job.name, "string");
+
+console.log("달력·첫 배정 통합 검증 완료: 서울 표준시·주말·후보 복원·멱등 추첨·수동 원자 저장·방식 변경·최종 확정·학생 공개");

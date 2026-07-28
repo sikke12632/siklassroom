@@ -11,6 +11,8 @@ export type SeoulServerTime = {
   day: number;
   monthValue: string;
   label: string;
+  weekday: string;
+  fullLabel: string;
   timeZone: typeof SEOUL_TIME_ZONE;
 };
 
@@ -19,6 +21,11 @@ const dateFormatter = new Intl.DateTimeFormat("ko-KR", {
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
+});
+
+const weekdayFormatter = new Intl.DateTimeFormat("ko-KR", {
+  timeZone: SEOUL_TIME_ZONE,
+  weekday: "long",
 });
 
 export function seoulServerTime(epochMs = Date.now()): SeoulServerTime {
@@ -32,6 +39,7 @@ export function seoulServerTime(epochMs = Date.now()): SeoulServerTime {
   const month = Number(parts.month);
   const day = Number(parts.day);
   const monthValue = `${year}-${String(month).padStart(2, "0")}`;
+  const weekday = weekdayFormatter.format(new Date(epochMs));
   return {
     epochMs,
     iso: new Date(epochMs).toISOString(),
@@ -41,6 +49,8 @@ export function seoulServerTime(epochMs = Date.now()): SeoulServerTime {
     day,
     monthValue,
     label: `${year}년 ${month}월 ${day}일`,
+    weekday,
+    fullLabel: `${year}년 ${month}월 ${day}일 ${weekday}`,
     timeZone: SEOUL_TIME_ZONE,
   };
 }

@@ -32,6 +32,7 @@ type ClassRoom = {
   display_name: string | null; status: string; student_count?: number; active_count?: number; action_count?: number;
   job_student_count?: number; job_status?: "not_started" | "draft" | "completed";
   job_count?: number; job_capacity?: number; job_student_snapshot?: number; job_student_count_changed?: number;
+  calendar_saved?: number; assignment_status?: "not_started" | "draft" | "confirmed";
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
@@ -212,12 +213,16 @@ export function TeacherPortal() {
               <div><p className="eyebrow">{classRoom.school_year}학년도</p><h1>{classLabel}</h1><p>{classRoom.school_name} · {classRoom.grade}학년 {classRoom.class_number}반</p></div>
               <button className="button button-light" onClick={() => loadClass(classRoom.id)}><RefreshCw aria-hidden="true" />새로고침</button>
             </section>
-            <section className="setup-progress" aria-label="학급 준비 단계">
-              <div className="done"><b>1</b><span>학급 만들기<small>완료</small></span></div>
+            <section className="setup-progress setup-progress-five" aria-label="학급 준비 단계">
+              <div className={students.length ? "done" : "current"}><b>1</b><span>학생 명단<small>{students.length ? `${students.length}명` : "입력 중"}</small></span></div>
               <i />
-              <div className={students.length ? "done" : "current"}><b>2</b><span>학생 명단<small>{students.length ? `${students.length}명` : "입력 중"}</small></span></div>
+              <div className={selectedSummary.job_status === "completed" ? "done" : students.length ? "current" : ""}><b>2</b><span>직업 만들기<small>{selectedSummary.job_status === "completed" ? `${selectedSummary.job_count}개` : "대기"}</small></span></div>
               <i />
-              <div className={activeCount === students.length && students.length ? "done" : students.length ? "current" : ""}><b>3</b><span>QR 등록<small>{students.length ? `${activeCount}/${students.length}명` : "대기"}</small></span></div>
+              <div className={selectedSummary.calendar_saved ? "done" : selectedSummary.job_status === "completed" ? "current" : ""}><b>3</b><span>달력 설정<small>{selectedSummary.calendar_saved ? "저장됨" : "대기"}</small></span></div>
+              <i />
+              <div className={selectedSummary.assignment_status === "confirmed" ? "done" : selectedSummary.calendar_saved ? "current" : ""}><b>4</b><span>첫 직업 배정<small>{selectedSummary.assignment_status === "confirmed" ? "확정" : selectedSummary.assignment_status === "draft" ? "진행 중" : "대기"}</small></span></div>
+              <i />
+              <div className={selectedSummary.assignment_status === "confirmed" ? "done" : ""}><b>5</b><span>설정 완료<small>{selectedSummary.assignment_status === "confirmed" ? "완료" : "대기"}</small></span></div>
             </section>
 
             <div data-dashboard-section="students">
@@ -289,7 +294,7 @@ export function TeacherPortal() {
                   <>
                     {selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed && (
                       <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/job-assignments`}>
-                        <Dices aria-hidden="true" />첫 직업 배정
+                        <Dices aria-hidden="true" />{selectedSummary.assignment_status === "confirmed" ? "첫 배정 확인" : selectedSummary.calendar_saved ? "첫 직업 배정" : "달력 설정"}
                       </a>
                     )}
                     <a className={`button ${selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed ? "button-light" : "button-primary"}`} href={`/teacher/classes/${classRoom.id}/jobs`}>

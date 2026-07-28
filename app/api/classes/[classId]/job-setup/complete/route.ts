@@ -10,6 +10,7 @@ type CompleteBody = {
   setupMode?: SetupMode;
   surveyAnswers?: Partial<SurveyAnswers>;
   jobs?: ClassJobDraft[];
+  acknowledgeAssignmentImpact?: boolean;
 };
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -26,6 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       surveyAnswers: body.surveyAnswers,
       jobs: body.jobs ?? [],
       studentCount,
+      acknowledgeAssignmentImpact: body.acknowledgeAssignmentImpact,
     });
     await audit({
       action: "job_setup_completed",
