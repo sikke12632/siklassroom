@@ -110,8 +110,11 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(assignmentPage, /추첨 시작 · 희망자/);
   assert.match(assignmentPage, /이 직업 배정 저장/);
   assert.match(assignmentPage, /첫 직업 배정 확정/);
-  assert.match(winnerPage, /연출 건너뛰기/);
+  assert.match(winnerPage, /결과 바로 보기/);
   assert.match(winnerPage, /당첨!/);
+  assert.match(winnerPage, /WINNER_REVEAL_DELAY_MS = 450/);
+  assert.doesNotMatch(winnerPage, /3800/);
+  assert.match(assignmentPage, /setDrawJob\(selectedJob\.name\)/);
   assert.match(assignmentApi, /requireClassManagement/);
   assert.match(assignmentApi, /ownedClass/);
   assert.match(completeApi, /completeInitialAssignments/);

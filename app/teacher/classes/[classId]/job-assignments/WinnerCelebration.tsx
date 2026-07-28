@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Crown, Sparkles, Volume2, VolumeX } from "lucide-react";
 
+const WINNER_REVEAL_DELAY_MS = 450;
+
 export type Winner = {
   name: string;
   number: number;
@@ -32,32 +34,42 @@ function playVictoryTone() {
 
 export function WinnerCelebration({
   winner,
+  job,
   candidateNames,
   onClose,
 }: {
-  winner: Winner;
+  winner: Winner | null;
+  job: string;
   candidateNames: string[];
   onClose: () => void;
 }) {
   const reduceMotion = typeof window !== "undefined"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const [revealed, setRevealed] = useState(reduceMotion);
+  const [revealed, setRevealed] = useState(false);
+  const [skipRequested, setSkipRequested] = useState(false);
   const [sound, setSound] = useState(false);
   const [shuffleIndex, setShuffleIndex] = useState(0);
   const names = useMemo(
-    () => candidateNames.length ? candidateNames : [winner.name],
-    [candidateNames, winner.name],
+    () => candidateNames.length ? candidateNames : [winner?.name ?? "추첨 준비 중"],
+    [candidateNames, winner?.name],
   );
 
   useEffect(() => {
     if (revealed) return;
     const shuffle = window.setInterval(() => setShuffleIndex((value) => value + 1), 90);
-    const reveal = window.setTimeout(() => setRevealed(true), 3800);
     return () => {
       window.clearInterval(shuffle);
-      window.clearTimeout(reveal);
     };
   }, [revealed]);
+
+  useEffect(() => {
+    if (!winner || revealed) return;
+    const reveal = window.setTimeout(
+      () => setRevealed(true),
+      reduceMotion || skipRequested ? 0 : WINNER_REVEAL_DELAY_MS,
+    );
+    return () => window.clearTimeout(reveal);
+  }, [reduceMotion, revealed, skipRequested, winner]);
 
   useEffect(() => {
     if (revealed && sound) playVictoryTone();
@@ -79,15 +91,24 @@ export function WinnerCelebration({
           {sound ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
           소리 {sound ? "켜짐" : "꺼짐"}
         </button>
-        {!revealed && <button onClick={() => setRevealed(true)}>연출 건너뛰기</button>}
+        {!revealed && (
+          <button
+            onClick={() => {
+              setSkipRequested(true);
+              if (winner) setRevealed(true);
+            }}
+          >
+            결과 바로 보기
+          </button>
+        )}
       </div>
       <div className="winner-stage" aria-live="polite">
-        {!revealed ? (
+        {!revealed || !winner ? (
           <>
             <Sparkles aria-hidden="true" />
-            <p>{winner.job} 추첨 중</p>
+            <p>{job} 추첨 중</p>
             <strong>{names[shuffleIndex % names.length]}</strong>
-            <span>두근두근… 서버에 저장된 당첨자를 발표합니다</span>
+            <span>{winner ? "당첨자를 바로 발표할게요" : "안전하게 저장하면서 뽑고 있어요"}</span>
           </>
         ) : (
           <>

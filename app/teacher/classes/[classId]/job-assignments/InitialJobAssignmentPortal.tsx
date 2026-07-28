@@ -146,6 +146,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [winner, setWinner] = useState<Winner | null>(null);
+  const [drawJob, setDrawJob] = useState<string | null>(null);
   const [winnerCandidates, setWinnerCandidates] = useState<string[]>([]);
   const candidateSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const selectedJobRef = useRef("");
@@ -253,6 +254,9 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     const candidateNames = data.availableStudents
       .filter((student) => candidateIds.includes(student.id))
       .map((student) => student.official_name);
+    setWinnerCandidates(candidateNames);
+    setWinner(null);
+    setDrawJob(selectedJob.name);
     setBusy(true);
     setError("");
     setMessage("");
@@ -274,11 +278,12 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
         number: result.assignment.student.student_number,
         job: result.assignment.job.name,
       };
-      setWinnerCandidates(candidateNames);
       setWinner(nextWinner);
       setMessage(`${result.assignment.candidateCount}명의 희망자 중 당첨자 한 명을 서버에서 공정하게 뽑아 저장했어요.`);
       await load();
     } catch (reason) {
+      setDrawJob(null);
+      setWinner(null);
       setError((reason as Error).message);
       await load();
     } finally {
@@ -648,11 +653,15 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
           </>
         )}
       </main>
-      {winner && (
+      {drawJob && (
         <WinnerCelebration
           winner={winner}
+          job={drawJob}
           candidateNames={winnerCandidates}
-          onClose={() => setWinner(null)}
+          onClose={() => {
+            setDrawJob(null);
+            setWinner(null);
+          }}
         />
       )}
     </div>
