@@ -107,9 +107,13 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(calendarPage, /Cloudflare 서버 시각을 대한민국 표준시로 보정/);
   assert.match(calendarPage, /달력 저장하고 직업 배정으로/);
   assert.match(assignmentPage, /모두 선택/);
-  assert.match(assignmentPage, /추첨 시작 · 희망자/);
-  assert.match(assignmentPage, /이 직업 배정 저장/);
-  assert.match(assignmentPage, /첫 직업 배정 확정/);
+  assert.match(assignmentPage, /바로 추첨 · 희망자/);
+  assert.match(assignmentPage, /로컬 배정 적용/);
+  assert.match(assignmentPage, /전체 배정 확정·서버 저장/);
+  assert.match(assignmentPage, /window\.localStorage/);
+  assert.match(assignmentPage, /chooseSecureCandidate/);
+  assert.doesNotMatch(assignmentPage, /job-assignments\/random/);
+  assert.doesNotMatch(assignmentPage, /job-assignments\/candidates/);
   assert.match(winnerPage, /결과 바로 보기/);
   assert.match(winnerPage, /당첨!/);
   assert.match(winnerPage, /WINNER_REVEAL_DELAY_MS = 450/);
@@ -118,6 +122,8 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(assignmentApi, /requireClassManagement/);
   assert.match(assignmentApi, /ownedClass/);
   assert.match(completeApi, /completeInitialAssignments/);
+  assert.match(completeApi, /expectedRevision/);
+  assert.match(completeApi, /assignments/);
 });
 
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {

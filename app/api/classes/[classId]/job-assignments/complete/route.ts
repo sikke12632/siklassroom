@@ -9,8 +9,16 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
-    await readJson<Record<string, never>>(request);
-    const result = await completeInitialAssignments({ classId, teacherId });
+    const body = await readJson<Record<string, unknown>>(request);
+    const result = await completeInitialAssignments({
+      classId,
+      teacherId,
+      mode: body.mode,
+      expectedRevision: body.expectedRevision,
+      expectedCalendarRevision: body.expectedCalendarRevision,
+      requestId: body.requestId,
+      assignments: body.assignments,
+    });
     await audit({
       action: "initial_job_assignments_confirmed",
       teacherId,

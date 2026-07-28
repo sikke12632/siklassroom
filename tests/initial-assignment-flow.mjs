@@ -220,13 +220,60 @@ assert.equal(beforeConfirmation.student.current_job, null);
 cookie = teacherCookie;
 await request(`/api/classes/${classId}/job-assignments/complete`, {
   method: "POST",
-  body: {},
+  expected: 409,
+  body: {
+    mode: readyToComplete.mode,
+    expectedRevision: readyToComplete.revision - 1,
+    expectedCalendarRevision: readyToComplete.calendar.revision,
+    requestId: crypto.randomUUID(),
+    assignments: readyToComplete.assignments.map((assignment) => ({
+      classJobId: assignment.class_job_id,
+      studentId: assignment.student_id,
+      method: assignment.assignment_method,
+    })),
+  },
+});
+const afterStaleRequest = await request(`/api/classes/${classId}/job-assignments`);
+assert.deepEqual(
+  afterStaleRequest.assignments.map((assignment) => assignment.id),
+  readyToComplete.assignments.map((assignment) => assignment.id),
+);
+await request(`/api/classes/${classId}/job-assignments/complete`, {
+  method: "POST",
+  body: {
+    mode: readyToComplete.mode,
+    expectedRevision: readyToComplete.revision,
+    expectedCalendarRevision: readyToComplete.calendar.revision,
+    requestId: crypto.randomUUID(),
+    assignments: readyToComplete.assignments.map((assignment) => ({
+      classJobId: assignment.class_job_id,
+      studentId: assignment.student_id,
+      method: assignment.assignment_method,
+    })),
+  },
 });
 const confirmed = await request(`/api/classes/${classId}/job-assignments`);
 assert.equal(confirmed.status, "confirmed");
 assert.equal(confirmed.assignments.length, 3);
+await request(`/api/classes/${classId}/job-assignments/complete`, {
+  method: "POST",
+  expected: 409,
+  body: {
+    mode: readyToComplete.mode,
+    expectedRevision: readyToComplete.revision,
+    expectedCalendarRevision: readyToComplete.calendar.revision,
+    requestId: crypto.randomUUID(),
+    assignments: readyToComplete.assignments.map((assignment) => ({
+      classJobId: assignment.class_job_id,
+      studentId: assignment.student_id,
+      method: assignment.assignment_method,
+    })),
+  },
+});
+const afterRepeatedConfirmation = await request(`/api/classes/${classId}/job-assignments`);
+assert.equal(afterRepeatedConfirmation.assignments.length, 3);
 await request(
-  `/api/classes/${classId}/job-assignments/${randomResult.assignment.assignmentId}`,
+  `/api/classes/${classId}/job-assignments/${confirmed.assignments[0].id}`,
   { method: "DELETE", expected: 409 },
 );
 

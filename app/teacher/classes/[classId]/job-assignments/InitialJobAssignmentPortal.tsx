@@ -16,7 +16,8 @@ import {
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { api, postJson, putJson } from "@/lib/client-api";
+import { api, postJson } from "@/lib/client-api";
+import { chooseSecureCandidate } from "@/lib/local-job-assignment";
 import { CalendarSetup, type CalendarState } from "./CalendarSetup";
 import { WinnerCelebration, type Winner } from "./WinnerCelebration";
 
@@ -109,6 +110,174 @@ type AssignmentResponse = {
   jobs: Job[];
 };
 
+type LocalAssignment = {
+  localId: string;
+  classJobId: string;
+  studentId: string;
+  method: "random" | "manual";
+  sequence: number;
+  assignedAt: number;
+};
+
+type LocalDraft = {
+  version: 1;
+  mode: "random" | "manual" | null;
+  assignments: LocalAssignment[];
+  candidateStudentIdsByJob: Record<string, string[]>;
+  baseRevision: number;
+  updatedAt: number;
+};
+
+function localDraftKey(classId: string) {
+  return `job-classroom:first-assignment:${classId}:v1`;
+}
+
+function draftFromServer(data: AssignmentResponse): LocalDraft {
+  return {
+    version: 1,
+    mode: data.mode,
+    assignments: data.assignments.map((assignment) => ({
+      localId: assignment.id,
+      classJobId: assignment.class_job_id,
+      studentId: assignment.student_id,
+      method: assignment.assignment_method,
+      sequence: assignment.assignment_sequence,
+      assignedAt: assignment.assigned_at,
+    })),
+    candidateStudentIdsByJob: data.candidateStudentIdsByJob,
+    baseRevision: data.revision,
+    updatedAt: Date.now(),
+  };
+}
+
+function readLocalDraft(classId: string): LocalDraft | null {
+  try {
+    const raw = window.localStorage.getItem(localDraftKey(classId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LocalDraft>;
+    const assignmentIsValid = (item: unknown): item is LocalAssignment => {
+      if (!item || typeof item !== "object") return false;
+      const row = item as Partial<LocalAssignment>;
+      return typeof row.localId === "string"
+        && typeof row.classJobId === "string"
+        && typeof row.studentId === "string"
+        && (row.method === "random" || row.method === "manual")
+        && Number.isInteger(row.sequence)
+        && typeof row.assignedAt === "number";
+    };
+    if (
+      parsed.version !== 1
+      || (parsed.mode !== null && parsed.mode !== "random" && parsed.mode !== "manual")
+      || !Number.isInteger(parsed.baseRevision)
+      || !Array.isArray(parsed.assignments)
+      || !parsed.assignments.every(assignmentIsValid)
+      || !parsed.candidateStudentIdsByJob
+      || typeof parsed.candidateStudentIdsByJob !== "object"
+      || !Object.values(parsed.candidateStudentIdsByJob).every(
+        (ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string"),
+      )
+    ) return null;
+    return parsed as LocalDraft;
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalDraft(classId: string, draft: LocalDraft | null) {
+  try {
+    if (draft) {
+      window.localStorage.setItem(localDraftKey(classId), JSON.stringify(draft));
+    } else {
+      window.localStorage.removeItem(localDraftKey(classId));
+    }
+  } catch {}
+}
+
+function applyLocalDraft(server: AssignmentResponse, draft: LocalDraft): AssignmentResponse {
+  if (server.status === "confirmed") return server;
+  const studentById = new Map(server.students.map((student) => [student.id, student]));
+  const jobById = new Map(server.jobs.map((job) => [job.id, job]));
+  const usedStudents = new Set<string>();
+  const jobCounts = new Map<string, number>();
+  const validDrafts = [...draft.assignments]
+    .sort((a, b) => a.sequence - b.sequence)
+    .filter((assignment) => {
+      const job = jobById.get(assignment.classJobId);
+      if (!job || !studentById.has(assignment.studentId) || usedStudents.has(assignment.studentId)) return false;
+      const count = jobCounts.get(job.id) ?? 0;
+      if (count >= job.memberCapacity) return false;
+      usedStudents.add(assignment.studentId);
+      jobCounts.set(job.id, count + 1);
+      return true;
+    });
+  const assignments: Assignment[] = validDrafts.map((assignment) => {
+    const student = studentById.get(assignment.studentId)!;
+    const job = jobById.get(assignment.classJobId)!;
+    return {
+      id: assignment.localId,
+      class_job_id: job.id,
+      student_id: student.id,
+      assignment_method: assignment.method,
+      assignment_sequence: assignment.sequence,
+      assigned_at: assignment.assignedAt,
+      job_name: job.name,
+      student_number: student.student_number,
+      student_name: student.official_name,
+    };
+  });
+  const byJob = new Map<string, Assignment[]>();
+  for (const assignment of assignments) {
+    const rows = byJob.get(assignment.class_job_id) ?? [];
+    rows.push(assignment);
+    byJob.set(assignment.class_job_id, rows);
+  }
+  const availableStudents = server.students.filter((student) => !usedStudents.has(student.id));
+  const availableIds = new Set(availableStudents.map((student) => student.id));
+  const candidateStudentIdsByJob = Object.fromEntries(
+    server.jobs.map((job) => [
+      job.id,
+      [...new Set(draft.candidateStudentIdsByJob[job.id] ?? [])].filter((id) => availableIds.has(id)),
+    ]),
+  );
+  const seatCount = server.jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
+  const remainingSeats = Math.max(0, seatCount - assignments.length);
+  const canComplete = server.preflight.errors.length === 0
+    && server.students.length > 0
+    && assignments.length === server.students.length
+    && remainingSeats === 0;
+  return {
+    ...server,
+    mode: draft.mode,
+    status: draft.mode || assignments.length ? "draft" : server.status,
+    assignments,
+    availableStudents,
+    candidateStudentIdsByJob,
+    summary: {
+      totalStudents: server.students.length,
+      assignedCount: assignments.length,
+      availableCount: availableStudents.length,
+      remainingSeats,
+      canComplete,
+    },
+    jobs: server.jobs.map((job) => {
+      const assigned = byJob.get(job.id) ?? [];
+      return {
+        ...job,
+        assignedCount: assigned.length,
+        remainingCapacity: Math.max(0, job.memberCapacity - assigned.length),
+        assignedStudents: assigned.map((assignment) => ({
+          assignmentId: assignment.id,
+          id: assignment.student_id,
+          studentNumber: assignment.student_number,
+          name: assignment.student_name,
+          method: assignment.assignment_method,
+          sequence: assignment.assignment_sequence,
+        })),
+      };
+    }),
+  };
+}
+
 function classLabel(classRoom: AssignmentResponse["class"] | null) {
   if (!classRoom) return "우리 반";
   return classRoom.display_name
@@ -136,19 +305,17 @@ function SetupProgress({ data }: { data: AssignmentResponse }) {
 }
 
 export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
-  const [data, setData] = useState<AssignmentResponse | null>(null);
+  const [serverData, setServerData] = useState<AssignmentResponse | null>(null);
+  const [localDraft, setLocalDraft] = useState<LocalDraft | null>(null);
   const [selectedJobId, setSelectedJobId] = useState("");
-  const [candidateIds, setCandidateIds] = useState<string[]>([]);
   const [manualStudentIds, setManualStudentIds] = useState<string[]>([]);
   const [showCalendar, setShowCalendar] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [candidateSaving, setCandidateSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [winner, setWinner] = useState<Winner | null>(null);
   const [drawJob, setDrawJob] = useState<string | null>(null);
   const [winnerCandidates, setWinnerCandidates] = useState<string[]>([]);
-  const candidateSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
   const selectedJobRef = useRef("");
 
   const load = useCallback(async () => {
@@ -156,15 +323,28 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     setError("");
     try {
       const next = await api<AssignmentResponse>(`/api/classes/${classId}/job-assignments`);
-      setData(next);
-      const selected = next.jobs.find((job) => job.id === selectedJobRef.current && job.remainingCapacity > 0);
+      if (next.status === "confirmed") {
+        writeLocalDraft(classId, null);
+        setLocalDraft(null);
+        setServerData(next);
+        return;
+      }
+      const stored = readLocalDraft(classId);
+      const draft = stored?.baseRevision === next.revision ? stored : draftFromServer(next);
+      if (stored && stored.baseRevision !== next.revision) {
+        setMessage("다른 화면의 변경을 반영해 로컬 초안을 최신 서버 상태로 다시 시작했어요.");
+      }
+      writeLocalDraft(classId, draft);
+      setLocalDraft(draft);
+      setServerData(next);
+      const view = applyLocalDraft(next, draft);
+      const selected = view.jobs.find((job) => job.id === selectedJobRef.current && job.remainingCapacity > 0);
       const nextJobId = selected?.id
-        ?? next.jobs.find((job) => job.remainingCapacity > 0)?.id
-        ?? next.jobs[0]?.id
+        ?? view.jobs.find((job) => job.remainingCapacity > 0)?.id
+        ?? view.jobs[0]?.id
         ?? "";
       selectedJobRef.current = nextJobId;
       setSelectedJobId(nextJobId);
-      setCandidateIds(next.mode === "random" ? next.candidateStudentIdsByJob[nextJobId] ?? [] : []);
       setManualStudentIds([]);
     } catch (reason) {
       setError((reason as Error).message);
@@ -181,7 +361,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
   useEffect(() => {
     const timer = window.setInterval(() => {
       api<{ serverTime: CalendarState["serverTime"] }>("/api/time")
-        .then(({ serverTime }) => setData((current) => current
+        .then(({ serverTime }) => setServerData((current) => current
           ? { ...current, calendar: { ...current.calendar, serverTime } }
           : current))
         .catch(() => {});
@@ -189,29 +369,31 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     return () => window.clearInterval(timer);
   }, []);
 
+  const data = useMemo(
+    () => serverData && localDraft ? applyLocalDraft(serverData, localDraft) : serverData,
+    [localDraft, serverData],
+  );
   const selectedJob = useMemo(
     () => data?.jobs.find((job) => job.id === selectedJobId) ?? null,
     [data, selectedJobId],
   );
+  const candidateIds = localDraft?.candidateStudentIdsByJob[selectedJobId] ?? [];
 
-  function queueCandidateSave(next: string[]) {
-    if (!selectedJobId) return;
-    setCandidateSaving(true);
-    candidateSaveQueue.current = candidateSaveQueue.current
-      .then(() => putJson(`/api/classes/${classId}/job-assignments/candidates`, {
-        classJobId: selectedJobId,
-        studentIds: next,
-      }))
-      .catch((reason) => {
-        setError((reason as Error).message);
-        return load();
-      })
-      .finally(() => setCandidateSaving(false));
+  function persistDraft(next: LocalDraft) {
+    const updated = { ...next, updatedAt: next.updatedAt + 1 };
+    setLocalDraft(updated);
+    writeLocalDraft(classId, updated);
   }
 
   function setCandidates(next: string[]) {
-    setCandidateIds(next);
-    queueCandidateSave(next);
+    if (!localDraft || !selectedJobId) return;
+    persistDraft({
+      ...localDraft,
+      candidateStudentIdsByJob: {
+        ...localDraft.candidateStudentIdsByJob,
+        [selectedJobId]: [...new Set(next)],
+      },
+    });
   }
 
   function toggleCandidate(studentId: string) {
@@ -235,106 +417,99 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     setManualStudentIds((current) => [...current, studentId]);
   }
 
-  async function chooseMode(mode: "random" | "manual") {
-    setBusy(true);
+  function chooseMode(mode: "random" | "manual") {
+    if (!localDraft) return;
     setError("");
-    try {
-      await putJson(`/api/classes/${classId}/job-assignments/mode`, { mode });
-      setMessage(mode === "random" ? "희망자 추첨 방식으로 시작합니다." : "직접 배정 방식으로 시작합니다.");
-      await load();
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    persistDraft({ ...localDraft, mode });
+    setMessage(mode === "random"
+      ? "희망자 추첨 방식을 이 브라우저에 임시 저장했어요."
+      : "직접 배정 방식을 이 브라우저에 임시 저장했어요.");
   }
 
-  async function drawRandom() {
-    if (!data || !selectedJob || !candidateIds.length) return;
-    const candidateNames = data.availableStudents
-      .filter((student) => candidateIds.includes(student.id))
-      .map((student) => student.official_name);
+  function drawRandom() {
+    if (!data || !localDraft || !selectedJob || !candidateIds.length) return;
+    const candidates = data.availableStudents.filter((student) => candidateIds.includes(student.id));
+    if (!candidates.length) return;
+    const selectedStudent = chooseSecureCandidate(candidates);
+    const candidateNames = candidates.map((student) => student.official_name);
+    const nextSequence = Math.max(0, ...localDraft.assignments.map((assignment) => assignment.sequence)) + 1;
+    const assignment: LocalAssignment = {
+      localId: `local:${crypto.randomUUID()}`,
+      classJobId: selectedJob.id,
+      studentId: selectedStudent.id,
+      method: "random",
+      sequence: nextSequence,
+      assignedAt: data.calendar.serverTime.epochMs + nextSequence,
+    };
+    const candidateStudentIdsByJob = Object.fromEntries(
+      Object.entries(localDraft.candidateStudentIdsByJob).map(([jobId, ids]) => [
+        jobId,
+        ids.filter((id) => id !== selectedStudent.id),
+      ]),
+    );
+    persistDraft({
+      ...localDraft,
+      assignments: [...localDraft.assignments, assignment],
+      candidateStudentIdsByJob,
+    });
     setWinnerCandidates(candidateNames);
-    setWinner(null);
     setDrawJob(selectedJob.name);
-    setBusy(true);
     setError("");
-    setMessage("");
-    try {
-      await candidateSaveQueue.current;
-      const result = await postJson<{
-        assignment: {
-          job: { name: string };
-          student: { student_number: number; official_name: string };
-          candidateCount: number;
-        };
-      }>(`/api/classes/${classId}/job-assignments/random`, {
-        classJobId: selectedJob.id,
-        candidateStudentIds: candidateIds,
-        requestId: crypto.randomUUID(),
-      });
-      const nextWinner = {
-        name: result.assignment.student.official_name,
-        number: result.assignment.student.student_number,
-        job: result.assignment.job.name,
-      };
-      setWinner(nextWinner);
-      setMessage(`${result.assignment.candidateCount}명의 희망자 중 당첨자 한 명을 서버에서 공정하게 뽑아 저장했어요.`);
-      await load();
-    } catch (reason) {
-      setDrawJob(null);
-      setWinner(null);
-      setError((reason as Error).message);
-      await load();
-    } finally {
-      setBusy(false);
-    }
+    setWinner({
+      name: selectedStudent.official_name,
+      number: selectedStudent.student_number,
+      job: selectedJob.name,
+    });
+    setMessage(`${candidates.length}명의 희망자 중 한 명을 브라우저 내장 난수로 뽑아 로컬 초안에 저장했어요.`);
   }
 
-  async function assignManual() {
-    if (!selectedJob || !manualStudentIds.length) return;
-    setBusy(true);
+  function assignManual() {
+    if (!data || !localDraft || !selectedJob || !manualStudentIds.length) return;
+    const baseSequence = Math.max(0, ...localDraft.assignments.map((assignment) => assignment.sequence));
+    const assignments = manualStudentIds.map((studentId, index): LocalAssignment => ({
+      localId: `local:${crypto.randomUUID()}`,
+      classJobId: selectedJob.id,
+      studentId,
+      method: "manual",
+      sequence: baseSequence + index + 1,
+      assignedAt: data.calendar.serverTime.epochMs + baseSequence + index + 1,
+    }));
+    persistDraft({ ...localDraft, assignments: [...localDraft.assignments, ...assignments] });
     setError("");
-    setMessage("");
-    try {
-      await postJson(`/api/classes/${classId}/job-assignments/manual`, {
-        classJobId: selectedJob.id,
-        studentIds: manualStudentIds,
-        requestId: crypto.randomUUID(),
-      });
-      setMessage(`${manualStudentIds.length}명을 ${selectedJob.name}에 한 번에 저장했어요.`);
-      setManualStudentIds([]);
-      await load();
-    } catch (reason) {
-      setError((reason as Error).message);
-      await load();
-    } finally {
-      setBusy(false);
-    }
+    setMessage(`${manualStudentIds.length}명을 ${selectedJob.name}에 배정해 이 브라우저에 임시 저장했어요.`);
+    setManualStudentIds([]);
   }
 
-  async function removeAssignment(assignment: Assignment) {
+  function removeAssignment(assignment: Assignment) {
+    if (!localDraft) return;
     if (!confirm(`${assignment.student_number}번 ${assignment.student_name} 학생의 ${assignment.job_name} 배정을 취소할까요? 학생과 자리가 모두 복구됩니다.`)) return;
-    setBusy(true);
     setError("");
-    try {
-      await api(`/api/classes/${classId}/job-assignments/${assignment.id}`, { method: "DELETE" });
-      setMessage("배정을 취소했어요. 학생이 다시 선택 가능 목록으로 돌아왔습니다.");
-      await load();
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    persistDraft({
+      ...localDraft,
+      assignments: localDraft.assignments.filter((item) => item.localId !== assignment.id),
+    });
+    setMessage("로컬 초안에서 배정을 취소했어요. 학생과 자리가 바로 복구됐습니다.");
   }
 
   async function completeAssignments() {
-    if (!data?.summary.canComplete) return;
+    if (!data?.summary.canComplete || !data.mode) return;
     if (!confirm(`${data.summary.totalStudents}명 모두의 첫 직업 배정을 확정할까요?\n확정하면 학생 화면에 직업이 공개되고 초기 설정이 완료됩니다.`)) return;
     setBusy(true);
     setError("");
     try {
-      await postJson(`/api/classes/${classId}/job-assignments/complete`, {});
+      await postJson(`/api/classes/${classId}/job-assignments/complete`, {
+        mode: data.mode,
+        expectedRevision: data.revision,
+        expectedCalendarRevision: data.calendar.revision,
+        requestId: crypto.randomUUID(),
+        assignments: data.assignments.map((assignment) => ({
+          classJobId: assignment.class_job_id,
+          studentId: assignment.student_id,
+          method: assignment.assignment_method,
+        })),
+      });
+      writeLocalDraft(classId, null);
+      setLocalDraft(null);
       setMessage("첫 직업 배정을 확정했어요. 이제 학생 화면에 각자의 직업이 공개됩니다.");
       await load();
     } catch (reason) {
@@ -416,7 +591,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
             <div>
               <p className="eyebrow">4단계 · 첫 직업 배정</p>
               <h1>첫 직업을 어떻게 배정할까요?</h1>
-              <p>나중에 방식을 바꿔도 이미 저장된 배정 결과는 그대로 유지됩니다.</p>
+              <p>선택과 배정은 이 브라우저에 자동 저장되고, 마지막 확정 때만 서버로 전송됩니다.</p>
             </div>
             <div className="assignment-mode-cards">
               <button disabled={busy} onClick={() => chooseMode("random")}>
@@ -428,7 +603,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
               <button disabled={busy} onClick={() => chooseMode("manual")}>
                 <span><UserCheck aria-hidden="true" /></span>
                 <h2>선생님이 직접 배정하기</h2>
-                <p>직업마다 맡을 학생을 직접 선택하고 정원 안에서 한 번에 저장합니다.</p>
+                <p>직업마다 맡을 학생을 직접 선택하고 정원 안에서 로컬 초안에 바로 반영합니다.</p>
                 <b>직접 배정 시작 →</b>
               </button>
             </div>
@@ -455,7 +630,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
               <div>
                 <p className="eyebrow">4단계 · 첫 직업 배정</p>
                 <h1>{data.mode === "random" ? "희망자 중 한 명씩 뽑아요" : "학생을 직접 배정해요"}</h1>
-                <p>모든 변경은 서버에서 학생 중복과 정원을 다시 검사한 뒤 저장됩니다.</p>
+                <p>추첨과 배정은 즉시 로컬 저장되고, 최종 확정할 때 전체 배정표를 서버에서 한 번 검증합니다.</p>
               </div>
               <div className="assignment-calendar">
                 <label><CalendarDays aria-hidden="true" />첫 직업 운영 기간</label>
@@ -482,7 +657,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
               <div>
                 {lastRandom && <button disabled={busy} onClick={() => removeAssignment(lastRandom)}><RotateCcw />마지막 추첨 취소</button>}
                 <button disabled={busy} onClick={() => chooseMode(data.mode === "random" ? "manual" : "random")}>배정 방식 변경</button>
-                <button disabled={busy} onClick={load}><RefreshCw />최신 배정표</button>
+                <button disabled={busy} onClick={load}><RefreshCw />학생·직업 새로고침</button>
               </div>
             </div>
 
@@ -504,7 +679,6 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                       onClick={() => {
                         selectedJobRef.current = job.id;
                         setSelectedJobId(job.id);
-                        setCandidateIds(data.mode === "random" ? data.candidateStudentIdsByJob[job.id] ?? [] : []);
                         setManualStudentIds([]);
                         setError("");
                       }}
@@ -522,14 +696,14 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                   <div>
                     <h2>{data.mode === "random" ? "희망자 체크" : "학생 선택"}</h2>
                     <p>{data.mode === "random"
-                      ? "아직 미배정인 희망 학생을 체크해 한 명씩 추첨합니다."
-                      : `남은 정원 안에서 여러 학생을 선택해 한 번에 저장할 수 있어요.`}</p>
+                      ? "아직 미배정인 희망 학생을 체크해 브라우저에서 바로 한 명씩 추첨합니다."
+                      : "남은 정원 안에서 여러 학생을 선택해 로컬 초안에 바로 반영할 수 있어요."}</p>
                   </div>
                 </div>
 
                 {data.mode === "random" && data.availableStudents.length > 0 && (
                   <div className="candidate-tools">
-                    <span>선택 {candidateIds.length}명 {candidateSaving && "· 저장 중…"}</span>
+                    <span>선택 {candidateIds.length}명 · 이 브라우저에 자동 저장</span>
                     <button disabled={busy} onClick={() => setCandidates(data.availableStudents.map((student) => student.id))}>모두 선택</button>
                     <button disabled={busy} onClick={() => setCandidates([])}>모두 해제</button>
                   </div>
@@ -573,11 +747,11 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                   {data.mode === "random" ? (
                     <button
                       className="button button-primary button-large"
-                      disabled={busy || candidateSaving || !selectedJob || candidateIds.length === 0 || selectedJob.remainingCapacity === 0}
+                      disabled={busy || !selectedJob || candidateIds.length === 0 || selectedJob.remainingCapacity === 0}
                       onClick={drawRandom}
                     >
                       <Dices aria-hidden="true" />
-                      {busy ? "서버에서 뽑는 중…" : candidateIds.length ? `추첨 시작 · 희망자 ${candidateIds.length}명` : "희망자를 선택해 주세요"}
+                      {candidateIds.length ? `바로 추첨 · 희망자 ${candidateIds.length}명` : "희망자를 선택해 주세요"}
                     </button>
                   ) : (
                     <button
@@ -586,7 +760,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                       onClick={assignManual}
                     >
                       <UserCheck aria-hidden="true" />
-                      {busy ? "저장 중…" : `이 직업 배정 저장 · ${manualStudentIds.length}명`}
+                      {`로컬 배정 적용 · ${manualStudentIds.length}명`}
                     </button>
                   )}
                 </div>
@@ -594,9 +768,9 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
 
               <aside className="assignment-roster panel">
                 <div>
-                  <p className="eyebrow">현재 임시 배정표</p>
+                  <p className="eyebrow">이 브라우저의 임시 배정표</p>
                   <h2>직업별 배정</h2>
-                  <p>확정 전에는 취소하거나 방식을 바꿀 수 있어요.</p>
+                  <p>새로고침해도 유지되며, 확정 전에는 서버로 전송되지 않아요.</p>
                 </div>
                 {data.jobs.map((job) => (
                   <section key={job.id}>
@@ -631,7 +805,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 <div>
                   <p className="eyebrow">최종 확인</p>
                   <h2>학생 번호순 배정표</h2>
-                  <p>전체 학생과 남은 자리가 모두 0이 되어야 확정할 수 있어요.</p>
+                  <p>전체 배정표를 서버에서 한 번 검증해 저장합니다. 미배정 학생과 남은 자리가 모두 0이어야 해요.</p>
                 </div>
                 <div className="student-assignment-list">
                   {studentOrder.map((assignment) => (
@@ -645,7 +819,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 >
                   <Check aria-hidden="true" />
                   {data.summary.canComplete
-                    ? `첫 직업 배정 확정 · ${data.summary.totalStudents}명`
+                    ? `전체 배정 확정·서버 저장 · ${data.summary.totalStudents}명`
                     : `미배정 ${data.summary.availableCount}명 · 남은 자리 ${data.summary.remainingSeats}개`}
                 </button>
               </section>

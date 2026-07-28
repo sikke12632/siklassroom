@@ -661,10 +661,242 @@ export async function removeInitialAssignment(classId: string, assignmentId: unk
   return current;
 }
 
+type SubmittedAssignment = {
+  classJobId: string;
+  studentId: string;
+  method: AssignmentMethod;
+};
+
+function submittedAssignments(
+  value: unknown,
+  board: Awaited<ReturnType<typeof loadInitialAssignmentBoard>>,
+) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 60) {
+    throw new ApiError(400, "전체 배정표를 다시 확인해 주세요.", "INVALID_ASSIGNMENTS");
+  }
+  const studentOrder = new Map(board.students.map((student, index) => [student.id, index]));
+  const studentIds = new Set(board.students.map((student) => student.id));
+  const jobIds = new Set(board.jobs.map((job) => job.id));
+  const seenStudents = new Set<string>();
+  const jobCounts = new Map<string, number>();
+  const assignments = value.map((item): SubmittedAssignment => {
+    const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const classJobId = cleanDisplayText(row.classJobId, 100);
+    const studentId = cleanDisplayText(row.studentId, 100);
+    const method = row.method === "random" || row.method === "manual" ? row.method : null;
+    if (!jobIds.has(classJobId) || !studentIds.has(studentId) || !method || seenStudents.has(studentId)) {
+      throw new ApiError(400, "학생 또는 직업이 중복되었거나 현재 학급 정보와 맞지 않아요.", "INVALID_ASSIGNMENTS");
+    }
+    seenStudents.add(studentId);
+    jobCounts.set(classJobId, (jobCounts.get(classJobId) ?? 0) + 1);
+    return { classJobId, studentId, method };
+  });
+  if (assignments.length !== board.students.length || seenStudents.size !== board.students.length) {
+    throw new ApiError(422, "활성 학생 모두에게 직업을 하나씩 배정해 주세요.", "ASSIGNMENT_INCOMPLETE");
+  }
+  if (board.jobs.some((job) => (jobCounts.get(job.id) ?? 0) !== Number(job.memberCapacity))) {
+    throw new ApiError(422, "직업별 배정 인원이 설정한 정원과 맞지 않아요.", "JOB_CAPACITY_MISMATCH");
+  }
+  return assignments.sort(
+    (left, right) => (studentOrder.get(left.studentId) ?? 0) - (studentOrder.get(right.studentId) ?? 0),
+  );
+}
+
+async function completeSubmittedAssignments(input: {
+  classId: string;
+  teacherId: string;
+  mode: unknown;
+  expectedRevision: unknown;
+  expectedCalendarRevision: unknown;
+  requestId: unknown;
+  assignments: unknown;
+}) {
+  const mode = input.mode === "random" || input.mode === "manual" ? input.mode : null;
+  if (!mode) throw new ApiError(400, "배정 방식을 다시 선택해 주세요.", "INVALID_ASSIGNMENT_MODE");
+  const expectedRevision = Number(input.expectedRevision);
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
+    throw new ApiError(400, "배정표 버전을 확인할 수 없어요. 새로고침한 뒤 다시 시도해 주세요.", "INVALID_REVISION");
+  }
+  const expectedCalendarRevision = Number(input.expectedCalendarRevision);
+  if (!Number.isInteger(expectedCalendarRevision) || expectedCalendarRevision < 1) {
+    throw new ApiError(400, "달력 버전을 확인할 수 없어요. 새로고침한 뒤 다시 시도해 주세요.", "INVALID_CALENDAR_REVISION");
+  }
+  const idempotencyKey = requestId(input.requestId);
+  const period = await requireReadyDraftPeriod(input.classId);
+  if (Number(period.revision) !== expectedRevision) {
+    throw new ApiError(
+      409,
+      "학생이나 직업 정보가 다른 화면에서 바뀌었어요. 새로고침한 뒤 다시 확인해 주세요.",
+      "ASSIGNMENT_CONFIRM_CONFLICT",
+    );
+  }
+  const board = await loadInitialAssignmentBoard(input.classId, {
+    year: Number(period.assignment_year),
+    month: Number(period.assignment_month),
+  });
+  if (board.calendar.revision !== expectedCalendarRevision) {
+    throw new ApiError(
+      409,
+      "달력이 다른 화면에서 바뀌었어요. 새로고침한 뒤 운영 기간을 다시 확인해 주세요.",
+      "ASSIGNMENT_CONFIRM_CONFLICT",
+    );
+  }
+  const assignments = submittedAssignments(input.assignments, board);
+  const now = Date.now();
+  const db = database();
+  const statements = [
+    db.prepare(
+      `DELETE FROM student_job_assignments
+       WHERE period_id = ? AND EXISTS (
+         SELECT 1 FROM class_job_assignment_periods
+         WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+       )`,
+    ).bind(period.id, period.id, input.classId, expectedRevision),
+    ...assignments.map((assignment, index) => db.prepare(
+      `INSERT INTO student_job_assignments (
+         id, period_id, class_id, class_job_id, student_id, assignment_method,
+         request_id, assignment_sequence, assigned_at, created_at
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_assignment_periods
+         WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+       )
+         AND EXISTS (
+           SELECT 1 FROM students WHERE id = ? AND class_id = ? AND status <> 'excluded'
+         )
+         AND EXISTS (
+           SELECT 1 FROM class_jobs j
+           JOIN class_job_setup setup ON setup.class_id = j.class_id
+           WHERE j.id = ? AND j.class_id = ? AND j.is_active = 1 AND setup.status = 'completed'
+         )`,
+    ).bind(
+      crypto.randomUUID(),
+      period.id,
+      input.classId,
+      assignment.classJobId,
+      assignment.studentId,
+      assignment.method,
+      `${idempotencyKey}:${assignment.studentId}`,
+      index + 1,
+      now,
+      now,
+      period.id,
+      input.classId,
+      expectedRevision,
+      assignment.studentId,
+      input.classId,
+      assignment.classJobId,
+      input.classId,
+    )),
+    db.prepare(
+      `DELETE FROM job_assignment_candidates WHERE period_id = ?`,
+    ).bind(period.id),
+    db.prepare(
+      `UPDATE class_job_assignment_periods
+       SET mode = ?,
+           status = CASE WHEN status = 'draft' AND revision = ?
+             AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded') = ?
+             AND (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?) = ?
+             AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
+                  WHERE class_id = ? AND is_active = 1) = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM student_job_assignments a
+               LEFT JOIN students s ON s.id = a.student_id
+               LEFT JOIN class_jobs j ON j.id = a.class_job_id
+               WHERE a.period_id = ?
+                 AND (s.class_id <> ? OR s.status = 'excluded'
+                   OR j.class_id <> ? OR j.is_active <> 1)
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM student_job_assignments a
+               JOIN class_jobs j ON j.id = a.class_job_id
+               WHERE a.period_id = ?
+               GROUP BY a.class_job_id, j.member_capacity
+               HAVING COUNT(*) > j.member_capacity
+             )
+             AND EXISTS (
+               SELECT 1 FROM class_calendars c
+               WHERE c.class_id = ? AND c.revision = ?
+                 AND c.first_job_start_date = ?
+                 AND c.first_job_end_date = ?
+             )
+           THEN 'confirmed' ELSE NULL END,
+           calendar_revision = ?, first_job_start_date = ?, first_job_end_date = ?,
+           confirmed_at = ?, confirmed_by_teacher_id = ?,
+           revision = revision + 1, updated_at = ?
+       WHERE id = ? AND class_id = ?`,
+    ).bind(
+      mode,
+      expectedRevision,
+      input.classId,
+      assignments.length,
+      period.id,
+      assignments.length,
+      input.classId,
+      assignments.length,
+      period.id,
+      input.classId,
+      input.classId,
+      period.id,
+      input.classId,
+      expectedCalendarRevision,
+      board.calendar.firstJobStartDate,
+      board.calendar.firstJobEndDate,
+      expectedCalendarRevision,
+      board.calendar.firstJobStartDate,
+      board.calendar.firstJobEndDate,
+      now,
+      input.teacherId,
+      now,
+      period.id,
+      input.classId,
+    ),
+    db.prepare(
+      `UPDATE classes SET setup_stage = 'completed', updated_at = ?
+       WHERE id = ? AND EXISTS (
+         SELECT 1 FROM class_job_assignment_periods
+         WHERE id = ? AND class_id = ? AND status = 'confirmed'
+       )`,
+    ).bind(now, input.classId, period.id, input.classId),
+  ];
+  try {
+    await db.batch(statements);
+  } catch {
+    throw new ApiError(
+      409,
+      "확정 직전에 학생·직업·달력 정보가 바뀌었어요. 로컬 배정은 유지했으니 새로고침 후 다시 확인해 주세요.",
+      "ASSIGNMENT_CONFIRM_CONFLICT",
+    );
+  }
+  return {
+    periodId: period.id,
+    confirmedAt: now,
+    assignmentCount: assignments.length,
+    source: "local_draft",
+  };
+}
+
 export async function completeInitialAssignments(input: {
   classId: string;
   teacherId: string;
+  mode?: unknown;
+  expectedRevision?: unknown;
+  expectedCalendarRevision?: unknown;
+  requestId?: unknown;
+  assignments?: unknown;
 }) {
+  if (input.assignments !== undefined) {
+    return completeSubmittedAssignments({
+      classId: input.classId,
+      teacherId: input.teacherId,
+      mode: input.mode,
+      expectedRevision: input.expectedRevision,
+      expectedCalendarRevision: input.expectedCalendarRevision,
+      requestId: input.requestId,
+      assignments: input.assignments,
+    });
+  }
   const period = await requireReadyDraftPeriod(input.classId);
   const board = await loadInitialAssignmentBoard(input.classId, {
     year: Number(period.assignment_year),

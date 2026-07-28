@@ -8,6 +8,7 @@ import {
   sumJobCapacity,
   type ClassJobDraft,
 } from "../lib/job-catalog";
+import { chooseSecureCandidate, secureRandomIndex } from "../lib/local-job-assignment";
 import { assignmentPeriod, randomCandidate, seoulServerTime } from "../lib/seoul-time";
 
 test("26명 균형형 추천은 항상 같은 26자리를 만든다", () => {
@@ -115,4 +116,14 @@ test("랜덤 배정은 체크한 희망자 안에서만 한 명을 고른다", (
   assert.equal(randomCandidate(hopefuls, () => 0), "학생1");
   assert.equal(randomCandidate(hopefuls, () => 0.5), "학생2");
   assert.equal(randomCandidate(hopefuls, () => 0.999999), "학생3");
+});
+
+test("로컬 추첨은 브라우저 보안 난수로 선택하고 편향 없는 인덱스를 만든다", () => {
+  const fillFive = (values: Uint32Array) => {
+    values[0] = 5;
+    return values;
+  };
+  assert.equal(secureRandomIndex(3, fillFive), 2);
+  assert.equal(chooseSecureCandidate(["학생1", "학생2", "학생3"], fillFive), "학생3");
+  assert.throws(() => secureRandomIndex(0, fillFive), /한 명 이상/);
 });
