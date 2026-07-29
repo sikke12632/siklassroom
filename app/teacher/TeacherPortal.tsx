@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
@@ -70,7 +70,12 @@ export function TeacherPortal() {
   const loadClasses = useCallback(async (preferredId?: string) => {
     const data = await api<{ classes: ClassRoom[] }>("/api/classes");
     setClasses(data.classes);
-    const id = preferredId || selectedClassId || data.classes[0]?.id || null;
+    const availableIds = new Set(data.classes.map((item) => item.id));
+    const id = (
+      preferredId && availableIds.has(preferredId) ? preferredId : null
+    ) || (
+      selectedClassId && availableIds.has(selectedClassId) ? selectedClassId : null
+    ) || data.classes[0]?.id || null;
     setSelectedClassId(id);
     setShowClassForm(data.classes.length === 0);
     return id;
@@ -91,7 +96,8 @@ export function TeacherPortal() {
         && data.actor.teacher_access_status === "invite_verified"
         && (data.actor.school_id || data.actor.manual_school_request_id)
       ) {
-        await loadClasses();
+        const preferredClassId = new URLSearchParams(window.location.search).get("classId") || undefined;
+        await loadClasses(preferredClassId);
       }
     } else if (data.actor?.type === "student") {
       setWrongEntrance(true);
@@ -213,6 +219,7 @@ export function TeacherPortal() {
               </a>
             )
           )}
+          {selectedClassId && <a href={`/finance?classId=${selectedClassId}`}><Landmark aria-hidden="true" /><span>금융센터</span></a>}
         </nav>
         <div className="sidebar-section-title">내 학급</div>
         <nav className="class-nav">
@@ -398,6 +405,20 @@ export function TeacherPortal() {
                 ) : (
                   <span className="button button-light is-disabled" aria-disabled="true">{monthlyChoiceBlockedReason}</span>
                 )}
+              </div>
+            </section>
+
+            <section className="job-dashboard-card finance-dashboard-card">
+              <div className="job-dashboard-icon" aria-hidden="true"><Landmark /></div>
+              <div>
+                <p className="eyebrow">우리 반 금융생활</p>
+                <h2>금융센터</h2>
+                <p><b>은행원 학생이 스스로 운영할 공간을 준비하고 있어요.</b> 선생님은 문제가 생기거나 도움이 필요할 때 기록을 확인하고 도울 수 있게 됩니다.</p>
+              </div>
+              <div className="job-dashboard-actions">
+                <a className="button button-primary" href={`/finance?classId=${classRoom.id}`}>
+                  <Landmark aria-hidden="true" />금융센터 들어가기
+                </a>
               </div>
             </section>
           </>
