@@ -1,7 +1,7 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
-import { closeMonthlyJobSource } from "@/lib/monthly-job-choice";
+import { finalizeJobEvaluation } from "@/lib/job-evaluation";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -10,24 +10,27 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
     const body = await readJson<{
-      expectedSourcePeriodId?: unknown;
+      evaluationId?: unknown;
+      expectedRevision?: unknown;
+      finalGrades?: unknown;
     }>(request);
-    const result = await closeMonthlyJobSource({
+    const result = await finalizeJobEvaluation({
       classId,
       teacherId,
-      expectedSourcePeriodId: body.expectedSourcePeriodId,
+      evaluationId: body.evaluationId,
+      expectedRevision: body.expectedRevision,
+      finalGrades: body.finalGrades,
     });
     await audit({
-      action: "monthly_job_source_closed",
+      action: "job_evaluation_finalized",
       teacherId,
       classId,
       detail: {
-        closureId: result.closureId,
-        sourcePeriodId: body.expectedSourcePeriodId,
+        evaluationId: result.evaluation.id,
         idempotent: result.idempotent,
       },
     });
-    return json(result, result.idempotent ? 200 : 201);
+    return json(result);
   } catch (error) {
     return apiFailure(error);
   }

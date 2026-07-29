@@ -58,6 +58,30 @@ export function sortChoiceOrder<T extends ChoiceOrderItem>(items: readonly T[]):
   });
 }
 
+export function shuffleChoiceOrderWithinGrades<T extends ChoiceOrderItem>(
+  items: readonly T[],
+  randomIndex: (length: number) => number,
+): T[] {
+  const groups = new Map<PreviousChoiceGrade, T[]>();
+  for (const item of items) {
+    const group = groups.get(item.previousGrade) ?? [];
+    group.push(item);
+    groups.set(item.previousGrade, group);
+  }
+  const gradeOrder: PreviousChoiceGrade[] = ["C", "B", "A", "NEW", "D"];
+  return gradeOrder.flatMap((grade) => {
+    const group = [...(groups.get(grade) ?? [])];
+    for (let index = group.length - 1; index > 0; index -= 1) {
+      const swapIndex = randomIndex(index + 1);
+      if (!Number.isInteger(swapIndex) || swapIndex < 0 || swapIndex > index) {
+        throw new RangeError("무작위 순서 인덱스가 범위를 벗어났습니다.");
+      }
+      [group[index], group[swapIndex]] = [group[swapIndex], group[index]];
+    }
+    return group;
+  });
+}
+
 export function suggestJobGrade(input: JobGradeSource | string, name = ""): JobGrade {
   const source = typeof input === "string"
     ? { templateId: input, name }

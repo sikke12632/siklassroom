@@ -59,13 +59,10 @@ assert.ok(
   Array.isArray(initialBoard.gradePreview) && initialBoard.gradePreview.length > 0,
   "지난달 직업별 추천 등급 gradePreview가 필요합니다.",
 );
-
-const jobGrades = Object.fromEntries(
-  initialBoard.gradePreview.map((job) => {
-    assert.equal(typeof job.classJobId, "string");
-    assert.ok(["A", "B", "C"].includes(job.suggestedGrade));
-    return [job.classJobId, job.suggestedGrade];
-  }),
+assert.equal(
+  initialBoard.evaluation?.status,
+  "finalized",
+  "학생 직업평가 마감과 최종등급 확정을 먼저 완료해 주세요.",
 );
 
 await request(`${basePath}/close`, {
@@ -73,7 +70,6 @@ await request(`${basePath}/close`, {
   expected: [200, 201],
   body: {
     expectedSourcePeriodId: initialBoard.sourcePeriod.id,
-    jobGrades,
   },
 });
 
@@ -86,6 +82,7 @@ await request(`${basePath}/start`, {
 let board = await loadBoard();
 assert.ok(board.session, "다음 달 직업 선택 session이 만들어져야 합니다.");
 assert.equal(board.session.status, "draft");
+assert.equal(board.session.orderMode, "shuffled", "동급 순서는 처음부터 자동 무작위여야 합니다.");
 assert.ok(Number.isInteger(board.session.revision));
 assert.ok(Number.isInteger(board.session.jobSetupRevision));
 assert.ok(Array.isArray(board.session.order) && board.session.order.length > 0);

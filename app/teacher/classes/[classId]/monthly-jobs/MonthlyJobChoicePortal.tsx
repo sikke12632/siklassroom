@@ -57,10 +57,52 @@ type ChoiceBoard = {
     studentCount: number;
     suggestedGrade: JobGrade;
   }>;
+  evaluation: null | {
+    id: string;
+    sourcePeriodId: string;
+    sourceYear: number;
+    sourceMonth: number;
+    status: "open" | "closed" | "finalized";
+    revision: number;
+    responseRevision: number;
+    calculatedResponseRevision: number | null;
+    algorithmVersion: string;
+    openedAt: number;
+    closedAt: number | null;
+    finalizedAt: number | null;
+    studentCountSnapshot: number;
+    submittedCount: number;
+    missingStudents: Array<{
+      id: string;
+      studentNumber: number | null;
+      name: string;
+    }>;
+    rosterChanged: boolean;
+    jobsChanged: boolean;
+    cutoffTie: boolean;
+    jobs: Array<{
+      classJobId: string;
+      name: string;
+      description: string;
+      sortOrder: number;
+      responseCount: number;
+      hardAverage: number | null;
+      responsibilityAverage: number | null;
+      consistencyAverage: number | null;
+      burdenAverage: number | null;
+      totalAverage: number | null;
+      rank: number | null;
+      recommendedGrade: JobGrade | null;
+      finalGrade: JobGrade | null;
+      cutoffTie: boolean;
+    }>;
+  };
   closure: null | {
     id: string;
     sourceYear: number;
     sourceMonth: number;
+    evaluationSessionId?: string | null;
+    evaluationRevision?: number | null;
   };
   session: null | {
     id: string;
@@ -199,6 +241,42 @@ function storageKey(classId: string, session: NonNullable<ChoiceBoard["session"]
   return `${storagePrefix(classId)}${session.id}:${session.revision}`;
 }
 
+function gradeDraftKey(
+  classId: string,
+  evaluation: NonNullable<ChoiceBoard["evaluation"]>,
+) {
+  return `job_classroom_job_grade_draft_v1:${classId}:${evaluation.id}:${evaluation.revision}`;
+}
+
+function evaluationGrades(classId: string, board: ChoiceBoard) {
+  const evaluation = board.evaluation;
+  const defaults = Object.fromEntries(
+    evaluation?.jobs.map((item) => [
+      item.classJobId,
+      item.finalGrade ?? item.recommendedGrade ?? "C",
+    ]) ?? board.gradePreview.map((item) => [item.classJobId, item.suggestedGrade]),
+  ) as Record<string, JobGrade>;
+  if (!evaluation || evaluation.status !== "closed") return defaults;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(gradeDraftKey(classId, evaluation)) || "null") as {
+      grades?: Record<string, unknown>;
+    } | null;
+    const stored = parsed?.grades;
+    if (
+      !stored
+      || Object.keys(stored).length !== evaluation.jobs.length
+      || evaluation.jobs.some((job) => !["A", "B", "C"].includes(String(stored[job.classJobId])))
+    ) {
+      return defaults;
+    }
+    return Object.fromEntries(
+      evaluation.jobs.map((job) => [job.classJobId, stored[job.classJobId] as JobGrade]),
+    );
+  } catch {
+    return defaults;
+  }
+}
+
 function rosterSignature(board: ChoiceBoard) {
   return board.students
     .map((student) => student.id)
@@ -328,9 +406,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
       const nextBoard = "board" in next ? next.board : next;
       setBoard(nextBoard);
       setPrepareNextMonth(false);
-      setGrades(Object.fromEntries(
-        nextBoard.gradePreview.map((item) => [item.classJobId, item.suggestedGrade]),
-      ));
+      setGrades(evaluationGrades(classId, nextBoard));
       if (nextBoard.session?.status === "draft") {
         const restored = restoreDraft(classId, nextBoard);
         setDraft(restored.draft);
@@ -357,6 +433,15 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
     const timer = window.setTimeout(() => void load(true), 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    const evaluation = board?.evaluation;
+    if (!evaluation || evaluation.status !== "closed" || !Object.keys(grades).length) return;
+    window.localStorage.setItem(
+      gradeDraftKey(classId, evaluation),
+      JSON.stringify({ grades, updatedAt: Date.now() }),
+    );
+  }, [board?.evaluation, classId, grades]);
 
   const saveDraft = useCallback((next: LocalChoiceDraft) => {
     if (!board?.session) return;
@@ -460,7 +545,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
   }
 
   async function closeAndStart() {
-    if (!board?.sourcePeriod || !board.gradePreview.length) return;
+    if (!board?.sourcePeriod || board.evaluation?.status !== "finalized") return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -470,12 +555,6 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
         `/api/classes/${classId}/monthly-job-choice/close`,
         {
           expectedSourcePeriodId: board.sourcePeriod.id,
-          jobGrades: Object.fromEntries(
-            board.gradePreview.map((item) => [
-              item.classJobId,
-              grades[item.classJobId] ?? item.suggestedGrade,
-            ]),
-          ),
         },
       );
       closed = true;
@@ -485,6 +564,76 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
     } catch (reason) {
       setError(formatError(reason));
       if (closed) await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openEvaluation() {
+    if (!board?.sourcePeriod) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await post(`/api/classes/${classId}/job-evaluation/open`, {
+        expectedSourcePeriodId: board.sourcePeriod.id,
+        expectedSourcePeriodRevision: board.sourcePeriod.revision,
+      });
+      setMessage(`${sourceLabel(board.sourcePeriod)} 학생 직업평가를 열었어요.`);
+      await load();
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function closeEvaluation() {
+    if (!board?.evaluation || board.evaluation.status !== "open") return;
+    const missing = board.evaluation.missingStudents.length;
+    if (missing > 0 && !window.confirm(
+      `아직 ${missing}명이 제출하지 않았어요. 현재 제출된 ${board.evaluation.submittedCount}명의 평가로 마감할까요?`,
+    )) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await post(`/api/classes/${classId}/job-evaluation/close`, {
+        evaluationId: board.evaluation.id,
+        expectedRevision: board.evaluation.revision,
+        expectedResponseRevision: board.evaluation.responseRevision,
+        allowIncomplete: missing > 0,
+      });
+      setMessage("학생 평가를 마감하고 직업별 추천등급을 계산했어요.");
+      await load();
+    } catch (reason) {
+      setError(formatError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function finalizeEvaluation() {
+    if (!board?.evaluation || board.evaluation.status !== "closed") return;
+    if (!window.confirm("화면에 표시된 직업별 최종등급을 확정할까요? 확정 후에는 평가 결과를 바꿀 수 없어요.")) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await post(`/api/classes/${classId}/job-evaluation/finalize`, {
+        evaluationId: board.evaluation.id,
+        expectedRevision: board.evaluation.revision,
+        finalGrades: Object.fromEntries(
+          board.evaluation.jobs.map((item) => [
+            item.classJobId,
+            grades[item.classJobId] ?? item.recommendedGrade ?? "C",
+          ]),
+        ),
+      });
+      setMessage("이번 달 직업의 최종등급을 확정했어요.");
+      await load();
+    } catch (reason) {
+      setError(formatError(reason));
     } finally {
       setBusy(false);
     }
@@ -566,6 +715,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
   const recentConfirmationMatchesSource = Boolean(
     !board.session
     && !board.closure
+    && !board.evaluation
     && board.sourcePeriod
     && board.latestConfirmedSession
     && board.latestConfirmedSession.targetYear === board.sourcePeriod.assignmentYear
@@ -680,18 +830,42 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
   }
 
   if (!board.closure) {
+    const evaluation = board.evaluation;
+    const evaluationOpen = evaluation?.status === "open";
+    const evaluationClosed = evaluation?.status === "closed";
+    const evaluationFinalized = evaluation?.status === "finalized";
+    const sortedEvaluationJobs = [...(evaluation?.jobs ?? [])].sort((left, right) => (
+      (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER)
+      || left.sortOrder - right.sortOrder
+    ));
     return (
       <div className="job-page monthly-choice-page">
         {topbar}
         <main className="job-main monthly-choice-main">
           <Notice message={error} tone="error" />
           <Notice message={message} tone="success" />
-          <Notice message={board.blockingReason?.message} tone="error" />
+          {!evaluationFinalized && board.blockingReason?.code !== "JOB_CAPACITY_MISMATCH" && (
+            <Notice message={board.blockingReason?.message} tone="error" />
+          )}
           <section className="monthly-prep-heading">
             <div>
-              <p className="eyebrow">1단계 · 지난달 마감</p>
-              <h1>지난달 결과로 선택 순서를 만들어요</h1>
-              <p>학생 명단·직업·정원은 이미 저장된 정보를 사용합니다. 직업 등급만 확인해 주세요.</p>
+              <p className="eyebrow">
+                {!evaluation
+                  ? "1단계 · 학생 직업평가 열기"
+                  : evaluationOpen
+                    ? "2단계 · 제출 확인과 평가 마감"
+                    : "3단계 · 직업등급 검토와 순서 생성"}
+              </p>
+              <h1>
+                {!evaluation
+                  ? "학생들의 평가로 직업등급을 정해요"
+                  : evaluationOpen
+                    ? "제출 현황을 보고 평가를 마감해요"
+                    : evaluationClosed
+                      ? "추천등급을 검토하고 최종 확정해요"
+                      : "평가와 최종등급이 준비됐어요"}
+              </h1>
+              <p>지난달 배정·학생 명단·직업 목록은 저장된 기록을 그대로 연결해 사용합니다.</p>
             </div>
             <div className="monthly-period-arrow" aria-label={`${sourceLabel(board.sourcePeriod)}에서 ${monthLabel(board.targetMonth)}로`}>
               <span><small>기준 결과</small><b>{sourceLabel(board.sourcePeriod)}</b></span>
@@ -701,58 +875,196 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
           </section>
 
           <section className="monthly-prep-summary" aria-label="자동으로 불러온 운영 정보">
-            <div><UsersRound aria-hidden="true" /><span>학생<strong>{board.students.length}명</strong></span></div>
-            <div><BriefcaseBusiness aria-hidden="true" /><span>직업<strong>{board.jobs.length}개</strong></span></div>
-            <div><Check aria-hidden="true" /><span>입력할 항목<strong>직업 등급만</strong></span></div>
+            <div><UsersRound aria-hidden="true" /><span>학생<strong>{evaluation?.studentCountSnapshot ?? board.students.length}명</strong></span></div>
+            <div><BriefcaseBusiness aria-hidden="true" /><span>평가 직업<strong>{evaluation?.jobs.length ?? board.gradePreview.length}개</strong></span></div>
+            <div><Check aria-hidden="true" /><span>제출 현황<strong>{evaluation ? `${evaluation.submittedCount}/${evaluation.studentCountSnapshot}명` : "열기 전"}</strong></span></div>
           </section>
 
-          <section className="panel monthly-grade-panel">
-            <div className="monthly-grade-intro">
+          {!evaluation && (
+            <section className="panel monthly-evaluation-start">
+              <span className="mode-icon" aria-hidden="true"><UsersRound /></span>
               <div>
-                <p className="eyebrow">선택 순서 규칙</p>
-                <h2>C → B → A 순서로 선택해요</h2>
-                <p>같은 등급 학생은 기본적으로 번호순이며, 선택 시작 전 한 번 섞을 수 있어요.</p>
+                <p className="eyebrow">학생들은 직업을 하나씩 평가해요</p>
+                <h2>힘듦 · 책임감 · 꾸준함 · 개인 부담</h2>
+                <p>각 항목을 1~5점으로 평가하면 직업별 평균과 A/B/C 추천등급이 자동으로 계산됩니다.</p>
               </div>
-              <ol aria-label="직업 등급별 선택 순서">
-                {gradeOptions.map((option, index) => (
-                  <li key={option.value}><b>{index + 1}</b><span>{option.label}</span></li>
-                ))}
-              </ol>
-            </div>
-            <div className="monthly-grade-list">
-              {board.gradePreview.map((item) => (
-                <label key={item.classJobId}>
-                  <span>
-                    <b>{item.name}</b>
-                    <small>지난달 {item.studentCount}명 · 추천 {item.suggestedGrade}등급</small>
-                  </span>
-                  <select
-                    aria-label={`${item.name} 직업 등급`}
-                    value={grades[item.classJobId] ?? item.suggestedGrade}
-                    onChange={(event) => setGrades((current) => ({
-                      ...current,
-                      [item.classJobId]: event.target.value as JobGrade,
-                    }))}
-                  >
-                    {gradeOptions.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-            <div className="monthly-prep-action">
-              <span>마감 기록은 보존되며 다음 달 선택 순서의 기준이 됩니다.</span>
               <button
                 className="button button-primary button-large"
-                disabled={busy || board.gradePreview.length === 0 || Boolean(board.blockingReason)}
-                onClick={closeAndStart}
+                disabled={busy || !board.sourcePeriod || board.gradePreview.length === 0}
+                onClick={openEvaluation}
               >
                 <Check aria-hidden="true" />
-                {busy ? "지난달을 마감하고 있어요…" : "지난달 마감하고 순서 만들기"}
+                {busy ? "평가를 열고 있어요…" : `${sourceLabel(board.sourcePeriod)} 직업평가 열기`}
               </button>
-            </div>
-          </section>
+            </section>
+          )}
+
+          {evaluationOpen && evaluation && (
+            <section className="panel monthly-evaluation-status">
+              <div className="monthly-evaluation-status-heading">
+                <div>
+                  <p className="eyebrow">실시간 제출 현황</p>
+                  <h2>{evaluation.submittedCount}/{evaluation.studentCountSnapshot}명 제출</h2>
+                  <p>학생은 로그인한 뒤 자기 화면에서 모든 직업을 평가할 수 있어요.</p>
+                </div>
+                <button className="button button-light" disabled={busy} onClick={() => load()}>
+                  <RefreshCw aria-hidden="true" />최신 정보
+                </button>
+              </div>
+              <div className="monthly-evaluation-meter" aria-label={`제출 ${evaluation.submittedCount}/${evaluation.studentCountSnapshot}명`}>
+                <span style={{
+                  width: `${evaluation.studentCountSnapshot
+                    ? Math.round((evaluation.submittedCount / evaluation.studentCountSnapshot) * 100)
+                    : 0}%`,
+                }} />
+              </div>
+              <div className="monthly-missing-students">
+                <b>{evaluation.missingStudents.length ? "아직 제출하지 않은 학생" : "모든 학생이 제출했어요"}</b>
+                <div>
+                  {evaluation.missingStudents.length
+                    ? evaluation.missingStudents.map((student) => (
+                      <span key={student.id}>
+                        {student.studentNumber ? `${student.studentNumber}번 ` : ""}{student.name}
+                      </span>
+                    ))
+                    : <span className="complete"><Check aria-hidden="true" />제출 완료</span>}
+                </div>
+              </div>
+              {evaluation.rosterChanged && (
+                <div className="monthly-stale-warning" role="alert">
+                  <CircleAlert aria-hidden="true" />
+                  <span>
+                    <b>평가를 연 뒤 학생 명단이 달라졌어요.</b>
+                    평가는 개설 당시 학생 명단을 기준으로 마감됩니다.
+                  </span>
+                </div>
+              )}
+              {evaluation.jobsChanged && (
+                <div className="monthly-stale-warning" role="alert">
+                  <CircleAlert aria-hidden="true" />
+                  <span>
+                    <b>평가를 연 뒤 우리 반 직업 설정이 달라졌어요.</b>
+                    평가를 열 때 저장한 직업 목록과 결과는 그대로 보존됩니다. 다음 단계 전에 현재 직업 설정을 확인해 주세요.
+                  </span>
+                </div>
+              )}
+              <div className="monthly-prep-action">
+                <span>{evaluation.missingStudents.length
+                  ? "미제출 학생이 있어도 선생님 확인 후 현재 제출분으로 마감할 수 있습니다."
+                  : "모든 학생이 제출했습니다. 평가를 마감하면 추천등급이 계산됩니다."}</span>
+                <button
+                  className="button button-primary button-large"
+                  disabled={busy || evaluation.submittedCount === 0}
+                  onClick={closeEvaluation}
+                >
+                  <Check aria-hidden="true" />
+                  {busy ? "결과를 계산하고 있어요…" : "평가 마감하고 추천등급 계산"}
+                </button>
+              </div>
+            </section>
+          )}
+
+          {(evaluationClosed || evaluationFinalized) && evaluation && (
+            <section className="panel monthly-grade-panel">
+              <div className="monthly-grade-intro">
+                <div>
+                  <p className="eyebrow">선택 순서 규칙</p>
+                  <h2>C → B → A 순서 · 같은 등급은 자동 무작위</h2>
+                  <p>총점 상위 3개 직업은 A, 4~8위는 B, 나머지는 C 추천등급입니다.</p>
+                </div>
+                <ol aria-label="직업 등급별 선택 순서">
+                  {gradeOptions.map((option, index) => (
+                    <li key={option.value}><b>{index + 1}</b><span>{option.label}</span></li>
+                  ))}
+                </ol>
+              </div>
+              {evaluation.rosterChanged && (
+                <div className="monthly-stale-warning" role="alert">
+                  <CircleAlert aria-hidden="true" />
+                  <span>
+                    <b>평가를 연 뒤 학생 명단이 달라졌어요.</b>
+                    최종등급은 평가 당시 명단을 기준으로 보존되며, 다음 달 순서를 만들기 전 현재 명단을 다시 확인해야 합니다.
+                  </span>
+                </div>
+              )}
+              {evaluation.jobsChanged && (
+                <div className="monthly-stale-warning" role="alert">
+                  <CircleAlert aria-hidden="true" />
+                  <span>
+                    <b>평가를 연 뒤 우리 반 직업 설정이 달라졌어요.</b>
+                    평가 당시 직업 결과는 보존됩니다. 다음 단계 전에 현재 직업 설정을 다시 확인해 주세요.
+                  </span>
+                </div>
+              )}
+              {evaluation.cutoffTie && (
+                <div className="monthly-evaluation-tie" role="status">
+                  <CircleAlert aria-hidden="true" />
+                  <span><b>등급 경계에 동점 직업이 있어요.</b> 점수와 업무 내용을 보고 최종등급을 확인해 주세요.</span>
+                </div>
+              )}
+              <div className="monthly-evaluation-results">
+                {sortedEvaluationJobs.map((item) => (
+                  <label key={item.classJobId} className={item.cutoffTie ? "has-tie" : ""}>
+                    <span className="monthly-evaluation-rank">{item.rank ?? "-"}</span>
+                    <span className="monthly-evaluation-job-name">
+                      <b>{item.name}</b>
+                      <small>{item.responseCount}명 평가 · 총점 {item.totalAverage?.toFixed(2) ?? "-"} / 20</small>
+                    </span>
+                    <span className="monthly-evaluation-metrics">
+                      <small>힘듦 <b>{item.hardAverage?.toFixed(2) ?? "-"}</b></small>
+                      <small>책임 <b>{item.responsibilityAverage?.toFixed(2) ?? "-"}</b></small>
+                      <small>꾸준함 <b>{item.consistencyAverage?.toFixed(2) ?? "-"}</b></small>
+                      <small>부담 <b>{item.burdenAverage?.toFixed(2) ?? "-"}</b></small>
+                    </span>
+                    <span className="monthly-evaluation-grade">
+                      <small>추천 {item.recommendedGrade ?? "-"}등급</small>
+                      <select
+                        aria-label={`${item.name} 최종 직업 등급`}
+                        disabled={evaluationFinalized}
+                        value={grades[item.classJobId] ?? item.recommendedGrade ?? "C"}
+                        onChange={(event) => setGrades((current) => ({
+                          ...current,
+                          [item.classJobId]: event.target.value as JobGrade,
+                        }))}
+                      >
+                        {gradeOptions.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div className="monthly-prep-action">
+                <span>{evaluationFinalized
+                  ? "최종등급이 평가 기록에 고정됐습니다. 동급 학생은 자동으로 무작위 추첨됩니다."
+                  : "추천등급을 수정할 수 있으며, 최종 확정 뒤에는 평가 결과가 바뀌지 않습니다."}</span>
+                {evaluationFinalized ? (
+                  <button
+                    className="button button-primary button-large"
+                    disabled={busy || Boolean(board.blockingReason)}
+                    onClick={closeAndStart}
+                  >
+                    <Shuffle aria-hidden="true" />
+                    {busy ? "월마감과 순서를 준비하고 있어요…" : "지난달 마감하고 무작위 순서 만들기"}
+                  </button>
+                ) : (
+                  <button
+                    className="button button-primary button-large"
+                    disabled={busy || sortedEvaluationJobs.length === 0}
+                    onClick={finalizeEvaluation}
+                  >
+                    <Check aria-hidden="true" />
+                    {busy ? "최종등급을 저장하고 있어요…" : "직업별 최종등급 확정"}
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+
+          {evaluationFinalized && board.blockingReason && (
+            <Notice message={board.blockingReason.message} tone="error" />
+          )}
         </main>
       </div>
     );
@@ -848,14 +1160,14 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
       <main className="job-main monthly-choice-main">
         <section className="monthly-live-heading">
           <div>
-            <p className="eyebrow">2단계 · 교실에서 한 명씩 선택</p>
+            <p className="eyebrow">4단계 · 교실에서 한 명씩 선택</p>
             <h1>{monthLabel(board.targetMonth)} 직업 선정</h1>
             <p>선택은 이 브라우저에 즉시 저장되고, 모두 끝난 뒤 한 번만 서버로 전송됩니다.</p>
           </div>
           <div className="monthly-live-tools">
-            <span>선택 순서: <b>{board.session.orderMode === "shuffled" ? "동급 무작위" : "동급 번호순"}</b></span>
+            <span>선택 순서: <b>{board.session.orderMode === "shuffled" ? "동급 자동 무작위" : "동급 순서 재추첨 필요"}</b></span>
             <button disabled={busy || assignedCount > 0} onClick={shuffleOrder}>
-              <Shuffle aria-hidden="true" />동급 순서 섞기
+              <Shuffle aria-hidden="true" />동급 순서 다시 섞기
             </button>
             <button disabled={busy} onClick={() => load()}>
               <RefreshCw aria-hidden="true" />최신 정보

@@ -8,6 +8,7 @@ import { StudentEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { api, postJson } from "@/lib/client-api";
+import { JobEvaluationPanel } from "./JobEvaluationPanel";
 
 type StudentInfo = {
   id: string; official_name: string; student_number: number; class_id: string;
@@ -82,6 +83,7 @@ export function StudentPortal() {
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>
         <h1>{student.official_name}님,<br />직업교실에 잘 들어왔어요!</h1>
         <div className="student-id-card"><span>내 공식 정보</span><strong>{student.student_number}번 · {student.official_name}</strong><small>이름과 번호는 선생님만 고칠 수 있어요.</small></div>
+        <JobEvaluationPanel studentId={student.id} />
         {student.current_job ? (
           <div className="student-job-card">
             <span><BriefcaseBusiness aria-hidden="true" /></span>

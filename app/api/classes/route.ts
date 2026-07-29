@@ -2,12 +2,15 @@ import { requireClassManagement, requireTeacher } from "@/lib/auth";
 import { audit, database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, currentSchoolYear, integerInRange, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
+import { seoulServerTime } from "@/lib/seoul-time";
 
 export async function GET(request: Request) {
   try {
     const { teacherId } = await requireTeacher(request);
+    const current = seoulServerTime();
     const result = await database().prepare(
-      `SELECT c.id, c.school_name, c.school_year, c.grade, c.class_number, c.display_name, c.status,
+      `WITH clock AS (SELECT ? AS current_year, ? AS current_month)
+       SELECT c.id, c.school_name, c.school_year, c.grade, c.class_number, c.display_name, c.status,
               COUNT(s.id) AS student_count,
               SUM(CASE WHEN s.status = 'active' THEN 1 ELSE 0 END) AS active_count,
               SUM(CASE WHEN s.status IN ('pending','reset_required') THEN 1 ELSE 0 END) AS action_count,
@@ -39,6 +42,69 @@ export async function GET(request: Request) {
                 WHERE choice.class_id = c.id
                 ORDER BY choice.updated_at DESC, choice.target_year DESC, choice.target_month DESC LIMIT 1
               ) AS monthly_choice_target_month,
+              (
+                SELECT evaluation.status FROM class_job_evaluation_sessions evaluation
+                WHERE evaluation.class_id = c.id
+                  AND evaluation.source_period_id = (
+                    SELECT source.id FROM class_job_assignment_periods source
+                    WHERE source.class_id = c.id AND source.status = 'confirmed'
+                      AND source.assignment_type IN ('initial', 'monthly')
+                      AND (
+                        source.assignment_year < clock.current_year
+                        OR (
+                          source.assignment_year = clock.current_year
+                          AND source.assignment_month <= clock.current_month
+                        )
+                      )
+                    ORDER BY source.assignment_year DESC, source.assignment_month DESC,
+                             source.confirmed_at DESC, source.updated_at DESC, source.id DESC
+                    LIMIT 1
+                  )
+                LIMIT 1
+              ) AS job_evaluation_status,
+              (
+                SELECT COUNT(*) FROM class_job_evaluation_responses response
+                WHERE response.session_id = (
+                  SELECT evaluation.id FROM class_job_evaluation_sessions evaluation
+                  WHERE evaluation.class_id = c.id
+                    AND evaluation.source_period_id = (
+                      SELECT source.id FROM class_job_assignment_periods source
+                      WHERE source.class_id = c.id AND source.status = 'confirmed'
+                        AND source.assignment_type IN ('initial', 'monthly')
+                        AND (
+                          source.assignment_year < clock.current_year
+                          OR (
+                            source.assignment_year = clock.current_year
+                            AND source.assignment_month <= clock.current_month
+                          )
+                        )
+                      ORDER BY source.assignment_year DESC, source.assignment_month DESC,
+                               source.confirmed_at DESC, source.updated_at DESC, source.id DESC
+                      LIMIT 1
+                    )
+                  LIMIT 1
+                )
+              ) AS job_evaluation_submitted_count,
+              (
+                SELECT evaluation.student_count_snapshot FROM class_job_evaluation_sessions evaluation
+                WHERE evaluation.class_id = c.id
+                  AND evaluation.source_period_id = (
+                    SELECT source.id FROM class_job_assignment_periods source
+                    WHERE source.class_id = c.id AND source.status = 'confirmed'
+                      AND source.assignment_type IN ('initial', 'monthly')
+                      AND (
+                        source.assignment_year < clock.current_year
+                        OR (
+                          source.assignment_year = clock.current_year
+                          AND source.assignment_month <= clock.current_month
+                        )
+                      )
+                    ORDER BY source.assignment_year DESC, source.assignment_month DESC,
+                             source.confirmed_at DESC, source.updated_at DESC, source.id DESC
+                    LIMIT 1
+                  )
+                LIMIT 1
+              ) AS job_evaluation_student_count,
               CASE
                 WHEN j.status IS NOT NULL
                   AND j.status <> 'not_started'
@@ -46,10 +112,11 @@ export async function GET(request: Request) {
                 THEN 1 ELSE 0
               END AS job_student_count_changed
        FROM classes c
+       CROSS JOIN clock
        LEFT JOIN students s ON s.class_id = c.id
        LEFT JOIN class_job_setup j ON j.class_id = c.id
        WHERE c.teacher_id = ? GROUP BY c.id ORDER BY c.school_year DESC, c.created_at DESC`,
-    ).bind(teacherId).all();
+    ).bind(current.year, current.month, teacherId).all();
     return json({ classes: result.results });
   } catch (error) {
     return apiFailure(error);

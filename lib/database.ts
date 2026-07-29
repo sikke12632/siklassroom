@@ -151,13 +151,74 @@ const schemaStatements = [
     ON student_job_assignments(period_id, class_job_id)`,
   `CREATE INDEX IF NOT EXISTS student_job_assignments_class_idx
     ON student_job_assignments(class_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_evaluation_sessions (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, source_period_id TEXT NOT NULL,
+    source_year INTEGER NOT NULL, source_month INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open', jobs_json TEXT NOT NULL,
+    student_ids_json TEXT NOT NULL, student_count_snapshot INTEGER NOT NULL,
+    job_count_snapshot INTEGER NOT NULL, source_period_revision INTEGER NOT NULL,
+    job_setup_revision INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0,
+    response_revision INTEGER NOT NULL DEFAULT 0, calculated_response_revision INTEGER,
+    algorithm_version TEXT NOT NULL DEFAULT 'legacy-rank-v1',
+    final_grades_json TEXT, opened_by_teacher_id TEXT NOT NULL,
+    opened_at INTEGER NOT NULL, closed_by_teacher_id TEXT, closed_at INTEGER,
+    finalized_by_teacher_id TEXT, finalized_at INTEGER,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (source_period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (opened_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (closed_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (finalized_by_teacher_id) REFERENCES teachers(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_evaluation_sessions_source_uq
+    ON class_job_evaluation_sessions(source_period_id)`,
+  `CREATE INDEX IF NOT EXISTS class_job_evaluation_sessions_class_idx
+    ON class_job_evaluation_sessions(class_id, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS class_job_evaluation_responses (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, class_id TEXT NOT NULL,
+    student_id TEXT NOT NULL, student_number INTEGER NOT NULL, student_name TEXT NOT NULL,
+    scores_json TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
+    request_id TEXT NOT NULL, write_nonce TEXT NOT NULL,
+    submitted_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES class_job_evaluation_sessions(id),
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (student_id) REFERENCES students(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_evaluation_responses_student_uq
+    ON class_job_evaluation_responses(session_id, student_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_evaluation_responses_request_uq
+    ON class_job_evaluation_responses(session_id, request_id)`,
+  `CREATE INDEX IF NOT EXISTS class_job_evaluation_responses_session_idx
+    ON class_job_evaluation_responses(session_id, submitted_at)`,
+  `CREATE INDEX IF NOT EXISTS class_job_evaluation_responses_class_idx
+    ON class_job_evaluation_responses(class_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_evaluation_results (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, class_id TEXT NOT NULL,
+    class_job_id TEXT NOT NULL, job_name TEXT NOT NULL,
+    hard_average REAL NOT NULL, responsibility_average REAL NOT NULL,
+    consistency_average REAL NOT NULL, burden_average REAL NOT NULL,
+    total_average REAL NOT NULL, response_count INTEGER NOT NULL,
+    rank INTEGER NOT NULL, recommended_grade TEXT NOT NULL,
+    cutoff_tie INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES class_job_evaluation_sessions(id),
+    FOREIGN KEY (class_id) REFERENCES classes(id)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_evaluation_results_job_uq
+    ON class_job_evaluation_results(session_id, class_job_id)`,
+  `CREATE INDEX IF NOT EXISTS class_job_evaluation_results_session_idx
+    ON class_job_evaluation_results(session_id, rank)`,
+  `CREATE INDEX IF NOT EXISTS class_job_evaluation_results_class_idx
+    ON class_job_evaluation_results(class_id)`,
   `CREATE TABLE IF NOT EXISTS class_job_month_closures (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, source_period_id TEXT NOT NULL,
     source_year INTEGER NOT NULL, source_month INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'closed', closed_by_teacher_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'closed', evaluation_session_id TEXT,
+    evaluation_revision INTEGER, closed_by_teacher_id TEXT NOT NULL,
     closed_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
     FOREIGN KEY (class_id) REFERENCES classes(id),
     FOREIGN KEY (source_period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (evaluation_session_id) REFERENCES class_job_evaluation_sessions(id),
     FOREIGN KEY (closed_by_teacher_id) REFERENCES teachers(id)
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS class_job_month_closures_source_uq
@@ -293,6 +354,7 @@ export async function ensureSchema(): Promise<void> {
           .filter((sql) => (
             sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
             || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
+            || sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_month_closures")
           ))
           .map((sql) => db.prepare(sql)),
       );
@@ -315,6 +377,8 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "class_job_assignment_periods", "revision", "INTEGER NOT NULL DEFAULT 0");
       await ensureColumn(db, "student_job_assignments", "request_id", "TEXT");
       await ensureColumn(db, "student_job_assignments", "assignment_sequence", "INTEGER NOT NULL DEFAULT 0");
+      await ensureColumn(db, "class_job_month_closures", "evaluation_session_id", "TEXT");
+      await ensureColumn(db, "class_job_month_closures", "evaluation_revision", "INTEGER");
       const statements = schemaStatements.map((sql) => db.prepare(sql));
       await db.batch(statements);
       await bootstrapExistingTeachers(db);
@@ -329,7 +393,8 @@ export async function ensureSchema(): Promise<void> {
 
 async function ensureColumn(
   db: D1Database,
-  table: "teachers" | "classes" | "class_job_assignment_periods" | "student_job_assignments",
+  table: "teachers" | "classes" | "class_job_assignment_periods" | "student_job_assignments"
+    | "class_job_month_closures",
   column: string,
   definition: string,
 ) {

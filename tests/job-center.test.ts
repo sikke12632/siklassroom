@@ -11,10 +11,12 @@ import {
 import { chooseSecureCandidate, secureRandomIndex } from "../lib/local-job-assignment";
 import {
   nextJobMonth,
+  shuffleChoiceOrderWithinGrades,
   sortChoiceOrder,
   suggestJobGrade,
   type ChoiceOrderItem,
 } from "../lib/monthly-job-choice-rules";
+import { calculateJobEvaluationResults } from "../lib/job-evaluation-rules";
 import { assignmentPeriod, randomCandidate, seoulServerTime } from "../lib/seoul-time";
 
 test("26명 균형형 추천은 항상 같은 26자리를 만든다", () => {
@@ -155,19 +157,61 @@ test("다음 달 직업 선택은 C, B, A, 새 학생, D 순서다", () => {
   );
 });
 
-test("같은 등급 학생은 번호순이며 같은 입력은 항상 같은 순서를 만든다", () => {
+test("같은 등급 학생은 번호와 무관하게 무작위로 섞고 등급 묶음은 유지한다", () => {
   const source: ChoiceOrderItem[] = [
     { studentId: "s-12", studentNumber: 12, studentName: "하늘", previousJobName: "기자", previousGrade: "B" },
     { studentId: "s-2", studentNumber: 2, studentName: "나무", previousJobName: "기자", previousGrade: "B" },
     { studentId: "s-7", studentNumber: 7, studentName: "바다", previousJobName: "기자", previousGrade: "B" },
+    { studentId: "c-1", studentNumber: 1, studentName: "초롱", previousJobName: "청소", previousGrade: "C" },
   ];
   const original = structuredClone(source);
-  const first = sortChoiceOrder(source).map((student) => student.studentId);
-  const second = sortChoiceOrder(source).map((student) => student.studentId);
+  const randomIndexes = [1, 0];
+  const shuffled = shuffleChoiceOrderWithinGrades(source, () => randomIndexes.shift() ?? 0);
 
-  assert.deepEqual(first, ["s-2", "s-7", "s-12"]);
-  assert.deepEqual(second, first);
+  assert.deepEqual(shuffled.map((student) => student.previousGrade), ["C", "B", "B", "B"]);
+  assert.deepEqual(shuffled.map((student) => student.studentId), ["c-1", "s-7", "s-12", "s-2"]);
+  assert.deepEqual(
+    new Set(shuffled.map((student) => student.studentId)),
+    new Set(source.map((student) => student.studentId)),
+  );
   assert.deepEqual(source, original);
+});
+
+test("학생 직업평가는 네 항목 평균 총점으로 상위 3개 A, 4~8위 B, 나머지 C를 추천한다", () => {
+  const jobs = Array.from({ length: 9 }, (_, index) => ({
+    classJobId: `job-${index + 1}`,
+    name: `직업 ${index + 1}`,
+    description: "평가용 직업",
+    sortOrder: index,
+  }));
+  const responses = [0, 1].map((studentOffset) => Object.fromEntries(
+    jobs.map((job, index) => {
+      const score = Math.max(1, 5 - Math.floor(index / 2) - studentOffset);
+      return [job.classJobId, {
+        hard: score,
+        responsibility: score,
+        consistency: score,
+        burden: score,
+      }];
+    }),
+  ));
+  const results = calculateJobEvaluationResults(jobs, responses);
+
+  assert.equal(results[0].hardAverage, 4.5);
+  assert.equal(results[0].totalAverage, 18);
+  assert.deepEqual(results.slice(0, 3).map((result) => result.recommendedGrade), ["A", "A", "A"]);
+  assert.deepEqual(results.slice(3, 8).map((result) => result.recommendedGrade), ["B", "B", "B", "B", "B"]);
+  assert.equal(results[8].recommendedGrade, "C");
+  assert.ok(results.some((result) => result.cutoffTie), "등급 경계 동점은 교사 검토용으로 표시해야 합니다.");
+});
+
+test("응답이 없는 직업평가는 결과를 만들지 않는다", () => {
+  assert.deepEqual(calculateJobEvaluationResults([{
+    classJobId: "job-1",
+    name: "기록원",
+    description: "기록해요.",
+    sortOrder: 0,
+  }], []), []);
 });
 
 test("대표 직업의 등급 추천은 A, B, C 업무 규칙을 따른다", () => {

@@ -210,3 +210,84 @@ test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게
   assert.match(completeApi, /expectedRevision/);
   assert.match(completeApi, /expectedJobSetupRevision/);
 });
+
+test("학생 직업평가를 안전하게 모아 최종등급과 자동 무작위 순서에 연결한다", async () => {
+  const [
+    schema,
+    migration,
+    runtimeSchema,
+    service,
+    rules,
+    studentApi,
+    studentPanel,
+    teacherPortal,
+    monthlyService,
+    openApi,
+    closeApi,
+    finalizeApi,
+  ] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0008_wandering_stephen_strange.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-evaluation.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-evaluation-rules.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/student/job-evaluation/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/student/JobEvaluationPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/MonthlyJobChoicePortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/monthly-job-choice.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-evaluation/open/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-evaluation/close/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-evaluation/finalize/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [schema, migration, runtimeSchema]) {
+    assert.match(source, /class_job_evaluation_sessions|classJobEvaluationSessions/);
+    assert.match(source, /class_job_evaluation_responses|classJobEvaluationResponses/);
+    assert.match(source, /class_job_evaluation_results|classJobEvaluationResults/);
+  }
+  assert.match(rules, /hardAverage/);
+  assert.match(rules, /index < 3/);
+  assert.match(rules, /index < 8/);
+  assert.match(service, /JOB_EVALUATION_INCOMPLETE/);
+  assert.match(service, /finalizedEvaluationGrades/);
+  assert.match(studentApi, /requireStudent/);
+  assert.match(studentApi, /readJson/);
+  assert.match(studentPanel, /힘듦/);
+  assert.match(studentPanel, /책임감/);
+  assert.match(studentPanel, /꾸준함/);
+  assert.match(studentPanel, /개인 부담/);
+  assert.match(studentPanel, /localStorage/);
+  assert.match(teacherPortal, /학생 직업평가 열기/);
+  assert.match(teacherPortal, /같은 등급은 자동 무작위/);
+  assert.doesNotMatch(teacherPortal, /기본적으로 번호순/);
+  assert.match(monthlyService, /'shuffled'/);
+  assert.match(monthlyService, /shuffleChoiceOrderWithinGrades/);
+  for (const mutationApi of [openApi, closeApi, finalizeApi]) {
+    assert.match(mutationApi, /requireClassManagement/);
+    assert.match(mutationApi, /ownedClass/);
+    assert.match(mutationApi, /readJson/);
+  }
+});
+
+test("연속 월 평가 상태와 학생 로컬 초안을 최신 서버 상태에 맞게 복원한다", async () => {
+  const [monthlyPortal, teacherPortal, classesApi, studentPanel, css] = await Promise.all([
+    readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/MonthlyJobChoicePortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/student/JobEvaluationPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(monthlyPortal, /&& !board\.evaluation/);
+  assert.match(monthlyPortal, /job_classroom_job_grade_draft_v1/);
+  assert.match(teacherPortal, /monthlyChoiceAccessible/);
+  assert.match(teacherPortal, /&& !selectedSummary\.job_evaluation_status/);
+  assert.match(classesApi, /evaluation\.source_period_id/);
+  assert.match(classesApi, /source\.assignment_month <= clock\.current_month/);
+  assert.match(studentPanel, /baseResponseRevision/);
+  assert.match(studentPanel, /localScoresAreCurrent/);
+  assert.match(studentPanel, /직업평가를 불러오지 못했어요/);
+  assert.match(studentPanel, /role="progressbar"/);
+  assert.match(studentPanel, /이 점수로 확인하고 다음/);
+  assert.match(css, /@media \(max-width: 420px\)[\s\S]*student-score-options[\s\S]*repeat\(3/);
+});

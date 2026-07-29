@@ -374,7 +374,7 @@ await request(`/api/classes/${jobClassId}/calendar`, {
   method: "PUT",
   body: {
     expectedRevision: 0,
-    schoolYear: year,
+    schoolYear: jobCalendar.data.calendar.schoolYear,
     classStartDate: jobCalendar.data.calendar.classStartDate,
     firstJobStartDate: jobCalendar.data.calendar.firstJobStartDate,
     firstJobEndDate: jobCalendar.data.calendar.firstJobEndDate,
@@ -448,6 +448,166 @@ assert.equal(afterRemoval.data.availableStudents.length, 25);
 assert.ok(afterRemoval.data.availableStudents.some(
   (studentRow) => studentRow.id === randomAssignment.data.assignment.student.id,
 ));
+
+let assignmentStudentIndex = 0;
+const submittedInitialAssignments = afterRemoval.data.jobs.flatMap((job) => (
+  Array.from({ length: job.memberCapacity }, () => ({
+    studentId: jobRoster.data.students[assignmentStudentIndex++].id,
+    classJobId: job.id,
+    method: "manual",
+  }))
+));
+assert.equal(submittedInitialAssignments.length, jobRoster.data.students.length);
+await request(`/api/classes/${jobClassId}/job-assignments/complete`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    mode: "manual",
+    expectedRevision: afterRemoval.data.revision,
+    expectedCalendarRevision: afterRemoval.data.calendar.revision,
+    requestId: crypto.randomUUID(),
+    assignments: submittedInitialAssignments,
+  },
+});
+
+const evaluationStudent = jobRoster.data.students[0];
+const evaluationActivationToken = new URL(evaluationStudent.activation_url).searchParams.get("token");
+assert.ok(evaluationActivationToken);
+const evaluationActivation = await request("/api/registration/complete", {
+  method: "POST",
+  body: { token: evaluationActivationToken, password: "3579" },
+});
+const evaluationStudentCookie = cookieFrom(evaluationActivation.response);
+const monthlyBasePath = `/api/classes/${jobClassId}/monthly-job-choice`;
+const monthlyBeforeEvaluation = await request(monthlyBasePath, { cookie: teacherCookie });
+assert.ok(monthlyBeforeEvaluation.data.sourcePeriod?.id);
+assert.equal(monthlyBeforeEvaluation.data.evaluation, null);
+await request(`/api/classes/${jobClassId}/job-evaluation/open`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    expectedSourcePeriodId: monthlyBeforeEvaluation.data.sourcePeriod.id,
+    expectedSourcePeriodRevision: monthlyBeforeEvaluation.data.sourcePeriod.revision,
+  },
+  expected: 201,
+});
+const studentEvaluation = await request("/api/student/job-evaluation", {
+  cookie: evaluationStudentCookie,
+});
+assert.equal(studentEvaluation.data.evaluation.status, "open");
+assert.ok(studentEvaluation.data.evaluation.jobs.length > 0);
+await request("/api/student/job-evaluation", {
+  cookie: evaluationStudentCookie,
+  method: "POST",
+  body: {
+    evaluationId: studentEvaluation.data.evaluation.id,
+    expectedSessionRevision: studentEvaluation.data.evaluation.revision,
+    expectedResponseRevision: 0,
+    requestId: crypto.randomUUID(),
+    scores: studentEvaluation.data.evaluation.jobs.slice(1).map((job) => ({
+      classJobId: job.classJobId,
+      hard: 3,
+      responsibility: 3,
+      consistency: 3,
+      burden: 3,
+    })),
+  },
+  expected: 400,
+});
+const evaluationRequestId = crypto.randomUUID();
+const evaluationScores = studentEvaluation.data.evaluation.jobs.map((job, index) => ({
+  classJobId: job.classJobId,
+  hard: 1 + (index % 5),
+  responsibility: 1 + ((index + 1) % 5),
+  consistency: 1 + ((index + 2) % 5),
+  burden: 1 + ((index + 3) % 5),
+}));
+const submittedEvaluation = await request("/api/student/job-evaluation", {
+  cookie: evaluationStudentCookie,
+  method: "POST",
+  body: {
+    evaluationId: studentEvaluation.data.evaluation.id,
+    expectedSessionRevision: studentEvaluation.data.evaluation.revision,
+    expectedResponseRevision: 0,
+    requestId: evaluationRequestId,
+    scores: evaluationScores,
+  },
+});
+assert.equal(submittedEvaluation.data.evaluation.submission.revision, 1);
+await request("/api/student/job-evaluation", {
+  cookie: evaluationStudentCookie,
+  method: "POST",
+  body: {
+    evaluationId: studentEvaluation.data.evaluation.id,
+    expectedSessionRevision: studentEvaluation.data.evaluation.revision,
+    expectedResponseRevision: 0,
+    requestId: evaluationRequestId,
+    scores: evaluationScores,
+  },
+});
+let teacherEvaluation = await request(`/api/classes/${jobClassId}/job-evaluation`, {
+  cookie: teacherCookie,
+});
+assert.equal(teacherEvaluation.data.evaluation.submittedCount, 1);
+await request(`/api/classes/${jobClassId}/job-evaluation/close`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    evaluationId: teacherEvaluation.data.evaluation.id,
+    expectedRevision: teacherEvaluation.data.evaluation.revision,
+    expectedResponseRevision: teacherEvaluation.data.evaluation.responseRevision,
+    allowIncomplete: false,
+  },
+  expected: 409,
+});
+await request(`/api/classes/${jobClassId}/job-evaluation/close`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    evaluationId: teacherEvaluation.data.evaluation.id,
+    expectedRevision: teacherEvaluation.data.evaluation.revision,
+    expectedResponseRevision: teacherEvaluation.data.evaluation.responseRevision,
+    allowIncomplete: true,
+  },
+});
+teacherEvaluation = await request(`/api/classes/${jobClassId}/job-evaluation`, {
+  cookie: teacherCookie,
+});
+assert.equal(teacherEvaluation.data.evaluation.status, "closed");
+assert.equal(teacherEvaluation.data.evaluation.jobs.length, studentEvaluation.data.evaluation.jobs.length);
+await request(`/api/classes/${jobClassId}/job-evaluation/finalize`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {
+    evaluationId: teacherEvaluation.data.evaluation.id,
+    expectedRevision: teacherEvaluation.data.evaluation.revision,
+    finalGrades: Object.fromEntries(teacherEvaluation.data.evaluation.jobs.map((job) => [
+      job.classJobId,
+      job.recommendedGrade,
+    ])),
+  },
+});
+await request(`${monthlyBasePath}/close`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { expectedSourcePeriodId: monthlyBeforeEvaluation.data.sourcePeriod.id },
+  expected: 201,
+});
+await request(`${monthlyBasePath}/start`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+  expected: 201,
+});
+const monthlyStarted = await request(monthlyBasePath, { cookie: teacherCookie });
+assert.equal(monthlyStarted.data.session.orderMode, "shuffled");
+assert.equal(monthlyStarted.data.session.order.length, jobRoster.data.students.length);
+const monthlyReloaded = await request(monthlyBasePath, { cookie: teacherCookie });
+assert.deepEqual(monthlyReloaded.data.session.order, monthlyStarted.data.session.order);
+await request(`/api/classes/${jobClassId}/job-evaluation`, {
+  cookie: outsiderCookie,
+  expected: 404,
+});
 
 const verification = await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`);
 assert.equal(verification.data.student.official_name, "김하늘");

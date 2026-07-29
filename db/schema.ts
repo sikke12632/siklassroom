@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const teachers = sqliteTable("teachers", {
   id: text("id").primaryKey(),
@@ -295,6 +295,80 @@ export const studentJobAssignments = sqliteTable("student_job_assignments", {
   index("student_job_assignments_class_idx").on(table.classId),
 ]);
 
+export const classJobEvaluationSessions = sqliteTable("class_job_evaluation_sessions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  sourcePeriodId: text("source_period_id").notNull().references(() => classJobAssignmentPeriods.id),
+  sourceYear: integer("source_year").notNull(),
+  sourceMonth: integer("source_month").notNull(),
+  status: text("status").notNull().default("open"),
+  jobsJson: text("jobs_json").notNull(),
+  studentIdsJson: text("student_ids_json").notNull(),
+  studentCountSnapshot: integer("student_count_snapshot").notNull(),
+  jobCountSnapshot: integer("job_count_snapshot").notNull(),
+  sourcePeriodRevision: integer("source_period_revision").notNull(),
+  jobSetupRevision: integer("job_setup_revision").notNull(),
+  revision: integer("revision").notNull().default(0),
+  responseRevision: integer("response_revision").notNull().default(0),
+  calculatedResponseRevision: integer("calculated_response_revision"),
+  algorithmVersion: text("algorithm_version").notNull().default("legacy-rank-v1"),
+  finalGradesJson: text("final_grades_json"),
+  openedByTeacherId: text("opened_by_teacher_id").notNull().references(() => teachers.id),
+  openedAt: integer("opened_at").notNull(),
+  closedByTeacherId: text("closed_by_teacher_id").references(() => teachers.id),
+  closedAt: integer("closed_at"),
+  finalizedByTeacherId: text("finalized_by_teacher_id").references(() => teachers.id),
+  finalizedAt: integer("finalized_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_evaluation_sessions_source_uq").on(table.sourcePeriodId),
+  index("class_job_evaluation_sessions_class_idx").on(table.classId, table.updatedAt),
+]);
+
+export const classJobEvaluationResponses = sqliteTable("class_job_evaluation_responses", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => classJobEvaluationSessions.id),
+  classId: text("class_id").notNull().references(() => classes.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  studentNumber: integer("student_number").notNull(),
+  studentName: text("student_name").notNull(),
+  scoresJson: text("scores_json").notNull(),
+  revision: integer("revision").notNull().default(1),
+  requestId: text("request_id").notNull(),
+  writeNonce: text("write_nonce").notNull(),
+  submittedAt: integer("submitted_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_evaluation_responses_student_uq").on(table.sessionId, table.studentId),
+  uniqueIndex("class_job_evaluation_responses_request_uq").on(table.sessionId, table.requestId),
+  index("class_job_evaluation_responses_session_idx").on(table.sessionId, table.submittedAt),
+  index("class_job_evaluation_responses_class_idx").on(table.classId),
+]);
+
+export const classJobEvaluationResults = sqliteTable("class_job_evaluation_results", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id").notNull().references(() => classJobEvaluationSessions.id),
+  classId: text("class_id").notNull().references(() => classes.id),
+  classJobId: text("class_job_id").notNull(),
+  jobName: text("job_name").notNull(),
+  hardAverage: real("hard_average").notNull(),
+  responsibilityAverage: real("responsibility_average").notNull(),
+  consistencyAverage: real("consistency_average").notNull(),
+  burdenAverage: real("burden_average").notNull(),
+  totalAverage: real("total_average").notNull(),
+  responseCount: integer("response_count").notNull(),
+  rank: integer("rank").notNull(),
+  recommendedGrade: text("recommended_grade").notNull(),
+  cutoffTie: integer("cutoff_tie", { mode: "boolean" }).notNull().default(false),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_evaluation_results_job_uq").on(table.sessionId, table.classJobId),
+  index("class_job_evaluation_results_session_idx").on(table.sessionId, table.rank),
+  index("class_job_evaluation_results_class_idx").on(table.classId),
+]);
+
 export const classJobMonthClosures = sqliteTable("class_job_month_closures", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),
@@ -302,6 +376,8 @@ export const classJobMonthClosures = sqliteTable("class_job_month_closures", {
   sourceYear: integer("source_year").notNull(),
   sourceMonth: integer("source_month").notNull(),
   status: text("status").notNull().default("closed"),
+  evaluationSessionId: text("evaluation_session_id").references(() => classJobEvaluationSessions.id),
+  evaluationRevision: integer("evaluation_revision"),
   closedByTeacherId: text("closed_by_teacher_id").notNull().references(() => teachers.id),
   closedAt: integer("closed_at").notNull(),
   createdAt: integer("created_at").notNull(),

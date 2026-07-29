@@ -36,6 +36,9 @@ type ClassRoom = {
   monthly_choice_status?: "draft" | "confirmed" | null;
   monthly_choice_target_year?: number | null;
   monthly_choice_target_month?: number | null;
+  job_evaluation_status?: "open" | "closed" | "finalized" | null;
+  job_evaluation_submitted_count?: number | null;
+  job_evaluation_student_count?: number | null;
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
@@ -170,6 +173,11 @@ export function TeacherPortal() {
       && !selectedSummary.job_student_count_changed
       && selectedSummary.assignment_status === "confirmed",
   );
+  const monthlyChoiceAccessible = Boolean(
+    monthlyChoiceReady
+      || selectedSummary?.monthly_choice_status
+      || selectedSummary?.job_evaluation_status,
+  );
   const monthlyChoiceBlockedReason = Number(selectedSummary?.job_student_count ?? 0) < 1
     ? "학생 명단을 먼저 등록해 주세요."
     : selectedSummary?.job_status !== "completed"
@@ -192,7 +200,7 @@ export function TeacherPortal() {
             <a href={`/teacher/classes/${selectedClassId}/job-assignments`}><Dices aria-hidden="true" /><span>첫 직업 배정</span></a>
           )}
           {selectedClassId && (
-            monthlyChoiceReady ? (
+            monthlyChoiceAccessible ? (
               <a href={`/teacher/classes/${selectedClassId}/monthly-jobs`}><ListOrdered aria-hidden="true" /><span>다음 달 직업 선정</span></a>
             ) : (
               <a
@@ -244,7 +252,15 @@ export function TeacherPortal() {
           <>
             <section className="dashboard-heading" id="dashboard">
               <div><p className="eyebrow">{classRoom.school_year}학년도</p><h1>{classLabel}</h1><p>{classRoom.school_name} · {classRoom.grade}학년 {classRoom.class_number}반</p></div>
-              <button className="button button-light" onClick={() => loadClass(classRoom.id)}><RefreshCw aria-hidden="true" />새로고침</button>
+              <button
+                className="button button-light"
+                onClick={() => Promise.all([
+                  loadClass(classRoom.id),
+                  loadClasses(classRoom.id),
+                ]).catch((reason) => setError((reason as Error).message))}
+              >
+                <RefreshCw aria-hidden="true" />새로고침
+              </button>
             </section>
             <section className="setup-progress setup-progress-five" aria-label="학급 준비 단계">
               <div className={students.length ? "done" : "current"}><b>1</b><span>학생 명단<small>{students.length ? `${students.length}명` : "입력 중"}</small></span></div>
@@ -338,32 +354,46 @@ export function TeacherPortal() {
               </div>
             </section>
 
-            <section className={`job-dashboard-card ${monthlyChoiceReady ? selectedSummary.monthly_choice_status || "not_started" : "needs-review"}`}>
+            <section className={`job-dashboard-card ${monthlyChoiceAccessible ? selectedSummary.job_evaluation_status || selectedSummary.monthly_choice_status || "not_started" : "needs-review"}`}>
               <div className="job-dashboard-icon" aria-hidden="true"><ListOrdered /></div>
               <div>
                 <p className="eyebrow">월별 운영</p>
                 <h2>다음 달 직업 선정</h2>
-                {!monthlyChoiceReady ? (
+                {!monthlyChoiceAccessible ? (
                   <p><b>아직 준비가 필요해요.</b> {monthlyChoiceBlockedReason}</p>
                 ) : selectedSummary.monthly_choice_status === "draft" ? (
                   <p><b>선택 진행 중이에요.</b> 현재 차례부터 바로 이어서 진행할 수 있어요.</p>
                 ) : selectedSummary.monthly_choice_status === "confirmed"
+                  && !selectedSummary.job_evaluation_status
                   && selectedSummary.monthly_choice_target_year
                   && selectedSummary.monthly_choice_target_month ? (
                     <p><b>{selectedSummary.monthly_choice_target_year}년 {selectedSummary.monthly_choice_target_month}월 확정 완료</b> 학생별 직업과 남은 자리를 확인할 수 있어요.</p>
+                  ) : selectedSummary.job_evaluation_status === "open" ? (
+                    <p><b>학생 직업평가가 진행 중이에요.</b> {selectedSummary.job_evaluation_submitted_count ?? 0}/{selectedSummary.job_evaluation_student_count ?? 0}명이 제출했어요.</p>
+                  ) : selectedSummary.job_evaluation_status === "closed" ? (
+                    <p><b>추천등급이 계산됐어요.</b> 결과를 검토하고 직업별 최종등급을 확정해 주세요.</p>
+                  ) : selectedSummary.job_evaluation_status === "finalized" ? (
+                    <p><b>최종등급이 준비됐어요.</b> 월마감 후 같은 등급 학생의 순서를 무작위로 정할 수 있어요.</p>
                   ) : (
-                    <p><b>지난달 결과로 다음 달 순서를 준비해요.</b> 학생이 한 명씩 남은 직업을 고를 수 있어요.</p>
+                    <p><b>학생 직업평가부터 시작해요.</b> 평가 결과로 직업등급과 다음 달 선택 순서를 정합니다.</p>
                   )}
               </div>
               <div className="job-dashboard-actions">
-                {monthlyChoiceReady ? (
+                {monthlyChoiceAccessible ? (
                   <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/monthly-jobs`}>
                     <ListOrdered aria-hidden="true" />
                     {selectedSummary.monthly_choice_status === "draft"
                       ? "선택 이어 하기"
                       : selectedSummary.monthly_choice_status === "confirmed"
+                        && !selectedSummary.job_evaluation_status
                         ? "확정 결과 보기"
-                        : "다음 달 선정 시작"}
+                        : selectedSummary.job_evaluation_status === "open"
+                          ? "평가 제출 현황 보기"
+                          : selectedSummary.job_evaluation_status === "closed"
+                            ? "추천등급 검토"
+                            : selectedSummary.job_evaluation_status === "finalized"
+                              ? "무작위 순서 만들기"
+                              : "학생 직업평가 열기"}
                   </a>
                 ) : (
                   <span className="button button-light is-disabled" aria-disabled="true">{monthlyChoiceBlockedReason}</span>

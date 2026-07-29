@@ -1,7 +1,7 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
-import { closeMonthlyJobSource } from "@/lib/monthly-job-choice";
+import { openJobEvaluation } from "@/lib/job-evaluation";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -11,19 +11,20 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     await ownedClass(teacherId, classId);
     const body = await readJson<{
       expectedSourcePeriodId?: unknown;
+      expectedSourcePeriodRevision?: unknown;
     }>(request);
-    const result = await closeMonthlyJobSource({
+    const result = await openJobEvaluation({
       classId,
       teacherId,
       expectedSourcePeriodId: body.expectedSourcePeriodId,
+      expectedSourcePeriodRevision: body.expectedSourcePeriodRevision,
     });
     await audit({
-      action: "monthly_job_source_closed",
+      action: "job_evaluation_opened",
       teacherId,
       classId,
       detail: {
-        closureId: result.closureId,
-        sourcePeriodId: body.expectedSourcePeriodId,
+        evaluationId: result.evaluation.id,
         idempotent: result.idempotent,
       },
     });

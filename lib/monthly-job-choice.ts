@@ -1,16 +1,27 @@
 import { database, ensureSchema } from "./database";
 import {
   nextJobMonth,
+  shuffleChoiceOrderWithinGrades,
   sortChoiceOrder,
   suggestJobGrade,
   type ChoiceOrderItem,
   type JobGrade,
   type PreviousChoiceGrade,
 } from "./monthly-job-choice-rules";
+import {
+  finalizedEvaluationGrades,
+  loadTeacherJobEvaluation,
+  type TeacherJobEvaluation,
+} from "./job-evaluation";
 import { ApiError } from "./responses";
 import { seoulServerTime } from "./seoul-time";
 
-export { nextJobMonth, sortChoiceOrder, suggestJobGrade } from "./monthly-job-choice-rules";
+export {
+  nextJobMonth,
+  shuffleChoiceOrderWithinGrades,
+  sortChoiceOrder,
+  suggestJobGrade,
+} from "./monthly-job-choice-rules";
 export type { ChoiceOrderItem, JobGrade, PreviousChoiceGrade } from "./monthly-job-choice-rules";
 
 type ClassroomRow = {
@@ -84,6 +95,8 @@ type ClosureRow = {
   source_year: number;
   source_month: number;
   status: string;
+  evaluation_session_id: string | null;
+  evaluation_revision: number | null;
   closed_by_teacher_id: string;
   closed_at: number;
   created_at: number;
@@ -149,6 +162,7 @@ type MonthlyContext = {
   order: ChoiceOrderItem[];
   confirmedAssignments: ConfirmedAssignmentRow[];
   latestConfirmedSession: SessionRow | null;
+  evaluation: TeacherJobEvaluation | null;
 };
 
 const SOURCE_PERIOD_SELECT = `
@@ -274,6 +288,7 @@ async function sourceAssignments(periodId: string) {
 async function closureForSource(sourcePeriodId: string) {
   return database().prepare(
     `SELECT id, class_id, source_period_id, source_year, source_month, status,
+            evaluation_session_id, evaluation_revision,
             closed_by_teacher_id, closed_at, created_at
      FROM class_job_month_closures
      WHERE source_period_id = ?`,
@@ -381,7 +396,12 @@ async function loadContext(classId: string): Promise<MonthlyContext> {
   ]);
   const assignments = sourcePeriod ? await sourceAssignments(sourcePeriod.id) : [];
   const gradePreview = buildGradePreview(jobs, assignments);
-  const closure = sourcePeriod ? await closureForSource(sourcePeriod.id) ?? null : null;
+  const [closure, evaluation] = sourcePeriod
+    ? await Promise.all([
+      closureForSource(sourcePeriod.id).then((item) => item ?? null),
+      loadTeacherJobEvaluation(classId, sourcePeriod.id),
+    ])
+    : [null, null];
   const results = closure ? await closureResults(closure.id) : [];
   const session = closure ? await sessionForClosure(closure.id) ?? null : null;
   const order = session ? parseOrder(session.order_json) : [];
@@ -404,6 +424,7 @@ async function loadContext(classId: string): Promise<MonthlyContext> {
     order,
     confirmedAssignments: targetAssignments,
     latestConfirmedSession: latestSession ?? null,
+    evaluation,
   };
 }
 
@@ -506,12 +527,17 @@ function serializeBoard(context: MonthlyContext) {
     } : null,
     targetMonth,
     gradePreview: context.gradePreview,
+    evaluation: context.evaluation,
     closure: context.closure ? {
       id: context.closure.id,
       sourcePeriodId: context.closure.source_period_id,
       sourceYear: Number(context.closure.source_year),
       sourceMonth: Number(context.closure.source_month),
       status: context.closure.status,
+      evaluationSessionId: context.closure.evaluation_session_id,
+      evaluationRevision: context.closure.evaluation_revision === null
+        ? null
+        : Number(context.closure.evaluation_revision),
       closedAt: Number(context.closure.closed_at),
       studentCount: context.closureResults.length,
       jobGrades: closureJobGrades(context.closureResults),
@@ -559,27 +585,10 @@ export async function loadMonthlyJobChoiceBoard(classId: string) {
   return serializeBoard(await loadContext(classId));
 }
 
-function parseJobGrades(value: unknown, preview: GradePreviewItem[]) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ApiError(400, "직업별 등급을 모두 확인해 주세요.", "INVALID_JOB_GRADES");
-  }
-  const raw = value as Record<string, unknown>;
-  const grades: Record<string, JobGrade> = {};
-  for (const job of preview) {
-    const grade = raw[job.classJobId];
-    if (grade !== "A" && grade !== "B" && grade !== "C") {
-      throw new ApiError(400, `${job.name}의 등급을 A, B, C 중에서 선택해 주세요.`, "INVALID_JOB_GRADES");
-    }
-    grades[job.classJobId] = grade;
-  }
-  return grades;
-}
-
 export async function closeMonthlyJobSource(input: {
   classId: string;
   teacherId: string;
   expectedSourcePeriodId: unknown;
-  jobGrades: unknown;
 }) {
   const expectedSourcePeriodId = textId(
     input.expectedSourcePeriodId,
@@ -605,7 +614,11 @@ export async function closeMonthlyJobSource(input: {
   if (blocked?.code === "SOURCE_ASSIGNMENTS_INCOMPLETE" || blocked?.code === "NO_ACTIVE_STUDENTS") {
     throw new ApiError(409, blocked.message, blocked.code);
   }
-  const grades = parseJobGrades(input.jobGrades, context.gradePreview);
+  const finalizedEvaluation = await finalizedEvaluationGrades(
+    input.classId,
+    expectedSourcePeriodId,
+  );
+  const grades = finalizedEvaluation.grades;
   const assignments = context.sourceAssignments;
   if (
     assignments.length < 1
@@ -617,6 +630,22 @@ export async function closeMonthlyJobSource(input: {
       "SOURCE_ASSIGNMENTS_INCOMPLETE",
     );
   }
+  const sourceJobIds = new Set(assignments.map((assignment) => assignment.class_job_id));
+  const gradeJobIds = Object.keys(grades);
+  if (
+    gradeJobIds.length !== sourceJobIds.size
+    || gradeJobIds.some((jobId) => !sourceJobIds.has(jobId))
+    || [...sourceJobIds].some((jobId) => (
+      !Object.prototype.hasOwnProperty.call(grades, jobId)
+      || !["A", "B", "C"].includes(grades[jobId])
+    ))
+  ) {
+    throw new ApiError(
+      409,
+      "확정된 직업평가 등급과 지난달 직업 목록이 맞지 않아요. 평가 결과를 다시 확인해 주세요.",
+      "JOB_EVALUATION_RESULTS_REQUIRED",
+    );
+  }
   const now = Date.now();
   const current = seoulServerTime(now);
   const closureId = crypto.randomUUID();
@@ -625,9 +654,11 @@ export async function closeMonthlyJobSource(input: {
     db.prepare(
       `INSERT OR IGNORE INTO class_job_month_closures (
          id, class_id, source_period_id, source_year, source_month, status,
+         evaluation_session_id, evaluation_revision,
          closed_by_teacher_id, closed_at, created_at
        )
-       SELECT ?, p.class_id, p.id, p.assignment_year, p.assignment_month, 'closed', ?, ?, ?
+       SELECT ?, p.class_id, p.id, p.assignment_year, p.assignment_month, 'closed',
+              ?, ?, ?, ?, ?
        FROM class_job_assignment_periods p
        WHERE p.id = ? AND p.class_id = ? AND p.status = 'confirmed'
          AND p.assignment_type IN ('initial', 'monthly')
@@ -644,9 +675,17 @@ export async function closeMonthlyJobSource(input: {
                     latest.confirmed_at DESC, latest.updated_at DESC, latest.id DESC
            LIMIT 1
          )
-         AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = p.id) = ?`,
+         AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = p.id) = ?
+         AND EXISTS (
+           SELECT 1 FROM class_job_evaluation_sessions evaluation
+           WHERE evaluation.id = ? AND evaluation.class_id = p.class_id
+             AND evaluation.source_period_id = p.id
+             AND evaluation.status = 'finalized' AND evaluation.revision = ?
+         )`,
     ).bind(
       closureId,
+      finalizedEvaluation.sessionId,
+      finalizedEvaluation.revision,
       input.teacherId,
       now,
       now,
@@ -657,6 +696,8 @@ export async function closeMonthlyJobSource(input: {
       current.year,
       current.month,
       assignments.length,
+      finalizedEvaluation.sessionId,
+      finalizedEvaluation.revision,
     ),
     ...assignments.map((assignment) => db.prepare(
       `INSERT INTO class_job_month_results (
@@ -785,7 +826,7 @@ export async function startMonthlyJobChoice(input: {
       "MONTHLY_CHOICE_TARGET_CONFLICT",
     );
   }
-  const order = sessionOrder(context);
+  const order = shuffleChoiceOrderWithinGrades(sessionOrder(context), secureRandomIndex);
   const sessionId = crypto.randomUUID();
   const now = Date.now();
   const result = await database().prepare(
@@ -794,7 +835,7 @@ export async function startMonthlyJobChoice(input: {
        order_json, student_count_snapshot, job_setup_revision, revision,
        confirmed_period_id, confirmed_by_teacher_id, confirmed_at, created_at, updated_at
      )
-     SELECT ?, ?, ?, ?, ?, 'draft', 'roster', ?, ?, ?, 0,
+     SELECT ?, ?, ?, ?, ?, 'draft', 'shuffled', ?, ?, ?, 0,
             NULL, NULL, NULL, ?, ?
      WHERE EXISTS (
        SELECT 1 FROM class_job_month_closures c
@@ -851,24 +892,6 @@ function secureRandomIndex(length: number) {
   return values[0] % length;
 }
 
-function shuffleOrderWithinGrades(order: ChoiceOrderItem[]) {
-  const groups = new Map<PreviousChoiceGrade, ChoiceOrderItem[]>();
-  for (const item of order) {
-    const group = groups.get(item.previousGrade) ?? [];
-    group.push(item);
-    groups.set(item.previousGrade, group);
-  }
-  const gradeOrder: PreviousChoiceGrade[] = ["C", "B", "A", "NEW", "D"];
-  return gradeOrder.flatMap((grade) => {
-    const group = [...(groups.get(grade) ?? [])];
-    for (let index = group.length - 1; index > 0; index -= 1) {
-      const swapIndex = secureRandomIndex(index + 1);
-      [group[index], group[swapIndex]] = [group[swapIndex], group[index]];
-    }
-    return group;
-  });
-}
-
 function sameStudentSet(students: StudentRow[], order: ChoiceOrderItem[]) {
   if (students.length !== order.length) return false;
   const ids = new Set(order.map((item) => item.studentId));
@@ -908,7 +931,7 @@ export async function shuffleMonthlyJobChoice(input: {
   if (Number(session.revision) !== expectedRevision) {
     throw new ApiError(409, "다른 화면에서 순서가 먼저 바뀌었어요.", "MONTHLY_CHOICE_STALE");
   }
-  const shuffled = shuffleOrderWithinGrades(context.order);
+  const shuffled = shuffleChoiceOrderWithinGrades(context.order, secureRandomIndex);
   const result = await database().prepare(
     `UPDATE class_job_choice_sessions
      SET order_mode = 'shuffled', order_json = ?, revision = revision + 1, updated_at = ?
