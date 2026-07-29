@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { BookOpen, BriefcaseBusiness, GraduationCap, School } from "lucide-react";
+import { ArrowRight, BookOpen, BriefcaseBusiness, GraduationCap, Landmark, School } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { StudentEntryIntro } from "@/app/components/EntryIntro";
@@ -101,6 +101,15 @@ export function StudentPortal() {
         ) : (
           <div className="future-card"><b>직업 배정을 기다리고 있어요</b><p>선생님이 이번 직업을 최종 확정하면 이 화면에서 바로 확인할 수 있어요.</p></div>
         )}
+        <a className="student-finance-card" href="/finance">
+          <span aria-hidden="true"><Landmark /></span>
+          <div>
+            <small>우리 반 금융생활</small>
+            <h2>금융센터</h2>
+            <p>내 금융생활과 우리 반 은행 기능을 차례로 준비하고 있어요.</p>
+          </div>
+          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+        </a>
       </section>
     </main>
   );
