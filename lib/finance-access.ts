@@ -124,7 +124,7 @@ async function effectivePeriod(classId: string, epochMs = Date.now()) {
   );
 }
 
-async function currentStudentJob(classId: string, studentId: string) {
+export async function currentStudentJob(classId: string, studentId: string) {
   const period = await effectivePeriod(classId);
   if (!period) return null;
 

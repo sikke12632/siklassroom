@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { FINANCE_SCHEMA_STATEMENTS } from "./finance-schema";
 
 export type RuntimeEnv = {
   DB?: D1Database;
@@ -311,6 +312,7 @@ const schemaStatements = [
     FOREIGN KEY (used_by_teacher_id) REFERENCES teachers(id)
   )`,
   `CREATE INDEX IF NOT EXISTS teacher_invite_codes_status_idx ON teacher_invite_codes(status, expires_at)`,
+  ...FINANCE_SCHEMA_STATEMENTS,
   `CREATE TABLE IF NOT EXISTS system_migrations (
     key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL
   )`,

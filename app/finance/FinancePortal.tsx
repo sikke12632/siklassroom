@@ -16,6 +16,10 @@ import {
 } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
+import {
+  FinanceWalletOverview,
+  type FinanceOverviewData,
+} from "./FinanceWalletOverview";
 
 type FinanceRole = "teacher" | "banker" | "student";
 
@@ -56,6 +60,11 @@ type LoadError = {
   message: string;
 };
 
+type FinanceOverviewPayload = {
+  context: FinanceContext;
+  finance: FinanceOverviewData;
+};
+
 function classifyError(status: number, message?: string): LoadError {
   if (status === 401) {
     return {
@@ -82,7 +91,7 @@ function classifyError(status: number, message?: string): LoadError {
 }
 
 export function FinancePortal() {
-  const [context, setContext] = useState<FinanceContext | null>(null);
+  const [overview, setOverview] = useState<FinanceOverviewPayload | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
   const [loading, setLoading] = useState(true);
   const [retryKey, setRetryKey] = useState(0);
@@ -95,20 +104,20 @@ export function FinancePortal() {
     const query = classId ? `?classId=${encodeURIComponent(classId)}` : "";
 
     try {
-      const response = await fetch(`/api/finance/context${query}`, {
+      const response = await fetch(`/api/finance/overview${query}`, {
         headers: { Accept: "application/json" },
         signal,
       });
-      const data = await response.json().catch(() => ({})) as FinanceContext & { error?: string };
+      const data = await response.json().catch(() => ({})) as FinanceOverviewPayload & { error?: string };
       if (!response.ok) {
-        setContext(null);
+        setOverview(null);
         setError(classifyError(response.status, data.error));
         return;
       }
-      setContext(data);
+      setOverview(data);
     } catch (reason) {
       if ((reason as Error).name !== "AbortError") {
-        setContext(null);
+        setOverview(null);
         setError(classifyError(0));
       }
     } finally {
@@ -136,7 +145,7 @@ export function FinancePortal() {
     );
   }
 
-  if (error || !context) {
+  if (error || !overview) {
     return (
       <main className="finance-state-page">
         <section className="finance-state-card">
@@ -174,10 +183,16 @@ export function FinancePortal() {
     );
   }
 
-  return <FinanceHome context={context} />;
+  return <FinanceHome context={overview.context} finance={overview.finance} />;
 }
 
-function FinanceHome({ context }: { context: FinanceContext }) {
+function FinanceHome({
+  context,
+  finance,
+}: {
+  context: FinanceContext;
+  finance: FinanceOverviewData;
+}) {
   const isTeacher = context.financeRole === "teacher";
   const isBanker = context.financeRole === "banker";
   const backHref = isTeacher
@@ -221,11 +236,25 @@ function FinanceHome({ context }: { context: FinanceContext }) {
         </section>
 
         {isTeacher ? (
-          <TeacherFinanceHome classIsActive={classIsActive} backHref={backHref} />
+          <TeacherFinanceHome
+            context={context}
+            finance={finance}
+            classIsActive={classIsActive}
+            backHref={backHref}
+          />
         ) : isBanker ? (
-          <BankerFinanceHome activeJob={context.activeJob} backHref={backHref} />
+          <BankerFinanceHome
+            context={context}
+            finance={finance}
+            activeJob={context.activeJob}
+            backHref={backHref}
+          />
         ) : (
-          <StudentFinanceHome backHref={backHref} />
+          <StudentFinanceHome
+            context={context}
+            finance={finance}
+            backHref={backHref}
+          />
         )}
       </div>
     </main>
@@ -233,9 +262,13 @@ function FinanceHome({ context }: { context: FinanceContext }) {
 }
 
 function TeacherFinanceHome({
+  context,
+  finance,
   classIsActive,
   backHref,
 }: {
+  context: FinanceContext;
+  finance: FinanceOverviewData;
   classIsActive: boolean;
   backHref: string;
 }) {
@@ -270,15 +303,25 @@ function TeacherFinanceHome({
         </article>
       </section>
 
-      <FoundationModules role="teacher" backHref={backHref} />
+      <FinanceWalletOverview
+        role="teacher"
+        actorId={context.actor.id}
+        finance={finance}
+        classIsActive={classIsActive}
+      />
+      <ReturnLink backHref={backHref} />
     </>
   );
 }
 
 function BankerFinanceHome({
+  context,
+  finance,
   activeJob,
   backHref,
 }: {
+  context: FinanceContext;
+  finance: FinanceOverviewData;
   activeJob: FinanceContext["activeJob"];
   backHref: string;
 }) {
@@ -314,12 +357,26 @@ function BankerFinanceHome({
         </article>
       </section>
 
-      <FoundationModules role="banker" backHref={backHref} />
+      <FinanceWalletOverview
+        role="banker"
+        actorId={context.actor.id}
+        finance={finance}
+        classIsActive={context.classroom.status === "active"}
+      />
+      <ReturnLink backHref={backHref} />
     </>
   );
 }
 
-function StudentFinanceHome({ backHref }: { backHref: string }) {
+function StudentFinanceHome({
+  context,
+  finance,
+  backHref,
+}: {
+  context: FinanceContext;
+  finance: FinanceOverviewData;
+  backHref: string;
+}) {
   return (
     <>
       <section className="finance-lead-card student-finance-lead">
@@ -349,33 +406,23 @@ function StudentFinanceHome({ backHref }: { backHref: string }) {
         </article>
       </section>
 
-      <FoundationModules role="student" backHref={backHref} />
+      <FinanceWalletOverview
+        role="student"
+        actorId={context.actor.id}
+        finance={finance}
+        classIsActive={context.classroom.status === "active"}
+      />
+      <ReturnLink backHref={backHref} />
     </>
   );
 }
 
-function FoundationModules({ role, backHref }: { role: FinanceRole; backHref: string }) {
-  const message = role === "teacher"
-    ? "다음 파트부터 운영 기록 확인과 도움·정정 기능을 차례로 연결합니다."
-    : role === "banker"
-      ? "다음 파트부터 실제 신청 확인과 은행 업무 기능을 차례로 연결합니다."
-      : "다음 파트부터 실제 지갑과 은행 신청 기능을 차례로 연결합니다.";
-
+function ReturnLink({ backHref }: { backHref: string }) {
   return (
-    <section className="finance-foundation-card">
-      <div>
-        <span className="finance-ready-mark" aria-hidden="true"><ShieldCheck /></span>
-        <div>
-          <p className="eyebrow">1단계 연결 완료</p>
-          <h2>로그인과 학급·직업 권한을 연결했어요</h2>
-          <p>{message}</p>
-        </div>
-      </div>
-      <span className="finance-coming-badge"><Clock3 aria-hidden="true" />다음 파트 준비 중</span>
-      <p className="finance-honest-note">아직 실제 잔액이나 거래를 만들지는 않았어요. 안전한 거래 장부가 준비된 뒤 기능을 열겠습니다.</p>
+    <div className="finance-return-row">
       <a className="finance-next-link" href={backHref}>
         원래 화면으로 돌아가기 <ArrowRight aria-hidden="true" />
       </a>
-    </section>
+    </div>
   );
 }
