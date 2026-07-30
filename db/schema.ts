@@ -1,4 +1,14 @@
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const teachers = sqliteTable("teachers", {
   id: text("id").primaryKey(),
@@ -506,4 +516,155 @@ export const systemAdminAuditLogs = sqliteTable("system_admin_audit_logs", {
 }, (table) => [
   index("system_admin_audit_created_idx").on(table.createdAt),
   index("system_admin_audit_target_idx").on(table.targetType, table.targetId),
+]);
+
+export const financeAccounts = sqliteTable("finance_accounts", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  studentId: text("student_id").references(() => students.id),
+  accountType: text("account_type").notNull(),
+  balance: integer("balance").notNull().default(0),
+  allowNegative: integer("allow_negative", { mode: "boolean" }).notNull().default(false),
+  status: text("status").notNull().default("active"),
+  revision: integer("revision").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_accounts_class_student_type_uq").on(
+    table.classId,
+    table.studentId,
+    table.accountType,
+  ),
+  uniqueIndex("finance_accounts_class_issuance_uq")
+    .on(table.classId)
+    .where(sql`${table.accountType} = 'class_issuance'`),
+  uniqueIndex("finance_accounts_id_class_uq").on(table.id, table.classId),
+  index("finance_accounts_class_type_idx").on(
+    table.classId,
+    table.accountType,
+    table.status,
+  ),
+  index("finance_accounts_student_idx").on(table.studentId),
+  check("finance_accounts_status_ck", sql`${table.status} IN ('active', 'frozen', 'closed')`),
+  check(
+    "finance_accounts_type_ck",
+    sql`${table.accountType} IN ('student_wallet', 'class_issuance')`,
+  ),
+  check("finance_accounts_revision_ck", sql`${table.revision} >= 0`),
+  check("finance_accounts_allow_negative_ck", sql`${table.allowNegative} IN (0, 1)`),
+  check(
+    "finance_accounts_balance_ck",
+    sql`${table.allowNegative} = 1 OR ${table.balance} >= 0`,
+  ),
+  check(
+    "finance_accounts_student_wallet_ck",
+    sql`${table.accountType} <> 'student_wallet'
+      OR (${table.studentId} IS NOT NULL AND ${table.allowNegative} = 0)`,
+  ),
+  check(
+    "finance_accounts_class_issuance_ck",
+    sql`${table.accountType} <> 'class_issuance'
+      OR (${table.studentId} IS NULL AND ${table.allowNegative} = 1)`,
+  ),
+]);
+
+export const financeTransactions = sqliteTable("finance_transactions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  status: text("status").notNull().default("pending"),
+  transactionType: text("transaction_type").notNull(),
+  description: text("description").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  sourceType: text("source_type"),
+  sourceId: text("source_id"),
+  reversalOfTransactionId: text("reversal_of_transaction_id"),
+  actorType: text("actor_type").notNull(),
+  actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+  actorStudentId: text("actor_student_id").references(() => students.id),
+  actorJobPeriodId: text("actor_job_period_id").references(() => classJobAssignmentPeriods.id),
+  actorLabel: text("actor_label").notNull(),
+  metadataJson: text("metadata_json"),
+  createdAt: integer("created_at").notNull(),
+  postedAt: integer("posted_at"),
+}, (table) => [
+  uniqueIndex("finance_transactions_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_transactions_class_source_uq").on(
+    table.classId,
+    table.sourceType,
+    table.sourceId,
+  ),
+  uniqueIndex("finance_transactions_reversal_uq").on(table.reversalOfTransactionId),
+  uniqueIndex("finance_transactions_id_class_uq").on(table.id, table.classId),
+  index("finance_transactions_class_posted_idx").on(
+    table.classId,
+    table.status,
+    table.postedAt,
+  ),
+  index("finance_transactions_actor_student_idx").on(table.actorStudentId, table.postedAt),
+  check("finance_transactions_status_ck", sql`${table.status} IN ('pending', 'posted')`),
+  check(
+    "finance_transactions_source_ck",
+    sql`(${table.sourceType} IS NULL) = (${table.sourceId} IS NULL)`,
+  ),
+  check(
+    "finance_transactions_reversal_ck",
+    sql`(${table.transactionType} = 'reversal') = (${table.reversalOfTransactionId} IS NOT NULL)`,
+  ),
+  check(
+    "finance_transactions_actor_ck",
+    sql`(
+      (${table.actorType} = 'teacher'
+        AND ${table.actorTeacherId} IS NOT NULL
+        AND ${table.actorStudentId} IS NULL
+        AND ${table.actorJobPeriodId} IS NULL)
+      OR
+      (${table.actorType} = 'banker'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NOT NULL
+        AND ${table.actorJobPeriodId} IS NOT NULL)
+      OR
+      (${table.actorType} = 'system'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NULL
+        AND ${table.actorJobPeriodId} IS NULL)
+    )`,
+  ),
+]);
+
+export const financeLedgerEntries = sqliteTable("finance_ledger_entries", {
+  id: text("id").primaryKey(),
+  transactionId: text("transaction_id").notNull(),
+  classId: text("class_id").notNull(),
+  accountId: text("account_id").notNull(),
+  amount: integer("amount").notNull(),
+  balanceAfter: integer("balance_after").notNull(),
+  accountRevisionAfter: integer("account_revision_after").notNull(),
+  memo: text("memo"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_ledger_entries_transaction_account_uq").on(
+    table.transactionId,
+    table.accountId,
+  ),
+  index("finance_ledger_entries_account_idx").on(table.accountId, table.createdAt),
+  index("finance_ledger_entries_class_idx").on(table.classId, table.createdAt),
+  foreignKey({
+    columns: [table.transactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_ledger_entries_transaction_class_fk",
+  }),
+  foreignKey({
+    columns: [table.accountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_ledger_entries_account_class_fk",
+  }),
+  check("finance_ledger_entries_amount_ck", sql`${table.amount} <> 0`),
+  check(
+    "finance_ledger_entries_revision_ck",
+    sql`${table.accountRevisionAfter} > 0`,
+  ),
 ]);
