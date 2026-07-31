@@ -70,10 +70,30 @@ export type FinanceRequestSummaryData = {
 };
 
 export type FinanceOverviewData = {
-  phase: "wallet_ledger";
+  phase: "settings_audit";
   mode: "read_only" | "operations";
   currencyLabel: string;
   scope: "class" | "self";
+  settings: {
+    currencyName: string;
+    currencyUnit: string;
+    denominations: number[];
+    bankOpen: boolean;
+    depositEnabled: boolean;
+    withdrawalEnabled: boolean;
+    bankerProcessingEnabled: boolean;
+    maxRequestAmount: number;
+    revision: number;
+    updatedAt: number;
+  };
+  bankers: Array<{
+    studentId: string;
+    studentNumber: number;
+    studentName: string;
+    jobName: string;
+    assignmentYear: number;
+    assignmentMonth: number;
+  }>;
   summary: {
     walletCount: number;
     totalBalance: number;

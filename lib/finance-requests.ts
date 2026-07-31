@@ -6,6 +6,7 @@ import {
 } from "./finance-access";
 import {
   classIssuanceAccountId,
+  financeReconciliation,
   financeTransactionById,
   reverseFinanceTransaction,
   studentWalletAccountId,
@@ -25,6 +26,11 @@ import {
   normalizeFinanceResourceId,
   normalizeFinanceReversal,
 } from "./finance-request-rules";
+import {
+  assertBankerDecisionPolicy,
+  assertFinanceRequestPolicy,
+  financeSettingsForClass,
+} from "./finance-settings";
 import { ApiError } from "./responses";
 
 type CashRequestRow = {
@@ -337,6 +343,36 @@ function mapDatabaseError(error: unknown): never {
       "다른 금융 처리가 먼저 반영되었습니다. 최신 잔액으로 다시 시도해 주세요.",
       "FINANCE_ACCOUNT_STALE",
     ],
+    [
+      "FINANCE_BANK_CLOSED",
+      409,
+      "지금은 학급 은행이 잠시 쉬는 중이에요.",
+      "FINANCE_BANK_PAUSED",
+    ],
+    [
+      "FINANCE_DEPOSIT_DISABLED",
+      409,
+      "지금은 입금 신청을 받지 않아요.",
+      "FINANCE_REQUEST_TYPE_PAUSED",
+    ],
+    [
+      "FINANCE_WITHDRAWAL_DISABLED",
+      409,
+      "지금은 출금 신청을 받지 않아요.",
+      "FINANCE_REQUEST_TYPE_PAUSED",
+    ],
+    [
+      "FINANCE_BANKER_PROCESSING_DISABLED",
+      409,
+      "은행원 처리가 잠시 멈춰 있어요. 선생님께 확인해 주세요.",
+      "FINANCE_BANKER_PROCESSING_PAUSED",
+    ],
+    [
+      "FINANCE_REQUEST_AMOUNT_LIMIT",
+      409,
+      "현재 학급의 한 번 신청 한도를 넘었습니다.",
+      "FINANCE_REQUEST_AMOUNT_LIMIT",
+    ],
   ];
   for (const [needle, status, userMessage, code] of mappings) {
     if (message.includes(needle)) {
@@ -497,6 +533,13 @@ export async function createFinanceCashRequest(
       deduplicated: true,
     };
   }
+
+  const settings = await financeSettingsForClass(context.classroom.id);
+  assertFinanceRequestPolicy(
+    settings,
+    normalized.requestType,
+    normalized.amount,
+  );
 
   const wallet = await database().prepare(
     `SELECT account.id AS account_id, account.balance, account.revision,
@@ -779,6 +822,28 @@ export async function decideFinanceCashRequest(
   });
   if (duplicate) return duplicate;
   if (normalized.expectedRevision !== Number(row.revision)) staleRequest();
+  if (actor.actorType === "banker") {
+    const settings = await financeSettingsForClass(context.classroom.id);
+    assertBankerDecisionPolicy(
+      settings,
+      row.request_type,
+      Number(row.amount),
+      databaseDecision,
+    );
+  }
+  if (databaseDecision === "approved") {
+    const reconciliation = await financeReconciliation(context.classroom.id);
+    if (
+      reconciliation.mismatches.length > 0
+      || reconciliation.pendingTransactionCount > 0
+    ) {
+      throw new ApiError(
+        409,
+        "잔액과 원장을 먼저 확인해야 해서 금융 처리를 잠시 멈췄습니다.",
+        "FINANCE_LEDGER_ATTENTION",
+      );
+    }
+  }
   await assertResolutionIdempotencyAvailable({
     classId: context.classroom.id,
     requestId,
@@ -917,6 +982,17 @@ export async function reverseFinanceTransactionForRequest(
       403,
       "거래 정정은 담임 교사만 처리할 수 있습니다.",
       "FINANCE_REVERSAL_TEACHER_REQUIRED",
+    );
+  }
+  const reconciliation = await financeReconciliation(context.classroom.id);
+  if (
+    reconciliation.mismatches.length > 0
+    || reconciliation.pendingTransactionCount > 0
+  ) {
+    throw new ApiError(
+      409,
+      "잔액과 원장을 먼저 확인해야 해서 거래 정정을 잠시 멈췄습니다.",
+      "FINANCE_LEDGER_ATTENTION",
     );
   }
   return reverseFinanceTransaction({

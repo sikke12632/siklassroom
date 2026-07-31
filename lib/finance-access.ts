@@ -69,6 +69,13 @@ type AssignmentRow = {
   template_id: string | null;
 };
 
+type BankerAssignmentRow = {
+  student_id: string;
+  student_number: number;
+  student_name: string;
+  job_name: string;
+};
+
 function classroomDisplayName(input: {
   displayName: unknown;
   grade: unknown;
@@ -94,7 +101,10 @@ function serializeClassroom(row: Record<string, string | number | null>) {
   };
 }
 
-async function effectivePeriod(classId: string, epochMs = Date.now()) {
+export async function effectiveFinancePeriod(
+  classId: string,
+  epochMs = Date.now(),
+) {
   const current = seoulServerTime(epochMs);
   const rows = await database().prepare(
     `SELECT id, class_id, status, assignment_type, assignment_year,
@@ -125,7 +135,7 @@ async function effectivePeriod(classId: string, epochMs = Date.now()) {
 }
 
 export async function currentStudentJob(classId: string, studentId: string) {
-  const period = await effectivePeriod(classId);
+  const period = await effectiveFinancePeriod(classId);
   if (!period) return null;
 
   const job = await database().prepare(
@@ -154,6 +164,43 @@ export async function currentStudentJob(classId: string, studentId: string) {
     assignmentMonth: period.assignmentMonth,
     periodId: period.id,
   };
+}
+
+export async function currentBankersForClass(classId: string) {
+  const period = await effectiveFinancePeriod(classId);
+  if (!period) return [];
+  const rows = await database().prepare(
+    `SELECT student.id AS student_id,
+            student.student_number,
+            student.official_name AS student_name,
+            job.name AS job_name
+     FROM student_job_assignments assignment
+     JOIN class_jobs job
+       ON job.id = assignment.class_job_id
+      AND job.class_id = assignment.class_id
+     JOIN students student
+       ON student.id = assignment.student_id
+      AND student.class_id = assignment.class_id
+     WHERE assignment.period_id = ?
+       AND assignment.class_id = ?
+       AND job.template_id = ?
+       AND job.is_active = 1
+       AND student.status = 'active'
+     ORDER BY student.student_number, student.id`,
+  ).bind(
+    period.id,
+    classId,
+    BANKER_JOB_TEMPLATE_ID,
+  ).all<BankerAssignmentRow>();
+
+  return rows.results.map((row) => ({
+    studentId: row.student_id,
+    studentNumber: Number(row.student_number),
+    studentName: row.student_name,
+    jobName: row.job_name,
+    assignmentYear: period.assignmentYear,
+    assignmentMonth: period.assignmentMonth,
+  }));
 }
 
 export async function teacherFinanceContext(
