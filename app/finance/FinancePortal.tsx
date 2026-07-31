@@ -5,12 +5,8 @@ import {
   ArrowLeft,
   ArrowRight,
   BriefcaseBusiness,
-  ClipboardList,
-  Clock3,
   Landmark,
   RefreshCw,
-  ShieldCheck,
-  UserRoundCog,
   UsersRound,
   WalletCards,
 } from "lucide-react";
@@ -20,6 +16,7 @@ import {
   FinanceWalletOverview,
   type FinanceOverviewData,
 } from "./FinanceWalletOverview";
+import { FinanceOperations } from "./FinanceOperations";
 
 type FinanceRole = "teacher" | "banker" | "student";
 
@@ -94,10 +91,12 @@ export function FinancePortal() {
   const [overview, setOverview] = useState<FinanceOverviewPayload | null>(null);
   const [error, setError] = useState<LoadError | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
-  const loadContext = useCallback(async (signal: AbortSignal) => {
-    setLoading(true);
+  const loadContext = useCallback(async (signal: AbortSignal, quiet = false) => {
+    if (quiet) setRefreshing(true);
+    else setLoading(true);
     setError(null);
 
     const classId = new URLSearchParams(window.location.search).get("classId");
@@ -121,20 +120,28 @@ export function FinancePortal() {
         setError(classifyError(0));
       }
     } finally {
-      if (!signal.aborted) setLoading(false);
+      if (!signal.aborted) {
+        if (quiet) setRefreshing(false);
+        else setLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     const controller = new AbortController();
     const frame = requestAnimationFrame(() => {
-      loadContext(controller.signal);
+      loadContext(controller.signal, false);
     });
     return () => {
       cancelAnimationFrame(frame);
       controller.abort();
     };
   }, [loadContext, retryKey]);
+
+  const refreshOverview = useCallback(async () => {
+    const controller = new AbortController();
+    await loadContext(controller.signal, true);
+  }, [loadContext]);
 
   if (loading) {
     return (
@@ -183,15 +190,26 @@ export function FinancePortal() {
     );
   }
 
-  return <FinanceHome context={overview.context} finance={overview.finance} />;
+  return (
+    <FinanceHome
+      context={overview.context}
+      finance={overview.finance}
+      refreshing={refreshing}
+      onRefresh={refreshOverview}
+    />
+  );
 }
 
 function FinanceHome({
   context,
   finance,
+  refreshing,
+  onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   const isTeacher = context.financeRole === "teacher";
   const isBanker = context.financeRole === "banker";
@@ -241,6 +259,8 @@ function FinanceHome({
             finance={finance}
             classIsActive={classIsActive}
             backHref={backHref}
+            refreshing={refreshing}
+            onRefresh={onRefresh}
           />
         ) : isBanker ? (
           <BankerFinanceHome
@@ -248,12 +268,16 @@ function FinanceHome({
             finance={finance}
             activeJob={context.activeJob}
             backHref={backHref}
+            refreshing={refreshing}
+            onRefresh={onRefresh}
           />
         ) : (
           <StudentFinanceHome
             context={context}
             finance={finance}
             backHref={backHref}
+            refreshing={refreshing}
+            onRefresh={onRefresh}
           />
         )}
       </div>
@@ -266,11 +290,15 @@ function TeacherFinanceHome({
   finance,
   classIsActive,
   backHref,
+  refreshing,
+  onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
   classIsActive: boolean;
   backHref: string;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   return (
     <>
@@ -278,36 +306,30 @@ function TeacherFinanceHome({
         <div className="finance-lead-icon" aria-hidden="true"><UsersRound /></div>
         <div>
           <p className="eyebrow">{classIsActive ? "학생이 주인공인 금융센터" : "보관된 학급 금융 기록"}</p>
-          <h2>{classIsActive ? "은행원 친구들이 운영할 공간을 준비했어요" : "운영 기능은 잠기고 기록만 보게 됩니다"}</h2>
+          <h2>{classIsActive ? "은행원 친구들이 금융센터를 운영하고 있어요" : "운영 기능은 잠기고 기록만 보게 됩니다"}</h2>
           <p>{classIsActive
-            ? "다음 단계부터 아이들이 은행 업무를 맡고, 선생님은 어려움이나 문제가 생겼을 때 기록을 살펴보고 도울 수 있게 됩니다."
+            ? "선생님은 전체 기록을 살펴보고, 아이들이 어려워할 때만 대신 처리하거나 잘못된 거래를 정정할 수 있어요."
             : "보관된 학급에서는 새 금융 업무를 처리하거나 정정할 수 없고, 기존 기록만 안전하게 확인하게 됩니다."}</p>
         </div>
       </section>
 
-      <section className="finance-principle-grid" aria-label="금융센터 운영 원칙">
-        <article>
-          <span aria-hidden="true"><Landmark /></span>
-          <h3>은행원 학생</h3>
-          <p>입출금 신청과 일상적인 은행 업무를 책임지고 직접 운영하게 됩니다.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><UserRoundCog /></span>
-          <h3>선생님</h3>
-          <p>운영 기록을 확인하고, 도움이 필요할 때 대신 처리하거나 바로잡게 됩니다.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><ShieldCheck /></span>
-          <h3>시스템</h3>
-          <p>중복 처리와 잔액 오류를 막고, 모든 처리 내용을 빠짐없이 남기게 됩니다.</p>
-        </article>
-      </section>
+      <FinanceOperations
+        role="teacher"
+        actorId={context.actor.id}
+        classId={context.classroom.id}
+        classIsActive={classIsActive}
+        canOverride={context.permissions.canOverride}
+        finance={finance}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
 
       <FinanceWalletOverview
         role="teacher"
         actorId={context.actor.id}
         finance={finance}
         classIsActive={classIsActive}
+        hideLedger
       />
       <ReturnLink backHref={backHref} />
     </>
@@ -319,11 +341,15 @@ function BankerFinanceHome({
   finance,
   activeJob,
   backHref,
+  refreshing,
+  onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
   activeJob: FinanceContext["activeJob"];
   backHref: string;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   return (
     <>
@@ -332,30 +358,23 @@ function BankerFinanceHome({
         <div>
           <p className="eyebrow">나의 금융센터 역할</p>
           <h2>{activeJob?.name || "은행원"}으로 연결되었어요</h2>
-          <p>다음 단계부터 친구들의 금융 요청을 살피고 은행 업무를 책임 있게 운영하게 됩니다.</p>
+          <p>친구들의 신청을 살피고, 실물 학급화폐와 금액을 확인한 뒤 직접 처리해요.</p>
           {activeJob && (
             <small>{activeJob.assignmentYear}년 {activeJob.assignmentMonth}월 직업 배정에서 자동으로 확인했어요.</small>
           )}
         </div>
       </section>
 
-      <section className="finance-principle-grid" aria-label="은행원이 맡을 일">
-        <article>
-          <span aria-hidden="true"><ClipboardList /></span>
-          <h3>신청 확인</h3>
-          <p>친구들이 보낸 입금·출금 신청을 차례로 확인하게 됩니다.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><WalletCards /></span>
-          <h3>은행 업무</h3>
-          <p>신청 내용을 확인한 뒤 승인하거나 이유와 함께 돌려보내게 됩니다.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><ShieldCheck /></span>
-          <h3>책임 있는 기록</h3>
-          <p>누가 언제 무엇을 처리했는지 기록에 남아 함께 확인할 수 있게 됩니다.</p>
-        </article>
-      </section>
+      <FinanceOperations
+        role="banker"
+        actorId={context.actor.id}
+        classId={context.classroom.id}
+        classIsActive={context.classroom.status === "active"}
+        canOverride={false}
+        finance={finance}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
 
       <FinanceWalletOverview
         role="banker"
@@ -372,10 +391,14 @@ function StudentFinanceHome({
   context,
   finance,
   backHref,
+  refreshing,
+  onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
   backHref: string;
+  refreshing: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   return (
     <>
@@ -383,34 +406,28 @@ function StudentFinanceHome({
         <div className="finance-lead-icon" aria-hidden="true"><WalletCards /></div>
         <div>
           <p className="eyebrow">나의 금융생활</p>
-          <h2>금융센터에 안전하게 연결되었어요</h2>
-          <p>앞으로 내 학급화폐와 거래 기록을 보고, 필요한 은행 업무를 신청할 수 있게 됩니다.</p>
+          <h2>내 지갑과 은행 업무를 한곳에서 확인해요</h2>
+          <p>실물 학급화폐를 맡기거나 찾아갈 때 은행원 친구에게 바로 신청할 수 있어요.</p>
         </div>
       </section>
 
-      <section className="finance-principle-grid" aria-label="학생 금융센터에서 준비하는 기능">
-        <article>
-          <span aria-hidden="true"><WalletCards /></span>
-          <h3>내 지갑</h3>
-          <p>사용할 수 있는 금액과 보관 중인 금액을 헷갈리지 않게 보여 줄게요.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><ClipboardList /></span>
-          <h3>은행 신청</h3>
-          <p>입금·출금을 신청하고 은행원이 확인한 결과를 볼 수 있어요.</p>
-        </article>
-        <article>
-          <span aria-hidden="true"><Clock3 /></span>
-          <h3>거래 기록</h3>
-          <p>언제 어떤 이유로 금액이 바뀌었는지 쉽게 확인할 수 있어요.</p>
-        </article>
-      </section>
+      <FinanceOperations
+        role="student"
+        actorId={context.actor.id}
+        classId={context.classroom.id}
+        classIsActive={context.classroom.status === "active"}
+        canOverride={false}
+        finance={finance}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
 
       <FinanceWalletOverview
         role="student"
         actorId={context.actor.id}
         finance={finance}
         classIsActive={context.classroom.status === "active"}
+        hideBalanceSummary
       />
       <ReturnLink backHref={backHref} />
     </>

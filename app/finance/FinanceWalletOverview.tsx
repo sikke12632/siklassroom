@@ -4,7 +4,7 @@ import {
   Clock3,
   Coins,
   ListChecks,
-  LockKeyhole,
+  ShieldCheck,
   UsersRound,
   WalletCards,
 } from "lucide-react";
@@ -34,11 +34,44 @@ export type FinanceTransactionData = {
   studentId: string;
   studentNumber: number;
   studentName: string;
+  canReverse?: boolean;
+  reversalBlockedReason?: string | null;
+};
+
+export type FinanceRequestData = {
+  id: string;
+  requestType: "deposit" | "withdrawal";
+  amount: number;
+  memo: string | null;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  student: {
+    id: string;
+    number: number;
+    name: string;
+  };
+  requestedAt: number;
+  resolvedAt: number | null;
+  processorLabel: string | null;
+  reasonCode: string | null;
+  reasonNote: string | null;
+  interventionReason: string | null;
+  revision: number;
+  canCancel: boolean;
+  canDecide: boolean;
+  decisionBlockedReason: string | null;
+  transactionId: string | null;
+  isCorrected: boolean;
+};
+
+export type FinanceRequestSummaryData = {
+  pendingCount: number;
+  pendingWithdrawalAmount: number;
+  availableBalance: number | null;
 };
 
 export type FinanceOverviewData = {
   phase: "wallet_ledger";
-  mode: "read_only";
+  mode: "read_only" | "operations";
   currencyLabel: string;
   scope: "class" | "self";
   summary: {
@@ -48,28 +81,32 @@ export type FinanceOverviewData = {
     ledgerIntegrity: "ok" | "attention" | "not_checked";
   };
   wallets: FinanceWalletData[];
+  requestSummary?: FinanceRequestSummaryData;
+  requests?: FinanceRequestData[];
   transactions: FinanceTransactionData[];
 };
 
-type FinanceRole = "teacher" | "banker" | "student";
+export type FinanceRole = "teacher" | "banker" | "student";
 
-const TRANSACTION_LABELS: Record<string, string> = {
+export const TRANSACTION_LABELS: Record<string, string> = {
   opening: "첫 잔액",
   manual_credit: "지급",
   manual_debit: "차감",
   deposit: "입금",
   withdrawal: "출금",
+  cash_deposit: "입금",
+  cash_withdrawal: "출금",
   salary: "직업 월급",
   transfer: "이체",
   reversal: "정정",
 };
 
-function amountText(amount: number, currencyLabel: string, showPlus = false) {
+export function amountText(amount: number, currencyLabel: string, showPlus = false) {
   const sign = amount < 0 ? "-" : showPlus && amount > 0 ? "+" : "";
   return `${sign}${Math.abs(amount).toLocaleString("ko-KR")} ${currencyLabel}`;
 }
 
-function dateTimeText(epochMs: number | null) {
+export function dateTimeText(epochMs: number | null) {
   if (!epochMs) return "아직 기록 없음";
   return new Intl.DateTimeFormat("ko-KR", {
     timeZone: "Asia/Seoul",
@@ -92,11 +129,15 @@ export function FinanceWalletOverview({
   actorId,
   finance,
   classIsActive,
+  hideLedger = false,
+  hideBalanceSummary = false,
 }: {
   role: FinanceRole;
   actorId: string;
   finance: FinanceOverviewData;
   classIsActive: boolean;
+  hideLedger?: boolean;
+  hideBalanceSummary?: boolean;
 }) {
   const ownWallet = finance.wallets.find((wallet) => wallet.studentId === actorId) ?? null;
   const classScope = role === "teacher" || role === "banker";
@@ -106,12 +147,12 @@ export function FinanceWalletOverview({
     <section className="finance-wallet-section" aria-labelledby="finance-wallet-title">
       <div className="finance-wallet-heading">
         <div>
-          <p className="eyebrow">2단계 · 지갑과 거래 원장</p>
-          <h2 id="finance-wallet-title">잔액과 기록을 안전하게 연결했어요</h2>
+          <p className="eyebrow">안전한 지갑과 거래 원장</p>
+          <h2 id="finance-wallet-title">{hideLedger ? "학생별 지갑을 확인해요" : "잔액과 기록을 확인해요"}</h2>
           <p>모든 금액 변화는 이유와 처리자를 남기는 원장을 통해서만 반영됩니다.</p>
         </div>
-        <span className="finance-readonly-badge">
-          <LockKeyhole aria-hidden="true" />현재 조회만 가능
+        <span className="finance-integrity-ok">
+          <ShieldCheck aria-hidden="true" />원장으로 안전하게 기록
         </span>
       </div>
 
@@ -129,7 +170,8 @@ export function FinanceWalletOverview({
         </div>
       )}
 
-      <div className="finance-balance-grid">
+      {!hideBalanceSummary && (
+        <div className="finance-balance-grid">
         {role !== "teacher" && (
           <article className="finance-balance-card primary">
             <span aria-hidden="true"><WalletCards /></span>
@@ -183,7 +225,8 @@ export function FinanceWalletOverview({
             <p>{finance.summary.lastEntryAt ? "서울 시간 기준" : "첫 거래를 기다리고 있어요"}</p>
           </div>
         </article>
-      </div>
+        </div>
+      )}
 
       {classScope && (
         <section className="finance-wallet-list-card" aria-labelledby="finance-wallet-list-title">
@@ -217,7 +260,8 @@ export function FinanceWalletOverview({
         </section>
       )}
 
-      <section className="finance-ledger-card" aria-labelledby="finance-ledger-title">
+      {!hideLedger && (
+        <section className="finance-ledger-card" aria-labelledby="finance-ledger-title">
         <div className="finance-subsection-heading">
           <div>
             <p className="eyebrow">{classScope ? "학급 거래 기록" : "나의 거래 기록"}</p>
@@ -273,11 +317,12 @@ export function FinanceWalletOverview({
             <p>첫 지급도 원장을 통해 기록한 뒤 이곳에 나타납니다.</p>
           </div>
         )}
-      </section>
+        </section>
+      )}
 
       <div className="finance-ledger-notice">
-        <LockKeyhole aria-hidden="true" />
-        <p><b>이번 단계는 조회 전용입니다.</b> 실제 지급·차감과 학생 입출금 신청은 다음 단계에서 안전 검증 후 열립니다.</p>
+        <ShieldCheck aria-hidden="true" />
+        <p><b>모든 금융 업무는 기록으로 남습니다.</b> 승인이나 정정을 여러 번 눌러도 같은 거래가 중복 반영되지 않습니다.</p>
       </div>
     </section>
   );

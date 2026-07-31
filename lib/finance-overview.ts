@@ -36,6 +36,33 @@ type TransactionViewRow = {
   student_id: string;
   student_number: number;
   official_name: string;
+  account_status: string;
+};
+
+type RequestViewRow = {
+  id: string;
+  requester_student_id: string;
+  request_type: string;
+  amount: number;
+  memo: string | null;
+  student_number_snapshot: number;
+  student_name_snapshot: string;
+  revision: number;
+  created_at: number;
+  decision: string | null;
+  actor_label: string | null;
+  reason_code: string | null;
+  reason_note: string | null;
+  intervention_reason: string | null;
+  posted_transaction_id: string | null;
+  resolved_at: number | null;
+  wallet_status: string;
+  is_corrected: number;
+};
+
+type RequestSummaryRow = {
+  pending_count: number;
+  pending_withdrawal_amount: number;
 };
 
 export type FinanceWalletView = {
@@ -63,13 +90,40 @@ export type FinanceTransactionView = {
   studentId: string;
   studentNumber: number;
   studentName: string;
+  canReverse: boolean;
+  reversalBlockedReason: string | null;
+};
+
+export type FinanceRequestView = {
+  id: string;
+  requestType: "deposit" | "withdrawal";
+  amount: number;
+  memo: string | null;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  student: {
+    id: string;
+    number: number;
+    name: string;
+  };
+  requestedAt: number;
+  resolvedAt: number | null;
+  processorLabel: string | null;
+  reasonCode: string | null;
+  reasonNote: string | null;
+  interventionReason: string | null;
+  revision: number;
+  canCancel: boolean;
+  canDecide: boolean;
+  decisionBlockedReason: string | null;
+  transactionId: string | null;
+  isCorrected: boolean;
 };
 
 export type FinanceOverview = {
   context: FinanceContext;
   finance: {
     phase: "wallet_ledger";
-    mode: "read_only";
+    mode: "operations";
     currencyLabel: "학급화폐";
     scope: "class" | "self";
     summary: {
@@ -79,6 +133,12 @@ export type FinanceOverview = {
       ledgerIntegrity: "ok" | "attention" | "not_checked";
     };
     wallets: FinanceWalletView[];
+    requestSummary: {
+      pendingCount: number;
+      pendingWithdrawalAmount: number;
+      availableBalance: number | null;
+    };
+    requests: FinanceRequestView[];
     transactions: FinanceTransactionView[];
   };
 };
@@ -101,7 +161,33 @@ function serializeWallet(row: WalletRow): FinanceWalletView {
   };
 }
 
-function serializeTransaction(row: TransactionViewRow): FinanceTransactionView {
+function serializeTransaction(
+  row: TransactionViewRow,
+  context: FinanceContext,
+  ledgerAttention: boolean,
+): FinanceTransactionView {
+  const classIsActive = context.classroom.status === "active";
+  const canReverse = context.financeRole === "teacher"
+    && classIsActive
+    && !ledgerAttention
+    && row.account_status === "active"
+    && row.transaction_type !== "reversal"
+    && !Boolean(row.is_reversed);
+  const reversalBlockedReason = canReverse
+    ? null
+    : context.financeRole !== "teacher"
+      ? "선생님만 거래를 정정할 수 있습니다."
+      : !classIsActive
+        ? "보관된 학급에서는 기록만 확인할 수 있습니다."
+        : ledgerAttention
+          ? "잔액과 원장을 먼저 점검해 주세요."
+          : row.account_status !== "active"
+            ? "현재 사용 중인 학생 지갑 거래만 정정할 수 있습니다."
+            : row.transaction_type === "reversal"
+              ? "정정 거래는 다시 정정할 수 없습니다."
+              : Boolean(row.is_reversed)
+                ? "이미 정정된 거래입니다."
+                : null;
   return {
     id: row.id,
     transactionType: row.transaction_type,
@@ -116,6 +202,66 @@ function serializeTransaction(row: TransactionViewRow): FinanceTransactionView {
     studentId: row.student_id,
     studentNumber: Number(row.student_number),
     studentName: row.official_name,
+    canReverse,
+    reversalBlockedReason,
+  };
+}
+
+function serializeRequest(
+  row: RequestViewRow,
+  context: FinanceContext,
+): FinanceRequestView {
+  const status = row.decision === "approved"
+    ? "approved"
+    : row.decision === "rejected"
+      ? "rejected"
+      : row.decision === "cancelled"
+        ? "cancelled"
+        : "pending";
+  const pending = status === "pending";
+  const classIsActive = context.classroom.status === "active";
+  const selfRequest = context.actor.id === row.requester_student_id;
+  const canDecide = pending
+    && classIsActive
+    && row.wallet_status === "active"
+    && (
+      context.financeRole === "teacher"
+      || (context.financeRole === "banker" && !selfRequest)
+    );
+  const decisionBlockedReason = canDecide
+    ? null
+    : !pending
+      ? "이미 처리된 신청입니다."
+      : !classIsActive
+        ? "보관된 학급에서는 기록만 확인할 수 있습니다."
+        : row.wallet_status !== "active"
+          ? "현재 사용할 수 없는 학생 지갑입니다."
+          : context.financeRole === "banker" && selfRequest
+            ? "내 신청은 다른 은행원이나 선생님이 처리해야 합니다."
+            : "이 신청을 처리할 권한이 없습니다.";
+  return {
+    id: row.id,
+    requestType: row.request_type === "withdrawal" ? "withdrawal" : "deposit",
+    amount: Number(row.amount),
+    memo: row.memo,
+    status,
+    student: {
+      id: row.requester_student_id,
+      number: Number(row.student_number_snapshot),
+      name: row.student_name_snapshot,
+    },
+    requestedAt: Number(row.created_at),
+    resolvedAt: row.resolved_at === null ? null : Number(row.resolved_at),
+    processorLabel: row.actor_label,
+    reasonCode: row.reason_code,
+    reasonNote: row.reason_note,
+    interventionReason: row.intervention_reason,
+    revision: Number(row.revision),
+    canCancel: pending && classIsActive && selfRequest && row.wallet_status === "active",
+    canDecide,
+    decisionBlockedReason,
+    transactionId: row.posted_transaction_id,
+    isCorrected: Boolean(row.is_corrected),
   };
 }
 
@@ -211,7 +357,8 @@ async function classTransactions(classId: string, limit: number) {
                 AND reversal.status = 'posted'
             ) AS is_reversed,
             entry.amount, entry.balance_after, student.id AS student_id,
-            student.student_number, student.official_name
+            student.student_number, student.official_name,
+            account.status AS account_status
      FROM finance_transactions transaction_row
      JOIN finance_ledger_entries entry
        ON entry.transaction_id = transaction_row.id
@@ -246,7 +393,8 @@ async function studentTransactions(
                 AND reversal.status = 'posted'
             ) AS is_reversed,
             entry.amount, entry.balance_after, student.id AS student_id,
-            student.student_number, student.official_name
+            student.student_number, student.official_name,
+            account.status AS account_status
      FROM finance_transactions transaction_row
      JOIN finance_ledger_entries entry
        ON entry.transaction_id = transaction_row.id
@@ -266,6 +414,76 @@ async function studentTransactions(
   ).bind(classId, studentId, limit).all<TransactionViewRow>();
 }
 
+async function financeRequests(
+  context: FinanceContext,
+  limit: number,
+) {
+  const ownOnly = context.financeRole === "student";
+  return database().prepare(
+    `SELECT request_row.id, request_row.requester_student_id,
+            request_row.request_type, request_row.amount, request_row.memo,
+            request_row.student_number_snapshot,
+            request_row.student_name_snapshot, request_row.revision,
+            request_row.created_at, resolution.decision,
+            resolution.actor_label, resolution.reason_code,
+            resolution.reason_note, resolution.intervention_reason,
+            resolution.posted_transaction_id, resolution.resolved_at,
+            account.status AS wallet_status,
+            CASE
+              WHEN resolution.posted_transaction_id IS NULL THEN 0
+              ELSE EXISTS (
+                SELECT 1
+                FROM finance_transactions reversal
+                WHERE reversal.reversal_of_transaction_id =
+                      resolution.posted_transaction_id
+                  AND reversal.status = 'posted'
+              )
+            END AS is_corrected
+     FROM finance_cash_requests request_row
+     JOIN finance_accounts account
+       ON account.id = request_row.wallet_account_id
+      AND account.class_id = request_row.class_id
+     LEFT JOIN finance_request_resolutions resolution
+       ON resolution.request_id = request_row.id
+      AND resolution.class_id = request_row.class_id
+     WHERE request_row.class_id = ?
+       AND (? = 0 OR request_row.requester_student_id = ?)
+     ORDER BY
+       CASE WHEN resolution.id IS NULL THEN 0 ELSE 1 END,
+       request_row.created_at DESC,
+       request_row.id DESC
+     LIMIT ?`,
+  ).bind(
+    context.classroom.id,
+    ownOnly ? 1 : 0,
+    context.actor.id,
+    limit,
+  ).all<RequestViewRow>();
+}
+
+async function financeRequestSummary(context: FinanceContext) {
+  const ownOnly = context.financeRole === "student";
+  return database().prepare(
+    `SELECT
+       COUNT(*) AS pending_count,
+       COALESCE(SUM(
+         CASE WHEN request_row.request_type = 'withdrawal'
+              THEN request_row.amount ELSE 0 END
+       ), 0) AS pending_withdrawal_amount
+     FROM finance_cash_requests request_row
+     LEFT JOIN finance_request_resolutions resolution
+       ON resolution.request_id = request_row.id
+      AND resolution.class_id = request_row.class_id
+     WHERE request_row.class_id = ?
+       AND resolution.id IS NULL
+       AND (? = 0 OR request_row.requester_student_id = ?)`,
+  ).bind(
+    context.classroom.id,
+    ownOnly ? 1 : 0,
+    context.actor.id,
+  ).first<RequestSummaryRow>();
+}
+
 export async function financeOverviewForRequest(
   request: Request,
 ): Promise<FinanceOverview> {
@@ -273,14 +491,24 @@ export async function financeOverviewForRequest(
   const classScope = context.financeRole === "teacher"
     || context.financeRole === "banker";
 
-  const [walletResult, transactionResult, summary, reconciliation] = await Promise.all([
+  const [
+    walletResult,
+    transactionResult,
+    summary,
+    reconciliation,
+    requestResult,
+    requestSummary,
+  ] = await Promise.all([
     context.financeRole === "teacher"
       ? classWallets(context.classroom.id, true)
       : context.financeRole === "banker"
         ? classWallets(context.classroom.id, false)
         : studentWallet(context.classroom.id, context.actor.id),
     classScope
-      ? classTransactions(context.classroom.id, 30)
+      ? classTransactions(
+          context.classroom.id,
+          context.financeRole === "teacher" ? 150 : 30,
+        )
       : studentTransactions(context.classroom.id, context.actor.id, 15),
     context.financeRole === "teacher"
       ? classSummary(context.classroom.id, true)
@@ -290,16 +518,28 @@ export async function financeOverviewForRequest(
     context.financeRole === "teacher"
       ? financeReconciliation(context.classroom.id)
       : Promise.resolve(null),
+    financeRequests(context, context.financeRole === "teacher" ? 150 : 50),
+    financeRequestSummary(context),
   ]);
 
   const wallets = walletResult && "results" in walletResult
     ? walletResult.results.map(serializeWallet)
     : walletResult ? [serializeWallet(walletResult)] : [];
+  const ledgerAttention = reconciliation !== null
+    && (
+      reconciliation.mismatches.length > 0
+      || reconciliation.pendingTransactionCount > 0
+    );
+  const ownWallet = wallets.find((wallet) => wallet.studentId === context.actor.id)
+    ?? null;
+  const pendingWithdrawalAmount = context.financeRole === "student"
+    ? Number(requestSummary?.pending_withdrawal_amount ?? 0)
+    : 0;
   return {
     context,
     finance: {
       phase: "wallet_ledger",
-      mode: "read_only",
+      mode: "operations",
       currencyLabel: "학급화폐",
       scope: classScope ? "class" : "self",
       summary: {
@@ -316,7 +556,17 @@ export async function financeOverviewForRequest(
             : "attention",
       },
       wallets,
-      transactions: transactionResult.results.map(serializeTransaction),
+      requestSummary: {
+        pendingCount: Number(requestSummary?.pending_count ?? 0),
+        pendingWithdrawalAmount,
+        availableBalance: context.financeRole === "student"
+          ? Math.max(0, (ownWallet?.balance ?? 0) - pendingWithdrawalAmount)
+          : null,
+      },
+      requests: requestResult.results.map((row) => serializeRequest(row, context)),
+      transactions: transactionResult.results.map(
+        (row) => serializeTransaction(row, context, ledgerAttention),
+      ),
     },
   };
 }

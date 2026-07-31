@@ -449,7 +449,8 @@ BEGIN
     'class_issuance',
     0,
     1,
-    CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'closed' END,
+    CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'closed' END
+    ,
     0,
     NEW.created_at,
     NEW.updated_at
@@ -476,7 +477,8 @@ BEGIN
         AND EXISTS (SELECT 1 FROM classes WHERE id = NEW.class_id AND status = 'active')
       THEN 'frozen'
       ELSE 'closed'
-    END,
+    END
+    ,
     0,
     NEW.created_at,
     NEW.updated_at
@@ -494,7 +496,8 @@ BEGIN
         AND EXISTS (SELECT 1 FROM classes WHERE id = NEW.class_id AND status = 'active')
       THEN 'frozen'
       ELSE 'closed'
-    END,
+    END
+    ,
     updated_at = NEW.updated_at
   WHERE student_id = NEW.id AND account_type = 'student_wallet';
 END;--> statement-breakpoint
@@ -521,7 +524,8 @@ BEGIN
         )
       THEN 'frozen'
       ELSE 'closed'
-    END,
+    END
+    ,
     updated_at = NEW.updated_at
   WHERE class_id = NEW.id;
 END;--> statement-breakpoint
@@ -536,7 +540,8 @@ SELECT
   'class_issuance',
   0,
   1,
-  CASE WHEN class_row.status = 'active' THEN 'active' ELSE 'closed' END,
+  CASE WHEN class_row.status = 'active' THEN 'active' ELSE 'closed' END
+  ,
   0,
   class_row.created_at,
   class_row.updated_at
@@ -556,7 +561,8 @@ SELECT
     WHEN student.status <> 'excluded' AND class_row.status = 'active' THEN 'active'
     WHEN student.status = 'excluded' AND class_row.status = 'active' THEN 'frozen'
     ELSE 'closed'
-  END,
+  END
+  ,
   0,
   student.created_at,
   student.updated_at

@@ -11,7 +11,7 @@
     "deploy": "vinext deploy",
     "deploy:check": "vinext deploy --dry-run",
     "start": "vinext start",
-    "test": "pnpm run typecheck && pnpm run build && node --test tests/rendered-html.test.mjs tests/finance-ledger-d1.test.mjs && tsx --test tests/job-center.test.ts tests/teacher-foundation.test.ts tests/finance-foundation.test.ts tests/finance-ledger.test.ts",
+    "test": "pnpm run typecheck && pnpm run build && node --test tests/rendered-html.test.mjs tests/finance-ledger-d1.test.mjs tests/finance-operations-d1.test.mjs && tsx --test tests/job-center.test.ts tests/teacher-foundation.test.ts tests/finance-foundation.test.ts tests/finance-ledger.test.ts tests/finance-operations.test.ts",
     "test:integration": "node tests/integration-flow.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
