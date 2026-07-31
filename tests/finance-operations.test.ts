@@ -105,6 +105,7 @@ test("취소와 정정은 최신 revision, 이유, 멱등 키를 검증한다", 
 
 test("금융 운영 API와 스키마는 역할 범위·불변 기록·원자 승인을 함께 둔다", async () => {
   const [
+    ledgerMigration,
     migration,
     runtime,
     service,
@@ -113,6 +114,7 @@ test("금융 운영 API와 스키마는 역할 범위·불변 기록·원자 승
     decisionRoute,
     reverseRoute,
   ] = await Promise.all([
+    readFile(new URL("../drizzle/0009_wakeful_sersi.sql", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0010_perfect_plazm.sql", import.meta.url), "utf8"),
     readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/finance-requests.ts", import.meta.url), "utf8"),
@@ -156,6 +158,13 @@ test("금융 운영 API와 스키마는 역할 범위·불변 기록·원자 승
     runtime,
     /DROP TRIGGER IF EXISTS finance_transactions_actor_guard[\s\S]*CREATE TRIGGER IF NOT EXISTS finance_transactions_actor_guard/,
   );
+  for (const compatibleMigration of [ledgerMigration, migration]) {
+    assert.doesNotMatch(
+      compatibleMigration,
+      /\bEND,/,
+      "Wrangler D1 문장 분리기가 CASE END 뒤의 쉼표를 오인하지 않아야 합니다.",
+    );
+  }
   assert.match(service, /financeContextForRequest\(request\)/);
   assert.match(service, /reverseFinanceTransaction\(/);
   assert.match(service, /FINANCE_REQUEST_PENDING_EXISTS/);

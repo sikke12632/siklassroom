@@ -403,11 +403,13 @@ BEGIN
     CASE request_row.request_type
       WHEN 'deposit' THEN 'cash_deposit'
       ELSE 'cash_withdrawal'
-    END,
+    END
+    ,
     CASE request_row.request_type
       WHEN 'deposit' THEN '입금 신청 승인'
       ELSE '출금 신청 승인'
-    END,
+    END
+    ,
     'cash-request:' || request_row.id || ':approved',
     NEW.transaction_payload_hash, 'cash_request', request_row.id,
     NULL, NEW.actor_type, NEW.actor_teacher_id, NEW.actor_student_id,
@@ -427,11 +429,13 @@ BEGIN
     CASE request_row.request_type
       WHEN 'deposit' THEN request_row.amount
       ELSE -request_row.amount
-    END,
+    END
+    ,
     wallet.balance + CASE request_row.request_type
       WHEN 'deposit' THEN request_row.amount
       ELSE -request_row.amount
-    END,
+    END
+    ,
     wallet.revision + 1, NULL, NEW.resolved_at
   FROM finance_cash_requests request_row
   JOIN finance_accounts wallet
@@ -450,11 +454,13 @@ BEGIN
     CASE request_row.request_type
       WHEN 'deposit' THEN -request_row.amount
       ELSE request_row.amount
-    END,
+    END
+    ,
     issuance.balance + CASE request_row.request_type
       WHEN 'deposit' THEN -request_row.amount
       ELSE request_row.amount
-    END,
+    END
+    ,
     issuance.revision + 1, NULL, NEW.resolved_at
   FROM finance_cash_requests request_row
   JOIN finance_accounts issuance
