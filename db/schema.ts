@@ -816,3 +816,77 @@ export const financeRequestResolutions = sqliteTable("finance_request_resolution
     sql`${table.expectedRequestRevision} >= 0`,
   ),
 ]);
+
+export const financeSettings = sqliteTable("finance_settings", {
+  classId: text("class_id").primaryKey().references(() => classes.id),
+  currencyName: text("currency_name").notNull().default("우리 반 화폐"),
+  currencyUnit: text("currency_unit").notNull().default("학급화폐"),
+  denominationsJson: text("denominations_json").notNull().default("[100,500,1000,5000]"),
+  bankOpen: integer("bank_open", { mode: "boolean" }).notNull().default(true),
+  depositEnabled: integer("deposit_enabled", { mode: "boolean" }).notNull().default(true),
+  withdrawalEnabled: integer("withdrawal_enabled", { mode: "boolean" }).notNull().default(true),
+  bankerProcessingEnabled: integer("banker_processing_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  maxRequestAmount: integer("max_request_amount").notNull().default(100000),
+  revision: integer("revision").notNull().default(0),
+  updatedByTeacherId: text("updated_by_teacher_id").references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("finance_settings_updated_by_idx").on(table.updatedByTeacherId),
+  check(
+    "finance_settings_text_ck",
+    sql`LENGTH(TRIM(${table.currencyName})) BETWEEN 1 AND 30
+      AND LENGTH(TRIM(${table.currencyUnit})) BETWEEN 1 AND 10`,
+  ),
+  check(
+    "finance_settings_boolean_ck",
+    sql`${table.bankOpen} IN (0, 1)
+      AND ${table.depositEnabled} IN (0, 1)
+      AND ${table.withdrawalEnabled} IN (0, 1)
+      AND ${table.bankerProcessingEnabled} IN (0, 1)`,
+  ),
+  check(
+    "finance_settings_amount_ck",
+    sql`${table.maxRequestAmount} BETWEEN 1 AND 1000000000`,
+  ),
+  check("finance_settings_revision_ck", sql`${table.revision} >= 0`),
+  check(
+    "finance_settings_actor_ck",
+    sql`(${table.revision} = 0 AND ${table.updatedByTeacherId} IS NULL)
+      OR (${table.revision} > 0 AND ${table.updatedByTeacherId} IS NOT NULL)`,
+  ),
+]);
+
+export const financeSettingRevisions = sqliteTable("finance_setting_revisions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  revision: integer("revision").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  previousSettingsJson: text("previous_settings_json").notNull(),
+  settingsJson: text("settings_json").notNull(),
+  changeReason: text("change_reason").notNull(),
+  actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+  actorLabel: text("actor_label").notNull().default("교사"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_setting_revisions_class_revision_uq").on(
+    table.classId,
+    table.revision,
+  ),
+  uniqueIndex("finance_setting_revisions_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_setting_revisions_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+  ),
+  check("finance_setting_revisions_revision_ck", sql`${table.revision} > 0`),
+  check(
+    "finance_setting_revisions_reason_ck",
+    sql`LENGTH(TRIM(${table.changeReason})) BETWEEN 2 AND 300`,
+  ),
+]);

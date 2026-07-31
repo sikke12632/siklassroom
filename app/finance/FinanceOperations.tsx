@@ -137,7 +137,7 @@ function requestStatusText(status: FinanceRequestData["status"]) {
 
 const REJECTION_REASONS = [
   { code: "amount_check", label: "금액을 다시 확인해 주세요" },
-  { code: "cash_not_confirmed", label: "실물 학급화폐를 확인하지 못했어요" },
+  { code: "cash_not_confirmed", label: "실물 화폐를 확인하지 못했어요" },
   { code: "ask_student", label: "학생에게 다시 물어봐야 해요" },
   { code: "other", label: "기타 이유" },
 ] as const;
@@ -201,10 +201,25 @@ function StudentRequestPanel({
   const cancelKeys = useRef<Record<string, string>>({});
   const numericAmount = Number(amount);
   const validAmount = Number.isSafeInteger(numericAmount) && numericAmount > 0;
+  const quickAmounts = [...new Set(
+    finance.settings.denominations.filter((value) => (
+      Number.isSafeInteger(value) && value > 0
+    )),
+  )].sort((left, right) => left - right);
+  const minDenomination = quickAmounts[0] ?? 1;
+  const matchesDenomination = validAmount
+    && numericAmount % minDenomination === 0;
+  const requestTypeEnabled = requestType === "deposit"
+    ? finance.settings.depositEnabled
+    : finance.settings.withdrawalEnabled;
   const canSubmit = classIsActive
+    && finance.settings.bankOpen
+    && requestTypeEnabled
     && wallet?.status === "active"
     && !pendingRequest
     && validAmount
+    && matchesDenomination
+    && numericAmount <= finance.settings.maxRequestAmount
     && (requestType === "deposit" || numericAmount <= availableBalance);
 
   async function submitRequest(event: FormEvent<HTMLFormElement>) {
@@ -212,9 +227,11 @@ function StudentRequestPanel({
     if (!canSubmit) {
       setNotice({
         tone: "error",
-        message: requestType === "withdrawal" && validAmount && numericAmount > availableBalance
-          ? "지금 사용할 수 있는 금액보다 큰 금액은 출금할 수 없어요."
-          : "신청 금액과 지갑 상태를 다시 확인해 주세요.",
+        message: validAmount && !matchesDenomination
+          ? `금액은 최소 권종인 ${amountText(minDenomination, finance.currencyLabel)} 단위로 입력해 주세요.`
+          : requestType === "withdrawal" && validAmount && numericAmount > availableBalance
+            ? "지금 사용할 수 있는 금액보다 큰 금액은 출금할 수 없어요."
+            : "신청 금액과 지갑 상태를 다시 확인해 주세요.",
       });
       return;
     }
@@ -269,7 +286,7 @@ function StudentRequestPanel({
         <div>
           <p className="eyebrow">나의 은행 업무</p>
           <h2 id="student-request-title">맡기거나 찾아갈 금액을 신청해요</h2>
-          <p>은행원 친구가 실물 학급화폐와 신청 금액을 확인한 뒤 지갑에 반영해요.</p>
+          <p>은행원 친구가 실물 화폐와 신청 금액을 확인한 뒤 지갑에 반영해요.</p>
         </div>
         <button
           className="button button-light finance-refresh-button"
@@ -357,7 +374,14 @@ function StudentRequestPanel({
         </article>
       ) : (
         <form className="finance-request-form" onSubmit={submitRequest}>
-          <fieldset disabled={!classIsActive || wallet?.status !== "active" || busy}>
+          <fieldset
+            disabled={
+              !classIsActive
+              || !finance.settings.bankOpen
+              || wallet?.status !== "active"
+              || busy
+            }
+          >
             <legend>어떤 은행 업무를 신청할까요?</legend>
             <div className="finance-request-type-choice">
               <label className={requestType === "deposit" ? "selected" : ""}>
@@ -406,8 +430,9 @@ function StudentRequestPanel({
               <input
                 type="number"
                 inputMode="numeric"
-                min="1"
-                step="1"
+                min={minDenomination}
+                max={finance.settings.maxRequestAmount}
+                step={minDenomination}
                 value={amount}
                 onChange={(event) => {
                   setAmount(event.target.value);
@@ -416,17 +441,78 @@ function StudentRequestPanel({
                 }}
                 placeholder="금액을 숫자로 입력"
                 aria-describedby="finance-request-help"
-                disabled={!classIsActive || wallet?.status !== "active" || busy}
+                aria-invalid={Boolean(
+                  amount
+                  && (
+                    !validAmount
+                    || !matchesDenomination
+                    || numericAmount > finance.settings.maxRequestAmount
+                    || (
+                      requestType === "withdrawal"
+                      && numericAmount > availableBalance
+                    )
+                  )
+                )}
+                disabled={
+                  !classIsActive
+                  || !finance.settings.bankOpen
+                  || !requestTypeEnabled
+                  || wallet?.status !== "active"
+                  || busy
+                }
               />
               <span>{finance.currencyLabel}</span>
             </span>
           </label>
+          {quickAmounts.length > 0 && (
+            <div className="finance-quick-amounts" aria-label="권종 빠른 금액 입력">
+              <span>빠른 금액</span>
+              <div>
+                {quickAmounts.map((quickAmount) => {
+                  const exceedsLimit = quickAmount > finance.settings.maxRequestAmount;
+                  const exceedsAvailable = requestType === "withdrawal"
+                    && quickAmount > availableBalance;
+                  return (
+                    <button
+                      key={quickAmount}
+                      className="button button-light"
+                      type="button"
+                      onClick={() => {
+                        setAmount(String(quickAmount));
+                        submitKey.current = null;
+                        setNotice(null);
+                      }}
+                      disabled={
+                        !classIsActive
+                        || !finance.settings.bankOpen
+                        || !requestTypeEnabled
+                        || wallet?.status !== "active"
+                        || busy
+                        || exceedsLimit
+                        || exceedsAvailable
+                      }
+                    >
+                      {amountText(quickAmount, finance.currencyLabel)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <p id="finance-request-help" className="finance-form-help">
-            {requestType === "withdrawal" && validAmount
+            {!finance.settings.bankOpen
+              ? "지금은 학급 은행이 잠시 쉬는 중이에요."
+              : !requestTypeEnabled
+                ? `지금은 ${requestTypeText(requestType)} 신청을 받지 않아요.`
+                : validAmount && numericAmount > finance.settings.maxRequestAmount
+                  ? `한 번에 최대 ${amountText(finance.settings.maxRequestAmount, finance.currencyLabel)}까지 신청할 수 있어요.`
+                  : validAmount && !matchesDenomination
+                    ? `금액은 최소 권종인 ${amountText(minDenomination, finance.currencyLabel)}의 배수로 입력해 주세요.`
+                  : requestType === "withdrawal" && validAmount
               ? `신청 후 사용할 수 있는 금액: ${amountText(Math.max(0, availableBalance - numericAmount), finance.currencyLabel)}`
               : requestType === "withdrawal"
                 ? `최대 ${amountText(availableBalance, finance.currencyLabel)}까지 신청할 수 있어요.`
-                : "은행원에게 맡길 실물 학급화폐와 같은 금액을 적어 주세요."}
+                : `은행원에게 맡길 ${finance.settings.currencyName}와 같은 금액을 적어 주세요.`}
           </p>
           <button
             className="button button-primary button-large finance-submit-request"
@@ -463,7 +549,7 @@ function BankerRequestPanel(props: FinanceOperationsProps) {
           <h2 id="banker-request-title">
             지금 확인할 신청 <strong>{pending.length}건</strong>
           </h2>
-          <p>친구에게 실물 학급화폐를 받거나 건네기 전에 종류와 금액을 확인해 주세요.</p>
+          <p>친구에게 실물 화폐를 받거나 건네기 전에 종류와 금액을 확인해 주세요.</p>
         </div>
         <button
           className="button button-light finance-refresh-button"
@@ -542,8 +628,8 @@ function TeacherFinanceOperations(props: FinanceOperationsProps) {
       <section className="finance-operations-card finance-audit-card" aria-labelledby="finance-audit-title">
         <div className="finance-operation-heading">
           <div>
-            <p className="eyebrow">선생님 전체 기록</p>
-            <h2 id="finance-audit-title">신청과 거래를 한곳에서 확인해요</h2>
+            <p className="eyebrow">선생님 최근 업무 기록</p>
+            <h2 id="finance-audit-title">최근 신청과 거래를 확인해요</h2>
             <p>문제가 생겼을 때 학생, 처리자, 사유와 정정 관계를 찾아볼 수 있어요.</p>
           </div>
           <FileSearch aria-hidden="true" />
@@ -783,8 +869,8 @@ function RequestDecisionQueue({
                         <div>
                           <b>
                             {request.requestType === "deposit"
-                              ? "학생에게 실물 학급화폐를 받았나요?"
-                              : "학생에게 건넬 실물 학급화폐를 확인했나요?"}
+                              ? "학생에게 실물 화폐를 받았나요?"
+                              : "학생에게 건넬 실물 화폐를 확인했나요?"}
                           </b>
                           <p>
                             승인하면 {amountText(request.amount, currencyLabel)}이

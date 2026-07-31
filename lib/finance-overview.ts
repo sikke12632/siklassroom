@@ -1,9 +1,14 @@
 import { database } from "./database";
 import {
   type FinanceContext,
+  currentBankersForClass,
   financeContextForRequest,
 } from "./finance-access";
 import { financeReconciliation } from "./finance-ledger";
+import {
+  type FinanceSettingsView,
+  financeSettingsForClass,
+} from "./finance-settings";
 
 type WalletRow = {
   id: string;
@@ -122,10 +127,19 @@ export type FinanceRequestView = {
 export type FinanceOverview = {
   context: FinanceContext;
   finance: {
-    phase: "wallet_ledger";
+    phase: "settings_audit";
     mode: "operations";
-    currencyLabel: "학급화폐";
+    currencyLabel: string;
     scope: "class" | "self";
+    settings: FinanceSettingsView;
+    bankers: Array<{
+      studentId: string;
+      studentNumber: number;
+      studentName: string;
+      jobName: string;
+      assignmentYear: number;
+      assignmentMonth: number;
+    }>;
     summary: {
       walletCount: number;
       totalBalance: number;
@@ -210,6 +224,7 @@ function serializeTransaction(
 function serializeRequest(
   row: RequestViewRow,
   context: FinanceContext,
+  settings: FinanceSettingsView,
 ): FinanceRequestView {
   const status = row.decision === "approved"
     ? "approved"
@@ -221,9 +236,20 @@ function serializeRequest(
   const pending = status === "pending";
   const classIsActive = context.classroom.status === "active";
   const selfRequest = context.actor.id === row.requester_student_id;
+  const bankerPolicyAllows = context.financeRole !== "banker"
+    || (
+      settings.bankOpen
+      && settings.bankerProcessingEnabled
+      && Number(row.amount) <= settings.maxRequestAmount
+      && (
+        (row.request_type === "deposit" && settings.depositEnabled)
+        || (row.request_type === "withdrawal" && settings.withdrawalEnabled)
+      )
+    );
   const canDecide = pending
     && classIsActive
     && row.wallet_status === "active"
+    && bankerPolicyAllows
     && (
       context.financeRole === "teacher"
       || (context.financeRole === "banker" && !selfRequest)
@@ -236,6 +262,8 @@ function serializeRequest(
         ? "보관된 학급에서는 기록만 확인할 수 있습니다."
         : row.wallet_status !== "active"
           ? "현재 사용할 수 없는 학생 지갑입니다."
+          : context.financeRole === "banker" && !bankerPolicyAllows
+            ? "현재 학급의 은행 운영 설정에 따라 처리가 잠시 멈춰 있습니다."
           : context.financeRole === "banker" && selfRequest
             ? "내 신청은 다른 은행원이나 선생님이 처리해야 합니다."
             : "이 신청을 처리할 권한이 없습니다.";
@@ -255,7 +283,9 @@ function serializeRequest(
     processorLabel: row.actor_label,
     reasonCode: row.reason_code,
     reasonNote: row.reason_note,
-    interventionReason: row.intervention_reason,
+    interventionReason: context.financeRole === "teacher"
+      ? row.intervention_reason
+      : null,
     revision: Number(row.revision),
     canCancel: pending && classIsActive && selfRequest && row.wallet_status === "active",
     canDecide,
@@ -498,6 +528,8 @@ export async function financeOverviewForRequest(
     reconciliation,
     requestResult,
     requestSummary,
+    settings,
+    bankers,
   ] = await Promise.all([
     context.financeRole === "teacher"
       ? classWallets(context.classroom.id, true)
@@ -520,6 +552,8 @@ export async function financeOverviewForRequest(
       : Promise.resolve(null),
     financeRequests(context, context.financeRole === "teacher" ? 150 : 50),
     financeRequestSummary(context),
+    financeSettingsForClass(context.classroom.id),
+    currentBankersForClass(context.classroom.id),
   ]);
 
   const wallets = walletResult && "results" in walletResult
@@ -538,10 +572,12 @@ export async function financeOverviewForRequest(
   return {
     context,
     finance: {
-      phase: "wallet_ledger",
+      phase: "settings_audit",
       mode: "operations",
-      currencyLabel: "학급화폐",
+      currencyLabel: settings.currencyUnit,
       scope: classScope ? "class" : "self",
+      settings,
+      bankers,
       summary: {
         walletCount: Number(summary?.wallet_count ?? 0),
         totalBalance: Number(summary?.total_balance ?? 0),
@@ -563,7 +599,9 @@ export async function financeOverviewForRequest(
           ? Math.max(0, (ownWallet?.balance ?? 0) - pendingWithdrawalAmount)
           : null,
       },
-      requests: requestResult.results.map((row) => serializeRequest(row, context)),
+      requests: requestResult.results.map(
+        (row) => serializeRequest(row, context, settings),
+      ),
       transactions: transactionResult.results.map(
         (row) => serializeTransaction(row, context, ledgerAttention),
       ),

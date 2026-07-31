@@ -16,7 +16,9 @@ import {
   FinanceWalletOverview,
   type FinanceOverviewData,
 } from "./FinanceWalletOverview";
+import { FinanceAuditPanel } from "./FinanceAuditPanel";
 import { FinanceOperations } from "./FinanceOperations";
+import { FinanceSettingsPanel } from "./FinanceSettingsPanel";
 
 type FinanceRole = "teacher" | "banker" | "student";
 
@@ -313,16 +315,35 @@ function TeacherFinanceHome({
         </div>
       </section>
 
-      <FinanceOperations
-        role="teacher"
-        actorId={context.actor.id}
-        classId={context.classroom.id}
-        classIsActive={classIsActive}
-        canOverride={context.permissions.canOverride}
-        finance={finance}
-        refreshing={refreshing}
-        onRefresh={onRefresh}
-      />
+      <nav className="finance-teacher-section-nav" aria-label="금융센터 교사 메뉴">
+        <a href="#finance-operations">은행 업무</a>
+        <a href="#finance-settings">화폐·은행 설정</a>
+        <a href="#finance-audit">전체 금융 기록</a>
+      </nav>
+
+      <div id="finance-operations">
+        <FinanceOperations
+          role="teacher"
+          actorId={context.actor.id}
+          classId={context.classroom.id}
+          classIsActive={classIsActive}
+          canOverride={context.permissions.canOverride}
+          finance={finance}
+          refreshing={refreshing}
+          onRefresh={onRefresh}
+        />
+      </div>
+
+      <div id="finance-settings">
+        <FinanceSettingsPanel
+          role="teacher"
+          classId={context.classroom.id}
+          classIsActive={classIsActive}
+          settings={finance.settings}
+          bankers={finance.bankers}
+          onRefresh={onRefresh}
+        />
+      </div>
 
       <FinanceWalletOverview
         role="teacher"
@@ -331,6 +352,12 @@ function TeacherFinanceHome({
         classIsActive={classIsActive}
         hideLedger
       />
+      <div id="finance-audit">
+        <FinanceAuditPanel
+          classId={context.classroom.id}
+          currencyUnit={finance.currencyLabel}
+        />
+      </div>
       <ReturnLink backHref={backHref} />
     </>
   );
@@ -358,7 +385,7 @@ function BankerFinanceHome({
         <div>
           <p className="eyebrow">나의 금융센터 역할</p>
           <h2>{activeJob?.name || "은행원"}으로 연결되었어요</h2>
-          <p>친구들의 신청을 살피고, 실물 학급화폐와 금액을 확인한 뒤 직접 처리해요.</p>
+          <p>친구들의 신청을 살피고, 실물 화폐와 금액을 확인한 뒤 직접 처리해요.</p>
           {activeJob && (
             <small>{activeJob.assignmentYear}년 {activeJob.assignmentMonth}월 직업 배정에서 자동으로 확인했어요.</small>
           )}
@@ -373,6 +400,15 @@ function BankerFinanceHome({
         canOverride={false}
         finance={finance}
         refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
+
+      <FinanceSettingsPanel
+        role="banker"
+        classId={context.classroom.id}
+        classIsActive={context.classroom.status === "active"}
+        settings={finance.settings}
+        bankers={finance.bankers}
         onRefresh={onRefresh}
       />
 
@@ -407,7 +443,7 @@ function StudentFinanceHome({
         <div>
           <p className="eyebrow">나의 금융생활</p>
           <h2>내 지갑과 은행 업무를 한곳에서 확인해요</h2>
-          <p>실물 학급화폐를 맡기거나 찾아갈 때 은행원 친구에게 바로 신청할 수 있어요.</p>
+          <p>실물 화폐를 맡기거나 찾아갈 때 은행원 친구에게 바로 신청할 수 있어요.</p>
         </div>
       </section>
 
@@ -419,6 +455,15 @@ function StudentFinanceHome({
         canOverride={false}
         finance={finance}
         refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
+
+      <FinanceSettingsPanel
+        role="student"
+        classId={context.classroom.id}
+        classIsActive={context.classroom.status === "active"}
+        settings={finance.settings}
+        bankers={finance.bankers}
         onRefresh={onRefresh}
       />
 
