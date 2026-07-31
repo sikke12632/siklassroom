@@ -102,7 +102,7 @@ function parseMetadata(value: string | null) {
   }
 }
 
-async function loadTransaction(
+export async function financeTransactionById(
   transactionId: string,
 ): Promise<PostedFinanceTransaction | null> {
   const db = database();
@@ -218,7 +218,7 @@ async function existingResult(
       "FINANCE_TRANSACTION_PENDING",
     );
   }
-  const transaction = await loadTransaction(existing.id);
+  const transaction = await financeTransactionById(existing.id);
   if (!transaction) {
     throw new ApiError(
       409,
@@ -471,7 +471,7 @@ export async function postFinanceTransaction(input: FinanceTransactionInput) {
     mapDatabaseError(error);
   }
 
-  const transaction = await loadTransaction(transactionId);
+  const transaction = await financeTransactionById(transactionId);
   if (!transaction) {
     throw new ApiError(
       500,
@@ -493,7 +493,7 @@ export async function reverseFinanceTransaction(input: {
   actor: FinancePostingActor;
 }) {
   await ensureSchema();
-  const original = await loadTransaction(input.originalTransactionId);
+  const original = await financeTransactionById(input.originalTransactionId);
   if (!original || original.classId !== input.classId) {
     throw new ApiError(
       404,

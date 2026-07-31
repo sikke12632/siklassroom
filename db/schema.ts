@@ -668,3 +668,151 @@ export const financeLedgerEntries = sqliteTable("finance_ledger_entries", {
     sql`${table.accountRevisionAfter} > 0`,
   ),
 ]);
+
+export const financeCashRequests = sqliteTable("finance_cash_requests", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  requesterStudentId: text("requester_student_id").notNull().references(() => students.id),
+  walletAccountId: text("wallet_account_id").notNull(),
+  requestType: text("request_type").notNull(),
+  amount: integer("amount").notNull(),
+  memo: text("memo"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  studentNumberSnapshot: integer("student_number_snapshot").notNull(),
+  studentNameSnapshot: text("student_name_snapshot").notNull(),
+  walletBalanceSnapshot: integer("wallet_balance_snapshot").notNull(),
+  walletRevisionSnapshot: integer("wallet_revision_snapshot").notNull(),
+  revision: integer("revision").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_cash_requests_class_student_idempotency_uq").on(
+    table.classId,
+    table.requesterStudentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_cash_requests_id_class_uq").on(table.id, table.classId),
+  index("finance_cash_requests_class_created_idx").on(table.classId, table.createdAt),
+  index("finance_cash_requests_student_created_idx").on(
+    table.requesterStudentId,
+    table.createdAt,
+  ),
+  foreignKey({
+    columns: [table.walletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_cash_requests_wallet_class_fk",
+  }),
+  check(
+    "finance_cash_requests_type_ck",
+    sql`${table.requestType} IN ('deposit', 'withdrawal')`,
+  ),
+  check(
+    "finance_cash_requests_amount_ck",
+    sql`${table.amount} > 0 AND ${table.amount} <= 1000000000`,
+  ),
+  check(
+    "finance_cash_requests_wallet_snapshot_ck",
+    sql`${table.walletBalanceSnapshot} >= 0 AND ${table.walletRevisionSnapshot} >= 0`,
+  ),
+  check("finance_cash_requests_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeRequestResolutions = sqliteTable("finance_request_resolutions", {
+  id: text("id").primaryKey(),
+  requestId: text("request_id").notNull(),
+  classId: text("class_id").notNull(),
+  decision: text("decision").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  expectedRequestRevision: integer("expected_request_revision").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+  actorStudentId: text("actor_student_id").references(() => students.id),
+  actorJobPeriodId: text("actor_job_period_id").references(() => classJobAssignmentPeriods.id),
+  actorLabel: text("actor_label").notNull(),
+  reasonCode: text("reason_code"),
+  reasonNote: text("reason_note"),
+  interventionReason: text("intervention_reason"),
+  isEmergency: integer("is_emergency", { mode: "boolean" }).notNull().default(false),
+  postedTransactionId: text("posted_transaction_id"),
+  transactionPayloadHash: text("transaction_payload_hash"),
+  resolvedAt: integer("resolved_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_request_resolutions_request_uq").on(table.requestId),
+  uniqueIndex("finance_request_resolutions_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_request_resolutions_posted_transaction_uq")
+    .on(table.postedTransactionId)
+    .where(sql`${table.postedTransactionId} IS NOT NULL`),
+  index("finance_request_resolutions_class_resolved_idx").on(
+    table.classId,
+    table.resolvedAt,
+  ),
+  index("finance_request_resolutions_actor_student_idx").on(
+    table.actorStudentId,
+    table.resolvedAt,
+  ),
+  foreignKey({
+    columns: [table.requestId, table.classId],
+    foreignColumns: [financeCashRequests.id, financeCashRequests.classId],
+    name: "finance_request_resolutions_request_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_request_resolutions_transaction_class_fk",
+  }),
+  check(
+    "finance_request_resolutions_decision_ck",
+    sql`${table.decision} IN ('approved', 'rejected', 'cancelled')`,
+  ),
+  check(
+    "finance_request_resolutions_actor_ck",
+    sql`(
+      (${table.actorType} = 'banker'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NOT NULL
+        AND ${table.actorJobPeriodId} IS NOT NULL
+        AND ${table.isEmergency} = 0)
+      OR
+      (${table.actorType} = 'teacher'
+        AND ${table.actorTeacherId} IS NOT NULL
+        AND ${table.actorStudentId} IS NULL
+        AND ${table.actorJobPeriodId} IS NULL
+        AND ${table.isEmergency} = 1)
+      OR
+      (${table.actorType} = 'student'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NOT NULL
+        AND ${table.actorJobPeriodId} IS NULL
+        AND ${table.isEmergency} = 0)
+    )`,
+  ),
+  check(
+    "finance_request_resolutions_transaction_ck",
+    sql`(
+      (${table.decision} = 'approved'
+        AND ${table.postedTransactionId} IS NOT NULL
+        AND ${table.transactionPayloadHash} IS NOT NULL)
+      OR
+      (${table.decision} IN ('rejected', 'cancelled')
+        AND ${table.postedTransactionId} IS NULL
+        AND ${table.transactionPayloadHash} IS NULL)
+    )`,
+  ),
+  check(
+    "finance_request_resolutions_note_ck",
+    sql`(${table.decision} <> 'rejected'
+        OR LENGTH(TRIM(COALESCE(${table.reasonCode}, ''))) > 0
+        OR LENGTH(TRIM(COALESCE(${table.reasonNote}, ''))) > 0)
+      AND (${table.actorType} <> 'teacher'
+        OR LENGTH(TRIM(COALESCE(${table.interventionReason}, ''))) > 0)`,
+  ),
+  check(
+    "finance_request_resolutions_expected_revision_ck",
+    sql`${table.expectedRequestRevision} >= 0`,
+  ),
+]);
