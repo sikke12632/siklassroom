@@ -28,6 +28,7 @@ export function StudentPortal() {
   const [student, setStudent] = useState<StudentInfo | null>(null);
   const [teacherSession, setTeacherSession] = useState(false);
   const [schoolName, setSchoolName] = useState("");
+  const [schoolYear, setSchoolYear] = useState("");
   const [grade, setGrade] = useState("");
   const [classNumber, setClassNumber] = useState("");
   const [studentNumber, setStudentNumber] = useState("");
@@ -39,8 +40,16 @@ export function StudentPortal() {
     const frame = requestAnimationFrame(() => {
     try {
       const remembered = JSON.parse(localStorage.getItem(preferenceKey) || "null");
-      if (remembered) { setSchoolName(remembered.schoolName || ""); setGrade(String(remembered.grade || "")); setClassNumber(String(remembered.classNumber || "")); }
+      if (remembered) {
+        setSchoolName(remembered.schoolName || "");
+        setSchoolYear(String(remembered.schoolYear || ""));
+        setGrade(String(remembered.grade || ""));
+        setClassNumber(String(remembered.classNumber || ""));
+      }
     } catch {}
+    api<{ serverTime: { year: number } }>("/api/time")
+      .then(({ serverTime }) => setSchoolYear((current) => current || String(serverTime.year)))
+      .catch(() => setSchoolYear((current) => current || String(new Date().getFullYear())));
     });
     api<{ actor: (StudentInfo & { type: "student" }) | { type: "teacher" } | null }>("/api/session")
       .then(({ actor }) => {
@@ -58,8 +67,20 @@ export function StudentPortal() {
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      await postJson("/api/student/login", { schoolName, grade: Number(grade), classNumber: Number(classNumber), studentNumber: Number(studentNumber), password });
-      localStorage.setItem(preferenceKey, JSON.stringify({ schoolName, grade: Number(grade), classNumber: Number(classNumber) }));
+      await postJson("/api/student/login", {
+        schoolName,
+        schoolYear: Number(schoolYear),
+        grade: Number(grade),
+        classNumber: Number(classNumber),
+        studentNumber: Number(studentNumber),
+        password,
+      });
+      localStorage.setItem(preferenceKey, JSON.stringify({
+        schoolName,
+        schoolYear: Number(schoolYear),
+        grade: Number(grade),
+        classNumber: Number(classNumber),
+      }));
       const data = await api<{ student: StudentInfo }>("/api/student/me");
       setStudent(data.student); setPassword("");
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
@@ -114,7 +135,7 @@ export function StudentPortal() {
     </main>
   );
 
-  const classRemembered = schoolName && grade && classNumber;
+  const classRemembered = schoolName && schoolYear && grade && classNumber;
   return (
     <main className="student-login-page">
       <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><a href="/teacher">선생님 입구</a></div></header>
@@ -124,6 +145,7 @@ export function StudentPortal() {
           <div className={`remembered-class ${classRemembered ? "visible" : ""}`}>
             <label>학교<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="학교 이름" required /></label>
             <div className="student-class-row">
+              <label>학년도<input inputMode="numeric" value={schoolYear} onChange={(event) => setSchoolYear(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="2026" min="2020" max="2100" required /></label>
               <label>학년<select value={grade} onChange={(event) => setGrade(event.target.value)} required><option value="">선택</option>{[1,2,3,4,5,6].map((item) => <option key={item} value={item}>{item}학년</option>)}</select></label>
               <label>반<input inputMode="numeric" value={classNumber} onChange={(event) => setClassNumber(event.target.value.replace(/\D/g, "").slice(0, 2))} placeholder="반" required /></label>
             </div>

@@ -627,6 +627,50 @@ studentCookie = cookieFrom(reusedActivation.response);
 const me = await request("/api/student/me", { cookie: studentCookie });
 assert.equal(me.data.student.id, student.id);
 
+await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  expected: 400,
+});
+await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  expected: 401,
+});
+
+const previousYearClass = await request("/api/classes", {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { schoolYear: 2098, grade: 5, classNumber: 9, displayName: "previous-year-login-check" },
+  expected: 201,
+});
+const previousYearRoster = await request(`/api/classes/${previousYearClass.data.class.id}/students`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { students: [{ number: 1, name: "previous-year-student" }] },
+  expected: 201,
+});
+const previousYearStudent = previousYearRoster.data.students[0];
+const previousYearToken = new URL(previousYearStudent.activation_url).searchParams.get("token");
+assert.ok(previousYearToken);
+await request("/api/registration/complete", {
+  method: "POST",
+  body: { token: previousYearToken, password: "2468" },
+});
+const previousYearLogin = await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+});
+const previousYearMe = await request("/api/student/me", { cookie: cookieFrom(previousYearLogin.response) });
+assert.equal(previousYearMe.data.student.id, previousYearStudent.id);
+const currentYearLogin = await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+});
+const currentYearMe = await request("/api/student/me", { cookie: cookieFrom(currentYearLogin.response) });
+assert.equal(currentYearMe.data.student.id, student.id);
+assert.notEqual(previousYearMe.data.student.id, currentYearMe.data.student.id);
+
 await request(`/api/classes/${classId}/students`, {
   cookie: outsiderCookie,
   expected: 404,
@@ -670,7 +714,7 @@ await request(`/api/students/${student.id}`, {
 await request("/api/student/me", { cookie: studentCookie, expected: 401 });
 await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
   expected: 401,
 });
 await request(`/api/students/${student.id}`, {
@@ -681,7 +725,7 @@ await request(`/api/students/${student.id}`, {
 
 const relogin = await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
 });
 studentCookie = cookieFrom(relogin.response);
 
@@ -705,7 +749,7 @@ await request("/api/registration/complete", {
 });
 await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, grade: 5, classNumber: 9, studentNumber: 1, password: "8642" },
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "8642" },
 });
 
 const recovery = await request("/api/teacher/password/request", {

@@ -99,6 +99,7 @@ await request("/api/student/login", {
   method: "POST",
   body: {
     schoolName: "서울서이초등학교",
+    schoolYear: classCreated.data.class.school_year,
     grade: classCreated.data.class.grade,
     classNumber: classCreated.data.class.class_number,
     studentNumber: 1,
@@ -110,6 +111,7 @@ await request("/api/student/login", {
   method: "POST",
   body: {
     schoolName: "서울서이초등학교",
+    schoolYear: classCreated.data.class.school_year,
     grade: classCreated.data.class.grade,
     classNumber: classCreated.data.class.class_number,
     studentNumber: 1,

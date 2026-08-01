@@ -416,7 +416,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .student-login-form { display: grid; gap: 20px; padding: 0 38px 34px; }
 .remembered-class { display: grid; gap: 12px; padding: 18px; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-subtle); }
 .remembered-class > small { color: var(--color-success); font-size: var(--text-xs); }
-.student-class-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.student-class-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .student-credentials { display: grid; grid-template-columns: .7fr 1.3fr; gap: 14px; }
 .student-credentials input { min-height: 52px; font-size: 1.25rem; }
 .qr-help { display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center; min-height: 76px; padding: 14px 38px; border-top: 1px solid var(--color-border); background: var(--color-surface-subtle); }
