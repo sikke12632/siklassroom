@@ -1,4 +1,4 @@
-import { requireClassManagement, requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { loadClassCalendar, saveClassCalendar } from "@/lib/class-calendar";
 import { audit } from "@/lib/database";
@@ -6,7 +6,7 @@ import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     const monthValue = new URL(request.url).searchParams.get("month");

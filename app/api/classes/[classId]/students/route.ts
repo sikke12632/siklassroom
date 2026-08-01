@@ -1,4 +1,4 @@
-import { requireClassManagement, requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
@@ -25,7 +25,7 @@ export async function GET(request: Request, context: { params: Promise<{ classId
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);
     const body = await readJson<{ students?: StudentInput[] }>(request);

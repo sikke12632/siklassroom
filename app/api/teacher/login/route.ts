@@ -5,6 +5,7 @@ import { normalizeEmail } from "@/lib/identity";
 import { assertNotBlocked, clearFailures, recordFailure, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
+import { teacherAccountIssue } from "@/lib/teacher-access-rules";
 
 export async function POST(request: Request) {
   try {
@@ -29,7 +30,10 @@ export async function POST(request: Request) {
       school_id: string | null;
       manual_school_request_id: string | null;
     }>();
-    if (!teacher || teacher.status !== "active" || !(await verifyPassword(password, teacher.password_hash))) {
+    const accountIssue = teacher
+      ? teacherAccountIssue(teacher.status, teacher.teacher_access_status)
+      : "ACCOUNT_DISABLED";
+    if (!teacher || accountIssue === "ACCOUNT_DISABLED" || !(await verifyPassword(password, teacher.password_hash))) {
       await recordFailure(key);
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }

@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { database } from "@/lib/database";
 import { JOB_CATEGORIES } from "@/lib/job-catalog";
@@ -7,7 +7,7 @@ import { apiFailure, json } from "@/lib/responses";
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     const [studentCount, setup, templates, assignmentState] = await Promise.all([

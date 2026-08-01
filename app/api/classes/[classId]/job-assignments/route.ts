@@ -1,4 +1,4 @@
-import { requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { loadInitialAssignmentBoard } from "@/lib/job-assignments";
 import { apiFailure, json } from "@/lib/responses";
@@ -6,7 +6,7 @@ import { assignmentPeriod } from "@/lib/seoul-time";
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     const url = new URL(request.url);

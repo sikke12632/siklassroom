@@ -2,6 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { manualSchoolInput, normalizeSchoolSearch, schoolSearchVariants } from "../lib/schools";
 import { generateInviteCode, normalizeInviteCode } from "../lib/invite-code";
+import { teacherAccountIssue } from "../lib/teacher-access-rules";
+
+test("권한이 회수되거나 비활성화된 교사는 학급 API를 사용할 수 없다", () => {
+  assert.equal(teacherAccountIssue("active", "invite_verified"), null);
+  assert.equal(teacherAccountIssue("active", "pending"), null);
+  assert.equal(teacherAccountIssue("active", "revoked"), "TEACHER_ACCESS_REVOKED");
+  assert.equal(teacherAccountIssue("disabled", "invite_verified"), "ACCOUNT_DISABLED");
+});
 
 test("학교 검색어는 공백과 학교급 약칭을 같은 형태로 정규화한다", () => {
   assert.equal(normalizeSchoolSearch(" 서울 서이 초등학교 "), "서울서이초");

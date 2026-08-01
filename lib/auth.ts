@@ -1,6 +1,7 @@
 import { database, ensureSchema } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { ApiError } from "./responses";
+import { teacherAccountIssue } from "./teacher-access-rules";
 
 export const SESSION_COOKIE = "job_classroom_session";
 const TEACHER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -80,8 +81,15 @@ export async function requireTeacher(request: Request): Promise<{ teacherId: str
   if (!session || session.actorType !== "teacher" || !session.teacherId) {
     throw new ApiError(401, "교사 로그인이 필요합니다.", "TEACHER_LOGIN_REQUIRED");
   }
-  const teacher = await database().prepare(`SELECT status FROM teachers WHERE id = ?`).bind(session.teacherId).first<{ status: string }>();
-  if (!teacher || teacher.status !== "active") throw new ApiError(403, "사용할 수 없는 교사 계정입니다.", "ACCOUNT_DISABLED");
+  const teacher = await database().prepare(
+    `SELECT status, teacher_access_status FROM teachers WHERE id = ?`,
+  ).bind(session.teacherId).first<{ status: string; teacher_access_status: string }>();
+  if (!teacher) throw new ApiError(403, "사용할 수 없는 교사 계정입니다.", "ACCOUNT_DISABLED");
+  const issue = teacherAccountIssue(teacher.status, teacher.teacher_access_status);
+  if (issue === "TEACHER_ACCESS_REVOKED") {
+    throw new ApiError(403, "교사 이용 권한이 회수되어 사용할 수 없어요.", issue);
+  }
+  if (issue) throw new ApiError(403, "사용할 수 없는 교사 계정입니다.", issue);
   return { teacherId: session.teacherId };
 }
 

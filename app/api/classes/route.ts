@@ -1,4 +1,4 @@
-import { requireClassManagement, requireTeacher } from "@/lib/auth";
+import { requireClassManagement } from "@/lib/auth";
 import { audit, database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, currentSchoolYear, integerInRange, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
@@ -6,7 +6,7 @@ import { seoulServerTime } from "@/lib/seoul-time";
 
 export async function GET(request: Request) {
   try {
-    const { teacherId } = await requireTeacher(request);
+    const { teacherId } = await requireClassManagement(request);
     const current = seoulServerTime();
     const result = await database().prepare(
       `WITH clock AS (SELECT ? AS current_year, ? AS current_month)
