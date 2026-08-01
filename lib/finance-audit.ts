@@ -8,6 +8,7 @@ const AUDIT_CATEGORIES = new Set([
   "transaction",
   "setting",
   "deposit",
+  "stock",
 ]);
 
 type AuditRow = {
@@ -232,7 +233,10 @@ export async function financeAuditForRequest(request: Request) {
        SELECT
          'transaction:' || transaction_row.id || ':' || entry.id AS id,
          transaction_row.class_id AS class_id,
-         'transaction' AS category,
+         CASE transaction_row.source_type
+           WHEN 'stock_trade' THEN 'stock'
+           ELSE 'transaction'
+         END AS category,
          transaction_row.transaction_type AS action,
          CASE transaction_row.transaction_type
            WHEN 'reversal' THEN '거래 정정'
@@ -244,6 +248,8 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'deposit_open' THEN '예금 가입'
            WHEN 'deposit_maturity' THEN '예금 만기 자동 지급'
            WHEN 'deposit_early_termination' THEN '예금 중도해지'
+           WHEN 'stock_buy' THEN '주식 매수'
+           WHEN 'stock_sell' THEN '주식 매도'
            ELSE '금융 거래'
          END AS title,
          transaction_row.description AS detail,
@@ -313,6 +319,96 @@ export async function financeAuditForRequest(request: Request) {
        JOIN finance_deposit_products product
          ON product.id = product_event.product_id
         AND product.class_id = product_event.class_id
+
+       UNION ALL
+
+       SELECT
+         'stock-market:' || market_event.id AS id,
+         market_event.class_id AS class_id,
+         'stock' AS category,
+         'stock_market_' || market_event.action AS action,
+         CASE market_event.action
+           WHEN 'opened' THEN '주식시장 개장'
+           WHEN 'closed' THEN '주식시장 마감'
+           WHEN 'configured' THEN '주식시장 첫 설정'
+           ELSE '주식시장 설정 변경'
+         END AS title,
+         '장세 ' || COALESCE(
+           json_extract(market_event.market_snapshot_json, '$.mood'),
+           'mixed'
+         ) || ' · 매수 수수료 ' || printf(
+           '%.2f',
+           COALESCE(json_extract(market_event.market_snapshot_json, '$.buyFeeBps'), 0) / 100.0
+         ) || '%' AS detail,
+         '담임교사' AS actor_label,
+         NULL AS student_name,
+         NULL AS amount,
+         market_event.created_at AS occurred_at,
+         'completed' AS outcome,
+         market_event.class_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_market_events market_event
+
+       UNION ALL
+
+       SELECT
+         'stock-event:' || stock_event.id AS id,
+         stock_event.class_id AS class_id,
+         'stock' AS category,
+         'stock_' || stock_event.action AS action,
+         CASE stock_event.action
+           WHEN 'issued' THEN '우리 반 주식 발행'
+           WHEN 'automatic_tick' THEN '주가 자동 갱신'
+           WHEN 'news_tick' THEN '뉴스 반영 주가 갱신'
+           WHEN 'price_changed' THEN '주가 변경'
+           ELSE '주식 거래 상태 변경'
+         END AS title,
+         stock_event.reason AS detail,
+         CASE stock_event.actor_type
+           WHEN 'teacher' THEN '담임교사'
+           ELSE '주식 자동 시스템'
+         END AS actor_label,
+         NULL AS student_name,
+         CAST(json_extract(stock_event.stock_snapshot_json, '$.currentPrice') AS INTEGER) AS amount,
+         stock_event.created_at AS occurred_at,
+         'completed' AS outcome,
+         stock_event.stock_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_events stock_event
+
+       UNION ALL
+
+       SELECT
+         'stock-news:' || news.id || ':' || news.revision AS id,
+         news.class_id AS class_id,
+         'stock' AS category,
+         'stock_news_' || news.status AS action,
+         CASE news.status
+           WHEN 'active' THEN '주식 뉴스 등록'
+           WHEN 'cancelled' THEN '주식 뉴스 취소'
+           ELSE '주식 뉴스 종료'
+         END AS title,
+         news.title || ' · ' || news.content AS detail,
+         CASE news.updated_by_actor_type
+           WHEN 'teacher' THEN '담임교사'
+           ELSE '주식 자동 시스템'
+         END AS actor_label,
+         NULL AS student_name,
+         NULL AS amount,
+         CASE news.status
+           WHEN 'active' THEN news.created_at
+           ELSE news.updated_at
+         END AS occurred_at,
+         CASE news.status
+           WHEN 'cancelled' THEN 'cancelled'
+           ELSE 'completed'
+         END AS outcome,
+         news.id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_news news
      )
      SELECT id, category, action, title, detail, actor_label, student_name,
             amount, occurred_at, outcome, related_id,

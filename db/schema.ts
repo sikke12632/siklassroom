@@ -1099,3 +1099,445 @@ export const financeDepositSettlements = sqliteTable("finance_deposit_settlement
       AND ${table.payout} <= 1000000000`,
   ),
 ]);
+
+export const financeStockMarkets = sqliteTable("finance_stock_markets", {
+  classId: text("class_id").primaryKey().references(() => classes.id),
+  isOpen: integer("is_open", { mode: "boolean" }).notNull().default(false),
+  buyFeeBps: integer("buy_fee_bps").notNull().default(0),
+  sellFeeBps: integer("sell_fee_bps").notNull().default(0),
+  buySpread: integer("buy_spread").notNull().default(0),
+  sellSpread: integer("sell_spread").notNull().default(0),
+  marketMood: text("market_mood").notNull().default("mixed"),
+  tickIntervalMinutes: integer("tick_interval_minutes").notNull().default(15),
+  nextTickAt: integer("next_tick_at"),
+  revision: integer("revision").notNull().default(0),
+  updatedByTeacherId: text("updated_by_teacher_id").references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check("finance_stock_markets_open_ck", sql`${table.isOpen} IN (0, 1)`),
+  check(
+    "finance_stock_markets_fee_ck",
+    sql`${table.buyFeeBps} BETWEEN 0 AND 1000
+      AND ${table.sellFeeBps} BETWEEN 0 AND 1000`,
+  ),
+  check(
+    "finance_stock_markets_spread_ck",
+    sql`${table.buySpread} BETWEEN 0 AND 1000000000
+      AND ${table.sellSpread} BETWEEN 0 AND 1000000000`,
+  ),
+  check(
+    "finance_stock_markets_mood_ck",
+    sql`${table.marketMood} IN ('surge', 'bull', 'mixed', 'bear', 'crash')`,
+  ),
+  check(
+    "finance_stock_markets_tick_ck",
+    sql`${table.tickIntervalMinutes} BETWEEN 1 AND 1440
+      AND (${table.nextTickAt} IS NULL OR ${table.nextTickAt} >= 0)
+      AND (${table.isOpen} = 0 OR ${table.nextTickAt} IS NOT NULL)`,
+  ),
+  check("finance_stock_markets_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeStockMarketEvents = sqliteTable("finance_stock_market_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => financeStockMarkets.classId),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  previousSnapshotJson: text("previous_snapshot_json"),
+  marketSnapshotJson: text("market_snapshot_json").notNull(),
+  actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stock_market_events_class_revision_uq").on(
+    table.classId,
+    table.revision,
+  ),
+  uniqueIndex("finance_stock_market_events_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_stock_market_events_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+  ),
+  check(
+    "finance_stock_market_events_action_ck",
+    sql`${table.action} IN ('configured', 'opened', 'closed', 'updated')`,
+  ),
+  check("finance_stock_market_events_revision_ck", sql`${table.revision} > 0`),
+]);
+
+export const financeStocks = sqliteTable("finance_stocks", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  name: text("name").notNull(),
+  symbol: text("symbol").notNull(),
+  description: text("description").notNull().default(""),
+  initialPrice: integer("initial_price").notNull(),
+  currentPrice: integer("current_price").notNull(),
+  previousPrice: integer("previous_price").notNull(),
+  totalShares: integer("total_shares").notNull(),
+  availableShares: integer("available_shares").notNull(),
+  maxSharesPerStudent: integer("max_shares_per_student").notNull(),
+  status: text("status").notNull().default("active"),
+  revision: integer("revision").notNull().default(0),
+  inventoryRevision: integer("inventory_revision").notNull().default(0),
+  lastTradeId: text("last_trade_id"),
+  createdByTeacherId: text("created_by_teacher_id").notNull().references(() => teachers.id),
+  updatedByActorType: text("updated_by_actor_type").notNull().default("teacher"),
+  updatedByTeacherId: text("updated_by_teacher_id").references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stocks_class_uq").on(table.classId),
+  uniqueIndex("finance_stocks_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_stocks_class_symbol_uq").on(table.classId, table.symbol),
+  index("finance_stocks_class_status_idx").on(table.classId, table.status),
+  check(
+    "finance_stocks_text_ck",
+    sql`LENGTH(TRIM(${table.name})) BETWEEN 1 AND 40
+      AND LENGTH(TRIM(${table.symbol})) BETWEEN 1 AND 12
+      AND LENGTH(${table.description}) <= 300`,
+  ),
+  check(
+    "finance_stocks_price_ck",
+    sql`${table.initialPrice} BETWEEN 1 AND 1000000000
+      AND ${table.currentPrice} BETWEEN 1 AND 1000000000
+      AND ${table.previousPrice} BETWEEN 1 AND 1000000000`,
+  ),
+  check(
+    "finance_stocks_supply_ck",
+    sql`${table.totalShares} BETWEEN 1 AND 1000000000
+      AND ${table.availableShares} BETWEEN 0 AND ${table.totalShares}
+      AND ${table.maxSharesPerStudent} BETWEEN 1 AND ${table.totalShares}`,
+  ),
+  check(
+    "finance_stocks_status_ck",
+    sql`${table.status} IN ('active', 'sell_only', 'halted', 'archived')`,
+  ),
+  check(
+    "finance_stocks_revision_ck",
+    sql`${table.revision} >= 0 AND ${table.inventoryRevision} >= 0`,
+  ),
+  check(
+    "finance_stocks_actor_ck",
+    sql`(${table.updatedByActorType} = 'teacher'
+        AND ${table.updatedByTeacherId} IS NOT NULL)
+      OR (${table.updatedByActorType} = 'system'
+        AND ${table.updatedByTeacherId} IS NULL)`,
+  ),
+]);
+
+export const financeStockEvents = sqliteTable("finance_stock_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  stockId: text("stock_id").notNull(),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  reason: text("reason").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  previousSnapshotJson: text("previous_snapshot_json"),
+  stockSnapshotJson: text("stock_snapshot_json").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stock_events_stock_revision_uq").on(
+    table.stockId,
+    table.revision,
+  ),
+  uniqueIndex("finance_stock_events_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_stock_events_class_created_idx").on(table.classId, table.createdAt),
+  foreignKey({
+    columns: [table.stockId, table.classId],
+    foreignColumns: [financeStocks.id, financeStocks.classId],
+    name: "finance_stock_events_stock_class_fk",
+  }),
+  check(
+    "finance_stock_events_action_ck",
+    sql`${table.action} IN (
+      'issued', 'price_changed', 'status_changed', 'automatic_tick', 'news_tick'
+    )`,
+  ),
+  check(
+    "finance_stock_events_actor_ck",
+    sql`(${table.actorType} = 'teacher' AND ${table.actorTeacherId} IS NOT NULL)
+      OR (${table.actorType} = 'system' AND ${table.actorTeacherId} IS NULL)`,
+  ),
+  check("finance_stock_events_revision_ck", sql`${table.revision} >= 0`),
+  check(
+    "finance_stock_events_reason_ck",
+    sql`LENGTH(TRIM(${table.reason})) BETWEEN 1 AND 300`,
+  ),
+]);
+
+export const financeStockNews = sqliteTable("finance_stock_news", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  impactBps: integer("impact_bps").notNull(),
+  status: text("status").notNull().default("active"),
+  revision: integer("revision").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  cancellationIdempotencyKey: text("cancellation_idempotency_key"),
+  cancellationPayloadHash: text("cancellation_payload_hash"),
+  createdByTeacherId: text("created_by_teacher_id").notNull().references(() => teachers.id),
+  updatedByActorType: text("updated_by_actor_type").notNull().default("teacher"),
+  updatedByTeacherId: text("updated_by_teacher_id").references(() => teachers.id),
+  cancellationReason: text("cancellation_reason"),
+  createdAt: integer("created_at").notNull(),
+  expiresAt: integer("expires_at").notNull(),
+  cancelledAt: integer("cancelled_at"),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stock_news_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_stock_news_class_cancellation_idempotency_uq")
+    .on(table.classId, table.cancellationIdempotencyKey)
+    .where(sql`${table.cancellationIdempotencyKey} IS NOT NULL`),
+  index("finance_stock_news_class_status_idx").on(
+    table.classId,
+    table.status,
+    table.createdAt,
+  ),
+  check(
+    "finance_stock_news_text_ck",
+    sql`LENGTH(TRIM(${table.title})) BETWEEN 1 AND 80
+      AND LENGTH(TRIM(${table.content})) BETWEEN 1 AND 500`,
+  ),
+  check(
+    "finance_stock_news_impact_ck",
+    sql`${table.impactBps} BETWEEN -10000 AND 10000`,
+  ),
+  check(
+    "finance_stock_news_status_ck",
+    sql`${table.status} IN ('active', 'cancelled', 'expired')`,
+  ),
+  check(
+    "finance_stock_news_state_ck",
+    sql`${table.revision} >= 0 AND ${table.expiresAt} > ${table.createdAt}
+      AND (
+        (${table.status} = 'active' AND ${table.cancelledAt} IS NULL
+          AND ${table.cancellationReason} IS NULL
+          AND ${table.cancellationIdempotencyKey} IS NULL
+          AND ${table.cancellationPayloadHash} IS NULL)
+        OR (${table.status} = 'cancelled' AND ${table.cancelledAt} IS NOT NULL
+          AND LENGTH(TRIM(COALESCE(${table.cancellationReason}, ''))) > 0
+          AND ${table.cancellationIdempotencyKey} IS NOT NULL
+          AND ${table.cancellationPayloadHash} IS NOT NULL)
+        OR (${table.status} = 'expired' AND ${table.cancelledAt} IS NULL
+          AND ${table.cancellationReason} IS NULL
+          AND ${table.cancellationIdempotencyKey} IS NULL
+          AND ${table.cancellationPayloadHash} IS NULL)
+      )`,
+  ),
+  check(
+    "finance_stock_news_actor_ck",
+    sql`(${table.updatedByActorType} = 'teacher'
+        AND ${table.updatedByTeacherId} IS NOT NULL)
+      OR (${table.updatedByActorType} = 'system'
+        AND ${table.updatedByTeacherId} IS NULL)`,
+  ),
+]);
+
+export const financeStockHoldings = sqliteTable("finance_stock_holdings", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  stockId: text("stock_id").notNull(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  walletAccountId: text("wallet_account_id").notNull(),
+  quantity: integer("quantity").notNull(),
+  costBasis: integer("cost_basis").notNull(),
+  revision: integer("revision").notNull(),
+  lastTradeId: text("last_trade_id").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stock_holdings_stock_student_uq").on(
+    table.stockId,
+    table.studentId,
+  ),
+  uniqueIndex("finance_stock_holdings_id_class_uq").on(table.id, table.classId),
+  index("finance_stock_holdings_class_student_idx").on(
+    table.classId,
+    table.studentId,
+  ),
+  foreignKey({
+    columns: [table.stockId, table.classId],
+    foreignColumns: [financeStocks.id, financeStocks.classId],
+    name: "finance_stock_holdings_stock_class_fk",
+  }),
+  foreignKey({
+    columns: [table.walletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_stock_holdings_wallet_class_fk",
+  }),
+  check(
+    "finance_stock_holdings_projection_ck",
+    sql`${table.quantity} BETWEEN 0 AND 1000000000
+      AND ${table.costBasis} BETWEEN 0 AND 1000000000
+      AND ((${table.quantity} = 0 AND ${table.costBasis} = 0)
+        OR (${table.quantity} > 0 AND ${table.costBasis} > 0))
+      AND ${table.revision} > 0`,
+  ),
+]);
+
+export const financeStockTrades = sqliteTable("finance_stock_trades", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  stockId: text("stock_id").notNull(),
+  stockRevision: integer("stock_revision").notNull(),
+  inventoryRevisionBefore: integer("inventory_revision_before").notNull(),
+  inventoryRevisionAfter: integer("inventory_revision_after").notNull(),
+  marketRevision: integer("market_revision").notNull(),
+  financeSettingsRevision: integer("finance_settings_revision").notNull(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  walletAccountId: text("wallet_account_id").notNull(),
+  walletRevisionBefore: integer("wallet_revision_before").notNull(),
+  walletRevisionAfter: integer("wallet_revision_after").notNull(),
+  side: text("side").notNull(),
+  quantity: integer("quantity").notNull(),
+  referencePrice: integer("reference_price").notNull(),
+  spreadSnapshot: integer("spread_snapshot").notNull(),
+  unitPrice: integer("unit_price").notNull(),
+  grossAmount: integer("gross_amount").notNull(),
+  feeBpsSnapshot: integer("fee_bps_snapshot").notNull(),
+  feeAmount: integer("fee_amount").notNull(),
+  walletDelta: integer("wallet_delta").notNull(),
+  availableSharesBefore: integer("available_shares_before").notNull(),
+  availableSharesAfter: integer("available_shares_after").notNull(),
+  holdingQuantityBefore: integer("holding_quantity_before").notNull(),
+  holdingQuantityAfter: integer("holding_quantity_after").notNull(),
+  holdingCostBasisBefore: integer("holding_cost_basis_before").notNull(),
+  holdingCostBasisAfter: integer("holding_cost_basis_after").notNull(),
+  holdingRevisionBefore: integer("holding_revision_before").notNull(),
+  holdingRevisionAfter: integer("holding_revision_after").notNull(),
+  costBasisRemoved: integer("cost_basis_removed").notNull(),
+  realizedGain: integer("realized_gain").notNull(),
+  status: text("status").notNull().default("pending"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id"),
+  transactionPayloadHash: text("transaction_payload_hash"),
+  createdAt: integer("created_at").notNull(),
+  postedAt: integer("posted_at"),
+}, (table) => [
+  uniqueIndex("finance_stock_trades_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_stock_trades_class_student_idempotency_uq").on(
+    table.classId,
+    table.studentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_stock_trades_posted_transaction_uq")
+    .on(table.postedTransactionId)
+    .where(sql`${table.postedTransactionId} IS NOT NULL`),
+  index("finance_stock_trades_student_created_idx").on(
+    table.studentId,
+    table.createdAt,
+  ),
+  index("finance_stock_trades_class_created_idx").on(table.classId, table.createdAt),
+  foreignKey({
+    columns: [table.stockId, table.classId],
+    foreignColumns: [financeStocks.id, financeStocks.classId],
+    name: "finance_stock_trades_stock_class_fk",
+  }),
+  foreignKey({
+    columns: [table.walletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_stock_trades_wallet_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_stock_trades_transaction_class_fk",
+  }),
+  check("finance_stock_trades_side_ck", sql`${table.side} IN ('buy', 'sell')`),
+  check(
+    "finance_stock_trades_revision_ck",
+    sql`${table.stockRevision} >= 0
+      AND ${table.marketRevision} >= 0
+      AND ${table.financeSettingsRevision} >= 0
+      AND ${table.inventoryRevisionAfter} = ${table.inventoryRevisionBefore} + 1
+      AND ${table.holdingRevisionAfter} = ${table.holdingRevisionBefore} + 1
+      AND ${table.walletRevisionAfter} = ${table.walletRevisionBefore} + 1`,
+  ),
+  check(
+    "finance_stock_trades_amount_ck",
+    sql`${table.quantity} BETWEEN 1 AND 1000000000
+      AND ${table.referencePrice} BETWEEN 1 AND 1000000000
+      AND ${table.spreadSnapshot} BETWEEN 0 AND 1000000000
+      AND ${table.unitPrice} BETWEEN 1 AND 1000000000
+      AND ${table.unitPrice} = CASE ${table.side}
+        WHEN 'buy' THEN ${table.referencePrice} + ${table.spreadSnapshot}
+        ELSE ${table.referencePrice} - ${table.spreadSnapshot} END
+      AND ${table.grossAmount} = ${table.unitPrice} * ${table.quantity}
+      AND ${table.grossAmount} BETWEEN 1 AND 1000000000
+      AND ${table.feeBpsSnapshot} BETWEEN 0 AND 1000
+      AND ${table.feeAmount} BETWEEN 0 AND ${table.grossAmount}
+      AND ${table.walletDelta} = CASE ${table.side}
+        WHEN 'buy' THEN -(${table.grossAmount} + ${table.feeAmount})
+        ELSE ${table.grossAmount} - ${table.feeAmount} END
+      AND ${table.walletDelta} <> 0
+      AND ABS(${table.walletDelta}) <= 1000000000`,
+  ),
+  check(
+    "finance_stock_trades_inventory_ck",
+    sql`${table.availableSharesBefore} BETWEEN 0 AND 1000000000
+      AND ${table.availableSharesAfter} BETWEEN 0 AND 1000000000
+      AND ${table.availableSharesAfter} = CASE ${table.side}
+        WHEN 'buy' THEN ${table.availableSharesBefore} - ${table.quantity}
+        ELSE ${table.availableSharesBefore} + ${table.quantity} END`,
+  ),
+  check(
+    "finance_stock_trades_holding_ck",
+    sql`${table.holdingQuantityBefore} BETWEEN 0 AND 1000000000
+      AND ${table.holdingQuantityAfter} BETWEEN 0 AND 1000000000
+      AND ${table.holdingCostBasisBefore} BETWEEN 0 AND 1000000000
+      AND ${table.holdingCostBasisAfter} BETWEEN 0 AND 1000000000
+      AND ${table.costBasisRemoved} BETWEEN 0 AND 1000000000
+      AND ${table.holdingQuantityAfter} = CASE ${table.side}
+        WHEN 'buy' THEN ${table.holdingQuantityBefore} + ${table.quantity}
+        ELSE ${table.holdingQuantityBefore} - ${table.quantity} END
+      AND (
+        (${table.side} = 'buy'
+          AND ${table.costBasisRemoved} = 0
+          AND ${table.realizedGain} = 0
+          AND ${table.holdingCostBasisAfter} = ${table.holdingCostBasisBefore}
+            + ${table.grossAmount} + ${table.feeAmount})
+        OR (${table.side} = 'sell'
+          AND ${table.holdingQuantityBefore} > 0
+          AND ${table.quantity} <= ${table.holdingQuantityBefore}
+          AND ${table.costBasisRemoved} = CAST(
+            (${table.holdingCostBasisBefore} * ${table.quantity})
+              / ${table.holdingQuantityBefore} AS INTEGER)
+          AND ${table.holdingCostBasisAfter} = ${table.holdingCostBasisBefore}
+            - ${table.costBasisRemoved}
+          AND ${table.realizedGain} = ${table.walletDelta}
+            - ${table.costBasisRemoved})
+      )
+      AND ((${table.holdingQuantityAfter} = 0 AND ${table.holdingCostBasisAfter} = 0)
+        OR (${table.holdingQuantityAfter} > 0 AND ${table.holdingCostBasisAfter} > 0))`,
+  ),
+  check(
+    "finance_stock_trades_status_ck",
+    sql`(${table.status} = 'pending'
+        AND ${table.postedTransactionId} IS NULL
+        AND ${table.transactionPayloadHash} IS NULL
+        AND ${table.postedAt} IS NULL)
+      OR (${table.status} = 'posted'
+        AND ${table.postedTransactionId} IS NOT NULL
+        AND ${table.transactionPayloadHash} IS NOT NULL
+        AND ${table.postedAt} IS NOT NULL)`,
+  ),
+]);

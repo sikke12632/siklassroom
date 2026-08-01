@@ -518,6 +518,13 @@ export async function reverseFinanceTransaction(input: {
       "FINANCE_DEPOSIT_REVERSAL_REQUIRES_CONTRACT",
     );
   }
+  if (original.sourceType === "stock_trade") {
+    throw new ApiError(
+      409,
+      "주식 거래는 보유 수량과 함께 움직여서 일반 거래 정정으로 바꿀 수 없습니다.",
+      "FINANCE_STOCK_REVERSAL_REQUIRES_TRADE",
+    );
+  }
 
   return postFinanceTransaction({
     classId: input.classId,

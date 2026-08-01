@@ -2,6 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { settleDueDepositContracts } from "../lib/finance-deposits";
+import { processFinanceStockMarketTicks } from "../lib/finance-stocks";
 
 interface Env {
   ASSETS: Fetcher;
@@ -53,13 +54,23 @@ const worker = {
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const now = Math.max(Date.now(), controller.scheduledTime);
     ctx.waitUntil(
-      settleDueDepositContracts(env.DB, { now, limit: 100 }).then((result) => {
-        if (result.failed > 0) {
+      Promise.allSettled([
+        settleDueDepositContracts(env.DB, { now, limit: 100 }),
+        processFinanceStockMarketTicks(env.DB, { now, limit: 100 }),
+      ]).then(([depositResult, stockResult]) => {
+        if (depositResult.status === "rejected") {
+          console.error("finance deposit maturity processing failed", depositResult.reason);
+        } else if (depositResult.value.failed > 0) {
           console.error("finance deposit maturity processing incomplete", {
-            due: result.due,
-            settled: result.settled,
-            failed: result.failed,
+            due: depositResult.value.due,
+            settled: depositResult.value.settled,
+            failed: depositResult.value.failed,
           });
+        }
+        if (stockResult.status === "rejected") {
+          console.error("finance stock tick processing failed", stockResult.reason);
+        } else if (stockResult.value.failed > 0) {
+          console.error("finance stock tick processing incomplete", stockResult.value);
         }
       }),
     );

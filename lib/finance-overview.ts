@@ -189,6 +189,7 @@ function serializeTransaction(
     && row.transaction_type !== "reversal"
     && row.source_type !== "deposit_contract"
     && row.source_type !== "deposit_settlement"
+    && row.source_type !== "stock_trade"
     && !Boolean(row.is_reversed);
   const reversalBlockedReason = canReverse
     ? null
@@ -205,6 +206,8 @@ function serializeTransaction(
               : row.source_type === "deposit_contract"
                   || row.source_type === "deposit_settlement"
                 ? "예금 거래는 계약과 함께 자동 관리됩니다."
+              : row.source_type === "stock_trade"
+                ? "주식 거래는 보유 수량과 함께 자동 관리됩니다."
               : Boolean(row.is_reversed)
                 ? "이미 정정된 거래입니다."
                 : null;
@@ -414,7 +417,7 @@ async function classTransactions(
      WHERE transaction_row.class_id = ?
        AND transaction_row.status = 'posted'
        AND (? = 1 OR COALESCE(transaction_row.source_type, '')
-         NOT IN ('deposit_contract', 'deposit_settlement'))
+         NOT IN ('deposit_contract', 'deposit_settlement', 'stock_trade'))
      ORDER BY transaction_row.posted_at DESC, transaction_row.id DESC, entry.id
      LIMIT ?`,
   ).bind(classId, includeDepositTransactions ? 1 : 0, limit).all<TransactionViewRow>();
