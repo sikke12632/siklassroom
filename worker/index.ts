@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { settleDueDepositContracts } from "../lib/finance-deposits";
 
 interface Env {
   ASSETS: Fetcher;
@@ -17,6 +18,12 @@ interface Env {
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
+}
+
+interface ScheduledController {
+  cron: string;
+  scheduledTime: number;
+  noRetry(): void;
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -41,6 +48,21 @@ const worker = {
     }
 
     return handler.fetch(request, env, ctx);
+  },
+
+  scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    const now = Math.max(Date.now(), controller.scheduledTime);
+    ctx.waitUntil(
+      settleDueDepositContracts(env.DB, { now, limit: 100 }).then((result) => {
+        if (result.failed > 0) {
+          console.error("finance deposit maturity processing incomplete", {
+            due: result.due,
+            settled: result.settled,
+            failed: result.failed,
+          });
+        }
+      }),
+    );
   },
 };
 

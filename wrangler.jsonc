@@ -6,6 +6,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "keep_vars": true,
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
   "assets": {
     "directory": "dist/client",
     "not_found_handling": "none",

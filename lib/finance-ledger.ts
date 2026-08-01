@@ -508,6 +508,16 @@ export async function reverseFinanceTransaction(input: {
       "FINANCE_REVERSAL_OF_REVERSAL",
     );
   }
+  if (
+    original.sourceType === "deposit_contract"
+    || original.sourceType === "deposit_settlement"
+  ) {
+    throw new ApiError(
+      409,
+      "예금 거래는 계약 기록과 함께 움직여서 일반 거래 정정으로 바꿀 수 없습니다.",
+      "FINANCE_DEPOSIT_REVERSAL_REQUIRES_CONTRACT",
+    );
+  }
 
   return postFinanceTransaction({
     classId: input.classId,
