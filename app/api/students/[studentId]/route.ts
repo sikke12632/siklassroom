@@ -16,7 +16,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
     const body = await readJson<{ number?: number; name?: string; status?: string }>(request);
     const studentNumber = integerInRange(body.number ?? current.student_number, 1, 99);
     const officialName = cleanDisplayText(body.name ?? current.official_name, 30);
-    const allowedStatuses = new Set(["pending", "active", "reset_required", "locked", "excluded"]);
+    const allowedStatuses = new Set(["pending", "active", "locked", "excluded"]);
     const status = body.status && allowedStatuses.has(body.status) ? body.status : String(current.status);
     if (!studentNumber || !officialName) throw new ApiError(400, "번호와 이름을 다시 확인해 주세요.", "INVALID_STUDENT_INFO");
     const conflict = await database().prepare(

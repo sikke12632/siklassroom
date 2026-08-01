@@ -17,6 +17,12 @@ function cookieFrom(response) {
   return value?.split(";")[0] || "";
 }
 
+function activationTokenFrom(url) {
+  const parsed = new URL(url);
+  return new URLSearchParams(parsed.hash.replace(/^#/, "")).get("token")
+    ?? parsed.searchParams.get("token");
+}
+
 function capacityOf(jobs) {
   return jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
 }
@@ -233,7 +239,7 @@ const roster = await request(`/api/classes/${classId}/students`, {
 });
 assert.equal(roster.data.students.length, 2);
 const student = roster.data.students[0];
-const activationToken = new URL(student.activation_url).searchParams.get("token");
+const activationToken = activationTokenFrom(student.activation_url);
 assert.ok(activationToken);
 
 await request(`/api/classes/${classId}/students`, {
@@ -471,11 +477,16 @@ await request(`/api/classes/${jobClassId}/job-assignments/complete`, {
 });
 
 const evaluationStudent = jobRoster.data.students[0];
-const evaluationActivationToken = new URL(evaluationStudent.activation_url).searchParams.get("token");
+const evaluationActivationToken = activationTokenFrom(evaluationStudent.activation_url);
 assert.ok(evaluationActivationToken);
-const evaluationActivation = await request("/api/registration/complete", {
+const evaluationVerification = await request("/api/registration/verify", {
   method: "POST",
-  body: { token: evaluationActivationToken, password: "3579" },
+  body: { token: evaluationActivationToken },
+});
+const evaluationActivation = await request("/api/registration/complete", {
+  cookie: cookieFrom(evaluationVerification.response),
+  method: "POST",
+  body: { password: "3579" },
 });
 const evaluationStudentCookie = cookieFrom(evaluationActivation.response);
 const monthlyBasePath = `/api/classes/${jobClassId}/monthly-job-choice`;
@@ -609,20 +620,48 @@ await request(`/api/classes/${jobClassId}/job-evaluation`, {
   expected: 404,
 });
 
-const verification = await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`);
+const verification = await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: activationToken },
+});
 assert.equal(verification.data.student.official_name, "김하늘");
 assert.equal(verification.data.student.student_number, 1);
+assert.equal(verification.data.mode, "activate");
 
 const activated = await request("/api/registration/complete", {
+  cookie: cookieFrom(verification.response),
   method: "POST",
-  body: { token: activationToken, password: "1357" },
+  body: { password: "1357" },
 });
 let studentCookie = cookieFrom(activated.response);
-const reusedActivation = await request("/api/registration/complete", {
+await request("/api/registration/complete", {
+  cookie: cookieFrom(verification.response),
   method: "POST",
-  body: { token: activationToken, password: "2468" },
+  body: { password: "2468" },
+  expected: 410,
 });
-studentCookie = cookieFrom(reusedActivation.response);
+await request(`/api/students/${student.id}/qr-reset-grant`, {
+  cookie: outsiderCookie,
+  method: "POST",
+  body: {},
+  expected: 404,
+});
+await request(`/api/students/${student.id}/qr-reset-grant`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const resetVerification = await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: activationToken },
+});
+assert.equal(resetVerification.data.mode, "reset");
+const resetWithSameQr = await request("/api/registration/complete", {
+  cookie: cookieFrom(resetVerification.response),
+  method: "POST",
+  body: { password: "2468" },
+});
+studentCookie = cookieFrom(resetWithSameQr.response);
 
 const me = await request("/api/student/me", { cookie: studentCookie });
 assert.equal(me.data.student.id, student.id);
@@ -651,11 +690,16 @@ const previousYearRoster = await request(`/api/classes/${previousYearClass.data.
   expected: 201,
 });
 const previousYearStudent = previousYearRoster.data.students[0];
-const previousYearToken = new URL(previousYearStudent.activation_url).searchParams.get("token");
+const previousYearToken = activationTokenFrom(previousYearStudent.activation_url);
 assert.ok(previousYearToken);
-await request("/api/registration/complete", {
+const previousYearVerification = await request("/api/registration/verify", {
   method: "POST",
-  body: { token: previousYearToken, password: "2468" },
+  body: { token: previousYearToken },
+});
+await request("/api/registration/complete", {
+  cookie: cookieFrom(previousYearVerification.response),
+  method: "POST",
+  body: { password: "2468" },
 });
 const previousYearLogin = await request("/api/student/login", {
   method: "POST",
@@ -735,21 +779,46 @@ const resetCard = await request(`/api/students/${student.id}/registration-token`
   body: {},
 });
 await request("/api/student/me", { cookie: studentCookie, expected: 401 });
-const resetToken = new URL(resetCard.data.card.activation_url).searchParams.get("token");
-await request(`/api/registration/verify?token=${encodeURIComponent(activationToken)}`, {
+const resetToken = activationTokenFrom(resetCard.data.card.activation_url);
+await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: activationToken },
   expected: 410,
 });
-await request("/api/registration/complete", {
+const replacementVerification = await request("/api/registration/verify", {
   method: "POST",
-  body: { token: resetToken, password: "9753" },
+  body: { token: resetToken },
+});
+assert.equal(replacementVerification.data.mode, "login");
+await request("/api/registration/complete", {
+  cookie: cookieFrom(replacementVerification.response),
+  method: "POST",
+  body: { password: "2468" },
+});
+await request(`/api/students/${student.id}/qr-reset-grant`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const replacementResetVerification = await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: resetToken },
+});
+assert.equal(replacementResetVerification.data.mode, "reset");
+await request("/api/registration/complete", {
+  cookie: cookieFrom(replacementResetVerification.response),
+  method: "POST",
+  body: { password: "9753" },
 });
 await request("/api/registration/complete", {
+  cookie: cookieFrom(replacementResetVerification.response),
   method: "POST",
-  body: { token: resetToken, password: "8642" },
+  body: { password: "8642" },
+  expected: 410,
 });
 await request("/api/student/login", {
   method: "POST",
-  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "8642" },
+  body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "9753" },
 });
 
 const recovery = await request("/api/teacher/password/request", {

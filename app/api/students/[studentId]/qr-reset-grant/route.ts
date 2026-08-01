@@ -1,27 +1,20 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedStudent } from "@/lib/authorization";
-import { issueRegistrationToken, registrationActivationUrl } from "@/lib/registration";
-import { apiFailure, json } from "@/lib/responses";
+import { issueStudentQrResetGrant } from "@/lib/registration";
+import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ studentId: string }> }) {
   try {
     const { teacherId } = await requireClassManagement(request);
+    await readJson<Record<string, never>>(request);
     const { studentId } = await context.params;
     const student = await ownedStudent(teacherId, studentId);
-    const rawToken = await issueRegistrationToken({
+    const grant = await issueStudentQrResetGrant({
       studentId,
       teacherId,
       classId: String(student.class_id),
     });
-    return json({
-      card: {
-        id: studentId,
-        student_number: student.student_number,
-        official_name: student.official_name,
-        purpose: "activate",
-        activation_url: registrationActivationUrl(new URL(request.url).origin, rawToken),
-      },
-    });
+    return json({ ok: true, expiresAt: grant.expiresAt });
   } catch (error) {
     return apiFailure(error);
   }

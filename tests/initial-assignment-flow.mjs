@@ -208,10 +208,15 @@ assert.equal(readyToComplete.summary.remainingSeats, 0);
 assert.equal(readyToComplete.summary.canComplete, true);
 
 const teacherCookie = cookie;
-const activationToken = new URL(roster.students[0].activation_url).searchParams.get("token");
+const activationUrl = new URL(roster.students[0].activation_url);
+const activationToken = new URLSearchParams(activationUrl.hash.replace(/^#/, "")).get("token");
+await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: activationToken },
+});
 await request("/api/registration/complete", {
   method: "POST",
-  body: { token: activationToken, password: "2468" },
+  body: { password: "2468" },
 });
 const studentCookie = cookie;
 const beforeConfirmation = await request("/api/student/me");

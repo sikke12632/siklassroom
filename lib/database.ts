@@ -36,7 +36,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS students (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, student_number INTEGER NOT NULL,
     official_name TEXT NOT NULL, password_hash TEXT, status TEXT NOT NULL DEFAULT 'pending',
-    qr_generation INTEGER NOT NULL DEFAULT 0, activated_at INTEGER,
+    qr_generation INTEGER NOT NULL DEFAULT 0, credential_revision INTEGER NOT NULL DEFAULT 0, activated_at INTEGER,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     FOREIGN KEY (class_id) REFERENCES classes(id)
   )`,
@@ -49,6 +49,32 @@ const schemaStatements = [
     FOREIGN KEY (student_id) REFERENCES students(id)
   )`,
   `CREATE INDEX IF NOT EXISTS registration_tokens_student_idx ON registration_tokens(student_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS registration_tokens_student_generation_uq ON registration_tokens(student_id, generation)
+   WHERE revoked_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS student_qr_reset_grants (
+    id TEXT PRIMARY KEY, student_id TEXT NOT NULL, qr_generation INTEGER NOT NULL,
+    issued_by_teacher_id TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    used_at INTEGER, revoked_at INTEGER, created_at INTEGER NOT NULL,
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (issued_by_teacher_id) REFERENCES teachers(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS student_qr_reset_grants_student_idx ON student_qr_reset_grants(student_id, expires_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS student_qr_reset_grants_open_uq ON student_qr_reset_grants(student_id)
+   WHERE used_at IS NULL AND revoked_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS registration_challenges (
+    id TEXT PRIMARY KEY, registration_token_id TEXT NOT NULL, student_id TEXT NOT NULL,
+    qr_generation INTEGER NOT NULL, credential_revision_snapshot INTEGER NOT NULL,
+    challenge_hash TEXT NOT NULL UNIQUE,
+    mode TEXT NOT NULL, reset_grant_id TEXT, expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, used_at INTEGER, revoked_at INTEGER, created_at INTEGER NOT NULL,
+    FOREIGN KEY (registration_token_id) REFERENCES registration_tokens(id),
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (reset_grant_id) REFERENCES student_qr_reset_grants(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS registration_challenges_student_idx ON registration_challenges(student_id, expires_at)`,
+  `CREATE TABLE IF NOT EXISTS registration_operation_guards (
+    id TEXT PRIMARY KEY NOT NULL, operation TEXT NOT NULL, created_at INTEGER NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, actor_type TEXT NOT NULL,
     teacher_id TEXT, student_id TEXT, expires_at INTEGER NOT NULL,
@@ -355,6 +381,7 @@ export async function ensureSchema(): Promise<void> {
         schemaStatements
           .filter((sql) => (
             sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
+            || sql.startsWith("CREATE TABLE IF NOT EXISTS students")
             || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
             || sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_month_closures")
           ))
@@ -369,6 +396,7 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "classes", "manual_school_request_id", "TEXT");
       await ensureColumn(db, "classes", "time_zone", "TEXT NOT NULL DEFAULT 'Asia/Seoul'");
       await ensureColumn(db, "classes", "setup_stage", "TEXT NOT NULL DEFAULT 'roster'");
+      await ensureColumn(db, "students", "credential_revision", "INTEGER NOT NULL DEFAULT 0");
       await ensureColumn(db, "class_job_assignment_periods", "mode", "TEXT");
       await ensureColumn(db, "class_job_assignment_periods", "status", "TEXT NOT NULL DEFAULT 'draft'");
       await ensureColumn(db, "class_job_assignment_periods", "calendar_revision", "INTEGER");
@@ -393,9 +421,15 @@ export async function ensureSchema(): Promise<void> {
   await schemaReady;
 }
 
+export function isOperationGuardFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("registration_operation_guards.id")
+    || (message.includes("NOT NULL constraint failed") && message.includes("registration_operation_guards"));
+}
+
 async function ensureColumn(
   db: D1Database,
-  table: "teachers" | "classes" | "class_job_assignment_periods" | "student_job_assignments"
+  table: "teachers" | "classes" | "students" | "class_job_assignment_periods" | "student_job_assignments"
     | "class_job_month_closures",
   column: string,
   definition: string,

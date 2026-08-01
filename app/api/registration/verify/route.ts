@@ -1,26 +1,34 @@
-import { assertUsableRegistration, registrationRecord } from "@/lib/registration";
-import { ApiError, apiFailure, json } from "@/lib/responses";
+import {
+  exchangeRegistrationToken,
+  registrationResponseHeaders,
+} from "@/lib/registration";
+import { consumeRateLimit, throttleKey } from "@/lib/rate-limit";
+import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
-export async function GET(request: Request) {
+export async function POST(request: Request) {
   try {
-    const token = new URL(request.url).searchParams.get("token") ?? "";
-    if (token.length < 32) throw new ApiError(400, "QR 주소가 올바르지 않아요.", "INVALID_QR");
-    const record = await registrationRecord(token);
-    assertUsableRegistration(record);
+    const ipKey = await throttleKey(request, "registration-verify-ip", "all");
+    await consumeRateLimit(ipKey, { maxAttempts: 120 });
+    const body = await readJson<{ token?: string }>(request);
+    const token = String(body.token ?? "");
+    if (token.length < 40 || token.length > 128) {
+      throw new ApiError(400, "QR 주소가 올바르지 않아요.", "INVALID_QR");
+    }
+    const exchanged = await exchangeRegistrationToken(token, request);
     return json({
       student: {
-        official_name: record!.official_name,
-        student_number: record!.student_number,
-        school_name: record!.school_name,
-        school_year: record!.school_year,
-        grade: record!.grade,
-        class_number: record!.class_number,
-        display_name: record!.display_name,
+        official_name: exchanged.record.official_name,
+        student_number: exchanged.record.student_number,
+        grade: exchanged.record.grade,
+        class_number: exchanged.record.class_number,
       },
-      purpose: record!.purpose,
-      isReturning: record!.status === "active" || record!.status === "reset_required",
-    });
+      mode: exchanged.mode,
+      resetExpiresAt: exchanged.resetExpiresAt,
+    }, 200, registrationResponseHeaders(exchanged.cookie));
   } catch (error) {
-    return apiFailure(error);
+    const response = apiFailure(error);
+    const headers = registrationResponseHeaders();
+    headers.set("Content-Type", response.headers.get("Content-Type") ?? "application/json");
+    return new Response(response.body, { status: response.status, headers });
   }
 }

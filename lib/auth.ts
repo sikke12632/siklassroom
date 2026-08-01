@@ -43,20 +43,37 @@ export function clearSessionCookie(request?: Request) {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix(request)}`;
 }
 
-export async function createSession(actor: { actorType: "teacher" | "student"; teacherId?: string | null; studentId?: string | null }, request?: Request) {
-  await ensureSchema();
+export async function prepareSession(
+  actor: { actorType: "teacher" | "student"; teacherId?: string | null; studentId?: string | null },
+  request?: Request,
+) {
   const rawToken = randomToken(32);
   const tokenHash = await sha256(rawToken);
   const now = Date.now();
   const lifetime = actor.actorType === "teacher" ? TEACHER_SESSION_MS : STUDENT_SESSION_MS;
+  return {
+    id: crypto.randomUUID(),
+    tokenHash,
+    actorType: actor.actorType,
+    teacherId: actor.teacherId ?? null,
+    studentId: actor.studentId ?? null,
+    expiresAt: now + lifetime,
+    createdAt: now,
+    cookie: sessionCookie(rawToken, Math.floor(lifetime / 1000), request),
+  };
+}
+
+export async function createSession(actor: { actorType: "teacher" | "student"; teacherId?: string | null; studentId?: string | null }, request?: Request) {
+  await ensureSchema();
+  const session = await prepareSession(actor, request);
   await database().prepare(
     `INSERT INTO sessions (id, token_hash, actor_type, teacher_id, student_id, expires_at, created_at, last_seen_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
-    crypto.randomUUID(), tokenHash, actor.actorType, actor.teacherId ?? null,
-    actor.studentId ?? null, now + lifetime, now, now,
+    session.id, session.tokenHash, session.actorType, session.teacherId,
+    session.studentId, session.expiresAt, session.createdAt, session.createdAt,
   ).run();
-  return { cookie: sessionCookie(rawToken, Math.floor(lifetime / 1000), request) };
+  return { cookie: session.cookie };
 }
 
 export async function getSession(request: Request): Promise<SessionActor | null> {

@@ -60,6 +60,7 @@ export const students = sqliteTable("students", {
   passwordHash: text("password_hash"),
   status: text("status").notNull().default("pending"),
   qrGeneration: integer("qr_generation").notNull().default(0),
+  credentialRevision: integer("credential_revision").notNull().default(0),
   activatedAt: integer("activated_at"),
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
@@ -81,7 +82,51 @@ export const registrationTokens = sqliteTable("registration_tokens", {
 }, (table) => [
   uniqueIndex("registration_tokens_hash_uq").on(table.tokenHash),
   index("registration_tokens_student_idx").on(table.studentId),
+  uniqueIndex("registration_tokens_student_generation_uq")
+    .on(table.studentId, table.generation)
+    .where(sql`${table.revokedAt} IS NULL`),
 ]);
+
+export const studentQrResetGrants = sqliteTable("student_qr_reset_grants", {
+  id: text("id").primaryKey(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  qrGeneration: integer("qr_generation").notNull(),
+  issuedByTeacherId: text("issued_by_teacher_id").notNull().references(() => teachers.id),
+  expiresAt: integer("expires_at").notNull(),
+  usedAt: integer("used_at"),
+  revokedAt: integer("revoked_at"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  index("student_qr_reset_grants_student_idx").on(table.studentId, table.expiresAt),
+  uniqueIndex("student_qr_reset_grants_open_uq")
+    .on(table.studentId)
+    .where(sql`${table.usedAt} IS NULL AND ${table.revokedAt} IS NULL`),
+]);
+
+export const registrationChallenges = sqliteTable("registration_challenges", {
+  id: text("id").primaryKey(),
+  registrationTokenId: text("registration_token_id").notNull().references(() => registrationTokens.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  qrGeneration: integer("qr_generation").notNull(),
+  credentialRevisionSnapshot: integer("credential_revision_snapshot").notNull(),
+  challengeHash: text("challenge_hash").notNull(),
+  mode: text("mode").notNull(),
+  resetGrantId: text("reset_grant_id").references(() => studentQrResetGrants.id),
+  expiresAt: integer("expires_at").notNull(),
+  attempts: integer("attempts").notNull().default(0),
+  usedAt: integer("used_at"),
+  revokedAt: integer("revoked_at"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("registration_challenges_hash_uq").on(table.challengeHash),
+  index("registration_challenges_student_idx").on(table.studentId, table.expiresAt),
+]);
+
+export const registrationOperationGuards = sqliteTable("registration_operation_guards", {
+  id: text("id").primaryKey().notNull(),
+  operation: text("operation").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
 
 export const sessions = sqliteTable("sessions", {
   id: text("id").primaryKey(),

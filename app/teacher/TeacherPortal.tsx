@@ -816,14 +816,25 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
     catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
   async function issueCard(student: Student) {
-    const isReset = student.status === "active";
-    if (isReset && !confirm(`${student.student_number}번 ${student.official_name} 학생에게 새 QR을 발급할까요? 이전 QR과 기존 로그인은 무효가 되고 새 QR로 비밀번호를 다시 정하게 됩니다.`)) return;
+    const isReplacement = student.status === "active" || student.status === "reset_required";
+    if (isReplacement && !confirm(`${student.student_number}번 ${student.official_name} 학생에게 새 QR을 발급할까요? 이전 QR과 현재 로그인은 무효가 되지만 비밀번호는 그대로 유지됩니다.`)) return;
     onBusy(true); onError("");
     try {
       const data = await postJson<{ card: RegistrationCard }>(`/api/students/${student.id}/registration-token`, {});
       onCards([data.card]);
-      onMessage(isReset ? "이전 QR과 기존 로그인을 무효로 하고 새 개인 QR을 만들었어요." : "이전 QR을 무효로 하고 새 개인 QR을 만들었어요.");
+      onMessage(isReplacement
+        ? "이전 QR과 현재 로그인을 무효로 하고 새 개인 QR을 만들었어요. 비밀번호를 잊었다면 재설정을 10분 허용해 주세요."
+        : "이전 QR을 무효로 하고 새 개인 QR을 만들었어요.");
       onReload();
+    } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+  }
+
+  async function allowExistingCardReset(student: Student) {
+    if (!confirm(`${student.student_number}번 ${student.official_name} 학생이 기존 QR로 10분 안에 비밀번호를 다시 만들 수 있게 할까요?`)) return;
+    onBusy(true); onError("");
+    try {
+      await postJson<{ expiresAt: number }>(`/api/students/${student.id}/qr-reset-grant`, {});
+      onMessage("기존 QR의 비밀번호 재설정을 10분 동안 허용했어요. 학생에게 지금 QR을 스캔하라고 알려 주세요.");
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
 
@@ -838,6 +849,7 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
+                {(student.status === "active" || student.status === "reset_required") && <button onClick={() => allowExistingCardReset(student)}>QR 재설정 10분 허용</button>}
                 {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "새 QR 발급" : "QR 재발급"}</button>}
                 {student.status === "locked" ? <button onClick={() => updateStudent(student, { status: student.activated_at ? "active" : "pending" })}>잠금 해제</button> : student.status !== "excluded" && <button onClick={() => updateStudent(student, { status: "locked" })}>잠금</button>}
                 {student.status !== "excluded" && <button className="danger-link" onClick={() => { if (confirm("학생을 명단에서 제외할까요? 기록은 삭제하지 않고 보존합니다.")) updateStudent(student, { status: "excluded" }); }}>제외</button>}

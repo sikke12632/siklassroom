@@ -3,7 +3,7 @@ import { ownedClass } from "@/lib/authorization";
 import { audit, database } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
-import { REGISTRATION_QR_LIFETIME_MS } from "@/lib/registration";
+import { REGISTRATION_QR_LIFETIME_MS, registrationActivationUrl } from "@/lib/registration";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 type StudentInput = { number?: number; name?: string };
@@ -71,7 +71,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
         student_number: row.studentNumber,
         official_name: row.officialName,
         status: "pending",
-        activation_url: `${origin}/activate?token=${encodeURIComponent(row.rawToken)}`,
+        activation_url: registrationActivationUrl(origin, row.rawToken),
       })),
     }, 201);
   } catch (error) {

@@ -31,7 +31,8 @@ test("서비스의 보안·기록 원칙을 사용자에게 설명한다", async
   assert.match(schema, /students_class_number_uq/);
   assert.match(auth, /HttpOnly/);
   assert.match(auth, /SameSite=Lax/);
-  assert.match(registration, /WHERE id = \? AND revoked_at IS NULL AND expires_at > \?/);
+  assert.match(registration, /registration_operation_guards/);
+  assert.match(registration, /credential_revision/);
 });
 
 test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CSRF로 보호한다", async () => {
@@ -142,18 +143,34 @@ test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드�
   assert.match(styles, /display: none !important/);
 });
 
-test("학생 개인 QR은 재발급 전까지 비밀번호 재설정에 다시 쓸 수 있다", async () => {
-  const [registration, complete, printCards, activation] = await Promise.all([
+test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
+  const [registration, complete, verify, individualIssue, printCards, activation, migration] = await Promise.all([
     readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/registration/complete/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/registration/verify/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/students/[studentId]/registration-token/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/activate/ActivationPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0014_thick_justice.sql", import.meta.url), "utf8"),
   ]);
   assert.match(registration, /REGISTRATION_QR_LIFETIME_MS = 400/);
-  assert.doesNotMatch(registration, /record\.used_at/);
-  assert.doesNotMatch(complete, /used_at IS NULL/);
-  assert.match(printCards, /학급 운영 중 다시 쓸 수 있는 개인 카드/);
-  assert.match(activation, /info\.isReturning/);
+  assert.match(registration, /REGISTRATION_CHALLENGE_LIFETIME_MS = 10/);
+  assert.match(registration, /QR_RESET_GRANT_LIFETIME_MS = 10/);
+  assert.match(registration, /HttpOnly; SameSite=Strict/);
+  assert.match(registration, /registrationActivationUrl/);
+  assert.match(complete, /registration_operation_guards/);
+  assert.match(complete, /prepareSession/);
+  assert.match(verify, /export async function POST/);
+  assert.match(verify, /registrationResponseHeaders/);
+  assert.match(individualIssue, /purpose: "activate"/);
+  assert.doesNotMatch(individualIssue, /purpose.*"reset"/);
+  assert.match(printCards, /평소 비밀번호로 로그인/);
+  assert.match(activation, /window\.history\.replaceState/);
+  assert.doesNotMatch(activation, /registration\/verify\?token/);
+  assert.doesNotMatch(activation, /registration\/complete"?, \{ token/);
+  assert.match(migration, /registration_challenges/);
+  assert.match(migration, /student_qr_reset_grants/);
+  assert.match(migration, /credential_revision/);
 });
 
 test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게 확정한다", async () => {

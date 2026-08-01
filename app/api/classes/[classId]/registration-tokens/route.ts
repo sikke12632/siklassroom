@@ -1,7 +1,7 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { database } from "@/lib/database";
-import { issueRegistrationToken } from "@/lib/registration";
+import { issueRegistrationToken, registrationActivationUrl } from "@/lib/registration";
 import { apiFailure, json } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -16,14 +16,13 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const origin = new URL(request.url).origin;
     const cards = [];
     for (const student of result.results) {
-      const purpose = student.status === "reset_required" ? "reset" : "activate";
-      const rawToken = await issueRegistrationToken({ studentId: student.id, teacherId, classId, purpose });
+      const rawToken = await issueRegistrationToken({ studentId: student.id, teacherId, classId });
       cards.push({
         id: student.id,
         student_number: student.student_number,
         official_name: student.official_name,
-        purpose,
-        activation_url: `${origin}/activate?token=${encodeURIComponent(rawToken)}`,
+        purpose: "activate",
+        activation_url: registrationActivationUrl(origin, rawToken),
       });
     }
     return json({ cards });

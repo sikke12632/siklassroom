@@ -36,7 +36,7 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
   return (
     <div className="print-overlay" role="dialog" aria-modal="true" aria-label="학생 QR 카드 인쇄 미리보기">
       <div className="print-toolbar no-print">
-        <div><strong>QR 카드 인쇄 미리보기</strong><span>{cards.length}장 · 같은 카드는 학급 운영 중 다시 사용할 수 있고, 새로 발급하면 이전 QR만 무효가 됩니다.</span></div>
+        <div><strong>QR 카드 인쇄 미리보기</strong><span>{cards.length}장 · 같은 카드는 계속 로그인에 쓰고, 분실했을 때만 새로 발급하세요.</span></div>
         <div className="button-row">
           <button className="button button-light" onClick={onClose}>닫기</button>
           <button className="button button-primary" onClick={() => window.print()}>A4 인쇄</button>
@@ -51,7 +51,7 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
               {images[card.id] ? <Image src={images[card.id]} alt={`${card.student_number}번 ${card.official_name} 등록 QR`} width={320} height={320} unoptimized /> : <div className="qr-loading">QR 만드는 중</div>}
             </div>
             <p>{classLabel}</p>
-            <ol><li>휴대전화로 QR을 찍어요.</li><li>처음 등록하거나 비밀번호를 잊었을 때 새 비밀번호를 만들어요.</li></ol>
+            <ol><li>휴대전화로 QR을 찍어요.</li><li>처음 등록하거나 평소 비밀번호로 로그인해요.</li><li>비밀번호를 잊으면 선생님께 10분 재설정 허용을 요청해요.</li></ol>
             <div className="one-time-key">학급 운영 중 다시 쓸 수 있는 개인 카드</div>
           </article>
         ))}
