@@ -119,6 +119,8 @@ export const TRANSACTION_LABELS: Record<string, string> = {
   deposit_open: "예금 가입",
   deposit_maturity: "예금 만기 지급",
   deposit_early_termination: "예금 중도해지",
+  stock_buy: "주식 매수",
+  stock_sell: "주식 매도",
   salary: "직업 월급",
   transfer: "이체",
   reversal: "정정",

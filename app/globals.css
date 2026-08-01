@@ -2833,6 +2833,9 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 }
 .finance-audit-category.category-setting { color: var(--color-warning); background: var(--color-warning-soft); }
 .finance-audit-category.category-transaction { color: var(--color-success); background: var(--color-success-soft); }
+.finance-audit-category.category-stock { color: var(--color-brand); background: var(--color-brand-soft); }
+.finance-confirm-check { display: flex; align-items: flex-start; gap: 10px; line-height: 1.5; color: var(--color-text); }
+.finance-confirm-check input { flex: 0 0 auto; width: 20px; height: 20px; margin-top: 1px; }
 .finance-audit-outcome { min-height: 24px; color: var(--color-text-muted); background: var(--color-surface-subtle); }
 .finance-audit-outcome.outcome-approved,
 .finance-audit-outcome.outcome-completed { color: var(--color-success); background: var(--color-success-soft); }

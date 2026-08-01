@@ -1629,6 +1629,974 @@ export const FINANCE_SCHEMA_STATEMENTS = [
           )
       )
     BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_ACTIVE_STUDENT'); END`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_markets (
+    class_id TEXT PRIMARY KEY, is_open INTEGER NOT NULL DEFAULT 0,
+    buy_fee_bps INTEGER NOT NULL DEFAULT 0,
+    sell_fee_bps INTEGER NOT NULL DEFAULT 0,
+    buy_spread INTEGER NOT NULL DEFAULT 0,
+    sell_spread INTEGER NOT NULL DEFAULT 0,
+    market_mood TEXT NOT NULL DEFAULT 'mixed',
+    tick_interval_minutes INTEGER NOT NULL DEFAULT 15,
+    next_tick_at INTEGER, revision INTEGER NOT NULL DEFAULT 0,
+    updated_by_teacher_id TEXT, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (updated_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stock_markets_open_ck CHECK (is_open IN (0, 1)),
+    CONSTRAINT finance_stock_markets_fee_ck CHECK (
+      buy_fee_bps BETWEEN 0 AND 1000 AND sell_fee_bps BETWEEN 0 AND 1000
+    ),
+    CONSTRAINT finance_stock_markets_spread_ck CHECK (
+      buy_spread BETWEEN 0 AND 1000000000
+      AND sell_spread BETWEEN 0 AND 1000000000
+    ),
+    CONSTRAINT finance_stock_markets_mood_ck CHECK (
+      market_mood IN ('surge', 'bull', 'mixed', 'bear', 'crash')
+    ),
+    CONSTRAINT finance_stock_markets_tick_ck CHECK (
+      tick_interval_minutes BETWEEN 1 AND 1440
+      AND (next_tick_at IS NULL OR next_tick_at >= 0)
+      AND (is_open = 0 OR next_tick_at IS NOT NULL)
+    ),
+    CONSTRAINT finance_stock_markets_revision_ck CHECK (revision >= 0)
+  )`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_market_events (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, revision INTEGER NOT NULL,
+    action TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL, previous_snapshot_json TEXT,
+    market_snapshot_json TEXT NOT NULL, actor_teacher_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES finance_stock_markets(class_id),
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stock_market_events_action_ck CHECK (
+      action IN ('configured', 'opened', 'closed', 'updated')
+    ),
+    CONSTRAINT finance_stock_market_events_revision_ck CHECK (revision > 0)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_market_events_class_revision_uq
+    ON finance_stock_market_events(class_id, revision)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_market_events_class_idempotency_uq
+    ON finance_stock_market_events(class_id, idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_market_events_class_created_idx
+    ON finance_stock_market_events(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stocks (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
+    name TEXT NOT NULL, symbol TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+    initial_price INTEGER NOT NULL, current_price INTEGER NOT NULL,
+    previous_price INTEGER NOT NULL, total_shares INTEGER NOT NULL,
+    available_shares INTEGER NOT NULL, max_shares_per_student INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active', revision INTEGER NOT NULL DEFAULT 0,
+    inventory_revision INTEGER NOT NULL DEFAULT 0, last_trade_id TEXT,
+    created_by_teacher_id TEXT NOT NULL,
+    updated_by_actor_type TEXT NOT NULL DEFAULT 'teacher',
+    updated_by_teacher_id TEXT, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (created_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (updated_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stocks_text_ck CHECK (
+      LENGTH(TRIM(name)) BETWEEN 1 AND 40
+      AND LENGTH(TRIM(symbol)) BETWEEN 1 AND 12
+      AND LENGTH(description) <= 300
+    ),
+    CONSTRAINT finance_stocks_price_ck CHECK (
+      initial_price BETWEEN 1 AND 1000000000
+      AND current_price BETWEEN 1 AND 1000000000
+      AND previous_price BETWEEN 1 AND 1000000000
+    ),
+    CONSTRAINT finance_stocks_supply_ck CHECK (
+      total_shares BETWEEN 1 AND 1000000000
+      AND available_shares BETWEEN 0 AND total_shares
+      AND max_shares_per_student BETWEEN 1 AND total_shares
+    ),
+    CONSTRAINT finance_stocks_status_ck CHECK (
+      status IN ('active', 'sell_only', 'halted', 'archived')
+    ),
+    CONSTRAINT finance_stocks_revision_ck CHECK (
+      revision >= 0 AND inventory_revision >= 0
+    ),
+    CONSTRAINT finance_stocks_actor_ck CHECK (
+      (updated_by_actor_type = 'teacher' AND updated_by_teacher_id IS NOT NULL)
+      OR (updated_by_actor_type = 'system' AND updated_by_teacher_id IS NULL)
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stocks_class_uq
+    ON finance_stocks(class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stocks_id_class_uq
+    ON finance_stocks(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stocks_class_symbol_uq
+    ON finance_stocks(class_id, symbol)`,
+  `CREATE INDEX IF NOT EXISTS finance_stocks_class_status_idx
+    ON finance_stocks(class_id, status)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_events (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL,
+    previous_snapshot_json TEXT, stock_snapshot_json TEXT NOT NULL,
+    actor_type TEXT NOT NULL, actor_teacher_id TEXT, created_at INTEGER NOT NULL,
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    CONSTRAINT finance_stock_events_action_ck CHECK (
+      action IN (
+        'issued', 'price_changed', 'status_changed', 'automatic_tick', 'news_tick'
+      )
+    ),
+    CONSTRAINT finance_stock_events_actor_ck CHECK (
+      (actor_type = 'teacher' AND actor_teacher_id IS NOT NULL)
+      OR (actor_type = 'system' AND actor_teacher_id IS NULL)
+    ),
+    CONSTRAINT finance_stock_events_revision_ck CHECK (revision >= 0),
+    CONSTRAINT finance_stock_events_reason_ck CHECK (
+      LENGTH(TRIM(reason)) BETWEEN 1 AND 300
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_events_stock_revision_uq
+    ON finance_stock_events(stock_id, revision)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_events_class_idempotency_uq
+    ON finance_stock_events(class_id, idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_events_class_created_idx
+    ON finance_stock_events(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_news (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL, impact_bps INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active', revision INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL,
+    cancellation_idempotency_key TEXT, cancellation_payload_hash TEXT,
+    created_by_teacher_id TEXT NOT NULL,
+    updated_by_actor_type TEXT NOT NULL DEFAULT 'teacher',
+    updated_by_teacher_id TEXT, cancellation_reason TEXT,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+    cancelled_at INTEGER, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (created_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (updated_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stock_news_text_ck CHECK (
+      LENGTH(TRIM(title)) BETWEEN 1 AND 80
+      AND LENGTH(TRIM(content)) BETWEEN 1 AND 500
+    ),
+    CONSTRAINT finance_stock_news_impact_ck CHECK (
+      impact_bps BETWEEN -10000 AND 10000
+    ),
+    CONSTRAINT finance_stock_news_status_ck CHECK (
+      status IN ('active', 'cancelled', 'expired')
+    ),
+    CONSTRAINT finance_stock_news_state_ck CHECK (
+      revision >= 0 AND expires_at > created_at
+      AND (
+        (status = 'active' AND cancelled_at IS NULL AND cancellation_reason IS NULL
+          AND cancellation_idempotency_key IS NULL
+          AND cancellation_payload_hash IS NULL)
+        OR (status = 'cancelled' AND cancelled_at IS NOT NULL
+          AND LENGTH(TRIM(COALESCE(cancellation_reason, ''))) > 0
+          AND cancellation_idempotency_key IS NOT NULL
+          AND cancellation_payload_hash IS NOT NULL)
+        OR (status = 'expired' AND cancelled_at IS NULL
+          AND cancellation_reason IS NULL
+          AND cancellation_idempotency_key IS NULL
+          AND cancellation_payload_hash IS NULL)
+      )
+    ),
+    CONSTRAINT finance_stock_news_actor_ck CHECK (
+      (updated_by_actor_type = 'teacher' AND updated_by_teacher_id IS NOT NULL)
+      OR (updated_by_actor_type = 'system' AND updated_by_teacher_id IS NULL)
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_news_class_idempotency_uq
+    ON finance_stock_news(class_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_news_class_cancellation_idempotency_uq
+    ON finance_stock_news(class_id, cancellation_idempotency_key)
+    WHERE cancellation_idempotency_key IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_news_class_status_idx
+    ON finance_stock_news(class_id, status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_holdings (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    student_id TEXT NOT NULL, wallet_account_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL, cost_basis INTEGER NOT NULL,
+    revision INTEGER NOT NULL, last_trade_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    FOREIGN KEY (wallet_account_id, class_id)
+      REFERENCES finance_accounts(id, class_id),
+    CONSTRAINT finance_stock_holdings_projection_ck CHECK (
+      quantity BETWEEN 0 AND 1000000000
+      AND cost_basis BETWEEN 0 AND 1000000000
+      AND ((quantity = 0 AND cost_basis = 0)
+        OR (quantity > 0 AND cost_basis > 0))
+      AND revision > 0
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_holdings_stock_student_uq
+    ON finance_stock_holdings(stock_id, student_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_holdings_id_class_uq
+    ON finance_stock_holdings(id, class_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_holdings_class_student_idx
+    ON finance_stock_holdings(class_id, student_id)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_trades (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    stock_revision INTEGER NOT NULL,
+    inventory_revision_before INTEGER NOT NULL,
+    inventory_revision_after INTEGER NOT NULL,
+    market_revision INTEGER NOT NULL,
+    finance_settings_revision INTEGER NOT NULL,
+    student_id TEXT NOT NULL, wallet_account_id TEXT NOT NULL,
+    wallet_revision_before INTEGER NOT NULL,
+    wallet_revision_after INTEGER NOT NULL,
+    side TEXT NOT NULL, quantity INTEGER NOT NULL,
+    reference_price INTEGER NOT NULL, spread_snapshot INTEGER NOT NULL,
+    unit_price INTEGER NOT NULL, gross_amount INTEGER NOT NULL,
+    fee_bps_snapshot INTEGER NOT NULL, fee_amount INTEGER NOT NULL,
+    wallet_delta INTEGER NOT NULL,
+    available_shares_before INTEGER NOT NULL,
+    available_shares_after INTEGER NOT NULL,
+    holding_quantity_before INTEGER NOT NULL,
+    holding_quantity_after INTEGER NOT NULL,
+    holding_cost_basis_before INTEGER NOT NULL,
+    holding_cost_basis_after INTEGER NOT NULL,
+    holding_revision_before INTEGER NOT NULL,
+    holding_revision_after INTEGER NOT NULL,
+    cost_basis_removed INTEGER NOT NULL, realized_gain INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending', idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL, posted_transaction_id TEXT,
+    transaction_payload_hash TEXT, created_at INTEGER NOT NULL, posted_at INTEGER,
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    FOREIGN KEY (wallet_account_id, class_id)
+      REFERENCES finance_accounts(id, class_id),
+    FOREIGN KEY (posted_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_stock_trades_side_ck CHECK (side IN ('buy', 'sell')),
+    CONSTRAINT finance_stock_trades_revision_ck CHECK (
+      stock_revision >= 0 AND market_revision >= 0
+      AND finance_settings_revision >= 0
+      AND inventory_revision_after = inventory_revision_before + 1
+      AND holding_revision_after = holding_revision_before + 1
+      AND wallet_revision_after = wallet_revision_before + 1
+    ),
+    CONSTRAINT finance_stock_trades_amount_ck CHECK (
+      quantity BETWEEN 1 AND 1000000000
+      AND reference_price BETWEEN 1 AND 1000000000
+      AND spread_snapshot BETWEEN 0 AND 1000000000
+      AND unit_price BETWEEN 1 AND 1000000000
+      AND unit_price = CASE side
+        WHEN 'buy' THEN reference_price + spread_snapshot
+        ELSE reference_price - spread_snapshot END
+      AND gross_amount = unit_price * quantity
+      AND gross_amount BETWEEN 1 AND 1000000000
+      AND fee_bps_snapshot BETWEEN 0 AND 1000
+      AND fee_amount BETWEEN 0 AND gross_amount
+      AND wallet_delta = CASE side
+        WHEN 'buy' THEN -(gross_amount + fee_amount)
+        ELSE gross_amount - fee_amount END
+      AND wallet_delta <> 0 AND ABS(wallet_delta) <= 1000000000
+    ),
+    CONSTRAINT finance_stock_trades_inventory_ck CHECK (
+      available_shares_before BETWEEN 0 AND 1000000000
+      AND available_shares_after BETWEEN 0 AND 1000000000
+      AND available_shares_after = CASE side
+        WHEN 'buy' THEN available_shares_before - quantity
+        ELSE available_shares_before + quantity END
+    ),
+    CONSTRAINT finance_stock_trades_holding_ck CHECK (
+      holding_quantity_before BETWEEN 0 AND 1000000000
+      AND holding_quantity_after BETWEEN 0 AND 1000000000
+      AND holding_cost_basis_before BETWEEN 0 AND 1000000000
+      AND holding_cost_basis_after BETWEEN 0 AND 1000000000
+      AND cost_basis_removed BETWEEN 0 AND 1000000000
+      AND holding_quantity_after = CASE side
+        WHEN 'buy' THEN holding_quantity_before + quantity
+        ELSE holding_quantity_before - quantity END
+      AND (
+        (side = 'buy' AND cost_basis_removed = 0 AND realized_gain = 0
+          AND holding_cost_basis_after = holding_cost_basis_before
+            + gross_amount + fee_amount)
+        OR (side = 'sell' AND holding_quantity_before > 0
+          AND quantity <= holding_quantity_before
+          AND cost_basis_removed = CAST(
+            (holding_cost_basis_before * quantity) / holding_quantity_before
+            AS INTEGER)
+          AND holding_cost_basis_after = holding_cost_basis_before
+            - cost_basis_removed
+          AND realized_gain = wallet_delta - cost_basis_removed)
+      )
+      AND ((holding_quantity_after = 0 AND holding_cost_basis_after = 0)
+        OR (holding_quantity_after > 0 AND holding_cost_basis_after > 0))
+    ),
+    CONSTRAINT finance_stock_trades_status_ck CHECK (
+      (status = 'pending' AND posted_transaction_id IS NULL
+        AND transaction_payload_hash IS NULL AND posted_at IS NULL)
+      OR (status = 'posted' AND posted_transaction_id IS NOT NULL
+        AND transaction_payload_hash IS NOT NULL AND posted_at IS NOT NULL)
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_trades_id_class_uq
+    ON finance_stock_trades(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_trades_class_student_idempotency_uq
+    ON finance_stock_trades(class_id, student_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_trades_posted_transaction_uq
+    ON finance_stock_trades(posted_transaction_id)
+    WHERE posted_transaction_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_trades_student_created_idx
+    ON finance_stock_trades(student_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_trades_class_created_idx
+    ON finance_stock_trades(class_id, created_at)`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_markets_insert_guard
+    BEFORE INSERT ON finance_stock_markets
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM classes classroom WHERE classroom.id = NEW.class_id
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_ACCESS_DENIED') END;
+      SELECT CASE WHEN NEW.updated_by_teacher_id IS NULL AND (
+        NEW.is_open <> 0 OR NEW.buy_fee_bps <> 0 OR NEW.sell_fee_bps <> 0
+        OR NEW.buy_spread <> 0 OR NEW.sell_spread <> 0
+        OR NEW.market_mood <> 'mixed' OR NEW.tick_interval_minutes <> 15
+        OR NEW.next_tick_at IS NOT NULL OR NEW.revision <> 0
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_INVALID_INITIAL_STATE') END;
+      SELECT CASE WHEN NEW.updated_by_teacher_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = NEW.class_id
+          AND classroom.teacher_id = NEW.updated_by_teacher_id
+          AND classroom.status = 'active'
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_ACCESS_DENIED') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_markets_update_guard
+    BEFORE UPDATE ON finance_stock_markets
+    BEGIN
+      SELECT CASE WHEN NEW.class_id <> OLD.class_id
+        OR NEW.created_at <> OLD.created_at
+        OR NEW.updated_at < OLD.updated_at
+        THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_IMMUTABLE') END;
+      SELECT CASE WHEN NOT (
+        (
+          NEW.updated_by_teacher_id IS NOT NULL
+          AND NEW.revision = OLD.revision + 1
+          AND (
+            NEW.is_open <> OLD.is_open
+            OR NEW.buy_fee_bps <> OLD.buy_fee_bps
+            OR NEW.sell_fee_bps <> OLD.sell_fee_bps
+            OR NEW.buy_spread <> OLD.buy_spread
+            OR NEW.sell_spread <> OLD.sell_spread
+            OR NEW.market_mood <> OLD.market_mood
+            OR NEW.tick_interval_minutes <> OLD.tick_interval_minutes
+            OR NEW.next_tick_at IS NOT OLD.next_tick_at
+          )
+          AND EXISTS (
+            SELECT 1 FROM classes classroom
+            WHERE classroom.id = NEW.class_id
+              AND classroom.teacher_id = NEW.updated_by_teacher_id
+              AND classroom.status = 'active'
+          )
+        )
+        OR (
+          NEW.updated_by_teacher_id IS OLD.updated_by_teacher_id
+          AND NEW.revision = OLD.revision
+          AND NEW.is_open = OLD.is_open
+          AND NEW.buy_fee_bps = OLD.buy_fee_bps
+          AND NEW.sell_fee_bps = OLD.sell_fee_bps
+          AND NEW.buy_spread = OLD.buy_spread
+          AND NEW.sell_spread = OLD.sell_spread
+          AND NEW.market_mood = OLD.market_mood
+          AND NEW.tick_interval_minutes = OLD.tick_interval_minutes
+          AND NEW.next_tick_at IS NOT OLD.next_tick_at
+          AND NEW.next_tick_at IS NOT NULL
+          AND (OLD.next_tick_at IS NULL OR NEW.next_tick_at > OLD.next_tick_at)
+        )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_STALE') END;
+      SELECT CASE WHEN NEW.is_open = 1 AND NOT EXISTS (
+        SELECT 1
+        FROM finance_stocks stock
+        JOIN finance_settings setting ON setting.class_id = stock.class_id
+        WHERE stock.class_id = NEW.class_id
+          AND stock.status <> 'archived'
+          AND stock.current_price > NEW.sell_spread
+          AND stock.current_price + NEW.buy_spread <= 1000000000
+          AND stock.current_price % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND NEW.buy_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND NEW.sell_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_markets_delete_guard
+    BEFORE DELETE ON finance_stock_markets
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_MARKET_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_market_events_insert_guard
+    BEFORE INSERT ON finance_stock_market_events
+    BEGIN
+      SELECT CASE WHEN json_valid(NEW.market_snapshot_json) <> 1
+        OR (NEW.previous_snapshot_json IS NOT NULL
+          AND json_valid(NEW.previous_snapshot_json) <> 1)
+        OR NOT EXISTS (
+          SELECT 1
+          FROM finance_stock_markets market
+          JOIN classes classroom ON classroom.id = market.class_id
+          WHERE market.class_id = NEW.class_id
+            AND market.revision = NEW.revision
+            AND market.updated_by_teacher_id = NEW.actor_teacher_id
+            AND classroom.teacher_id = NEW.actor_teacher_id
+            AND classroom.status = 'active'
+            AND (
+              (NEW.action = 'opened' AND market.is_open = 1)
+              OR (NEW.action = 'closed' AND market.is_open = 0)
+              OR NEW.action IN ('configured', 'updated')
+            )
+        )
+        THEN RAISE(ABORT, 'FINANCE_STOCK_MARKET_EVENT_INVALID') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_market_events_update_guard
+    BEFORE UPDATE ON finance_stock_market_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_MARKET_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_market_events_delete_guard
+    BEFORE DELETE ON finance_stock_market_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_MARKET_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_settings_stock_denomination_guard
+    BEFORE UPDATE OF denominations_json ON finance_settings
+    WHEN NEW.denominations_json <> OLD.denominations_json
+      AND json_valid(NEW.denominations_json) = 1
+      AND EXISTS (
+        SELECT 1
+        FROM finance_stock_markets market
+        JOIN finance_stocks stock ON stock.class_id = market.class_id
+        WHERE market.class_id = NEW.class_id
+          AND market.is_open = 1
+          AND stock.status <> 'archived'
+          AND (
+            stock.current_price % (
+              SELECT MIN(CAST(value AS INTEGER))
+              FROM json_each(NEW.denominations_json)
+            ) <> 0
+            OR market.buy_spread % (
+              SELECT MIN(CAST(value AS INTEGER))
+              FROM json_each(NEW.denominations_json)
+            ) <> 0
+            OR market.sell_spread % (
+              SELECT MIN(CAST(value AS INTEGER))
+              FROM json_each(NEW.denominations_json)
+            ) <> 0
+          )
+      )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stocks_insert_guard
+    BEFORE INSERT ON finance_stocks
+    BEGIN
+      SELECT CASE WHEN NEW.revision <> 0 OR NEW.inventory_revision <> 0
+        OR NEW.initial_price <> NEW.current_price
+        OR NEW.previous_price <> NEW.current_price
+        OR NEW.available_shares <> NEW.total_shares
+        OR NEW.last_trade_id IS NOT NULL
+        OR NEW.status <> 'active'
+        OR NEW.updated_by_actor_type <> 'teacher'
+        OR NEW.updated_by_teacher_id <> NEW.created_by_teacher_id
+        THEN RAISE(ABORT, 'FINANCE_STOCK_INVALID_INITIAL_STATE') END;
+      SELECT CASE WHEN NEW.symbol <> UPPER(NEW.symbol)
+        OR NEW.symbol GLOB '*[^A-Z0-9_-]*'
+        THEN RAISE(ABORT, 'FINANCE_STOCK_INVALID_SYMBOL') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM classes classroom
+        JOIN finance_stock_markets market ON market.class_id = classroom.id
+        JOIN finance_settings setting ON setting.class_id = classroom.id
+        WHERE classroom.id = NEW.class_id
+          AND classroom.teacher_id = NEW.created_by_teacher_id
+          AND classroom.status = 'active'
+          AND NEW.current_price > market.sell_spread
+          AND NEW.current_price + market.buy_spread <= 1000000000
+          AND NEW.current_price % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND market.buy_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND market.sell_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_OR_DENOMINATION_DENIED') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stocks_management_update_guard
+    BEFORE UPDATE ON finance_stocks
+    WHEN NEW.last_trade_id IS OLD.last_trade_id
+    BEGIN
+      SELECT CASE WHEN NEW.id <> OLD.id OR NEW.class_id <> OLD.class_id
+        OR NEW.name <> OLD.name OR NEW.symbol <> OLD.symbol
+        OR NEW.description <> OLD.description
+        OR NEW.initial_price <> OLD.initial_price
+        OR NEW.total_shares <> OLD.total_shares
+        OR NEW.max_shares_per_student <> OLD.max_shares_per_student
+        OR NEW.available_shares <> OLD.available_shares
+        OR NEW.inventory_revision <> OLD.inventory_revision
+        OR NEW.created_by_teacher_id <> OLD.created_by_teacher_id
+        OR NEW.created_at <> OLD.created_at OR NEW.updated_at < OLD.updated_at
+        OR NEW.revision <> OLD.revision + 1
+        OR (NEW.current_price = OLD.current_price AND NEW.status = OLD.status)
+        OR NEW.previous_price <> CASE
+          WHEN NEW.current_price <> OLD.current_price THEN OLD.current_price
+          ELSE OLD.previous_price END
+        THEN RAISE(ABORT, 'FINANCE_STOCK_STALE') END;
+      SELECT CASE WHEN NEW.updated_by_actor_type = 'teacher' AND NOT EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = NEW.class_id
+          AND classroom.teacher_id = NEW.updated_by_teacher_id
+          AND classroom.status = 'active'
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_DENIED') END;
+      SELECT CASE WHEN NEW.updated_by_actor_type = 'system' AND (
+        NEW.updated_by_teacher_id IS NOT NULL
+        OR NEW.current_price = OLD.current_price
+        OR NEW.status <> OLD.status
+        OR OLD.status NOT IN ('active', 'sell_only')
+        OR NOT EXISTS (
+          SELECT 1 FROM finance_stock_markets market
+          WHERE market.class_id = NEW.class_id AND market.is_open = 1
+        )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_SYSTEM_UPDATE_DENIED') END;
+      SELECT CASE WHEN OLD.status = 'archived' AND NEW.status <> 'archived'
+        THEN RAISE(ABORT, 'FINANCE_STOCK_IMMUTABLE') END;
+      SELECT CASE WHEN NEW.status = 'archived'
+        AND NEW.available_shares <> NEW.total_shares
+        THEN RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_HOLDINGS') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_markets market
+        JOIN finance_settings setting ON setting.class_id = market.class_id
+        WHERE market.class_id = NEW.class_id
+          AND NEW.current_price > market.sell_spread
+          AND NEW.current_price + market.buy_spread <= 1000000000
+          AND NEW.current_price % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND market.buy_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND market.sell_spread % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_events_insert_guard
+    BEFORE INSERT ON finance_stock_events
+    BEGIN
+      SELECT CASE WHEN json_valid(NEW.stock_snapshot_json) <> 1
+        OR (NEW.previous_snapshot_json IS NOT NULL
+          AND json_valid(NEW.previous_snapshot_json) <> 1)
+        OR NOT EXISTS (
+          SELECT 1
+          FROM finance_stocks stock
+          JOIN classes classroom ON classroom.id = stock.class_id
+          WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
+            AND stock.revision = NEW.revision
+            AND (
+              (NEW.action = 'issued' AND NEW.revision = 0
+                AND NEW.actor_type = 'teacher'
+                AND NEW.actor_teacher_id = stock.created_by_teacher_id
+                AND NEW.previous_snapshot_json IS NULL)
+              OR (NEW.action <> 'issued' AND NEW.revision > 0
+                AND NEW.actor_type = stock.updated_by_actor_type
+                AND NEW.actor_teacher_id IS stock.updated_by_teacher_id)
+            )
+            AND (
+              NEW.actor_type = 'system'
+              OR (classroom.teacher_id = NEW.actor_teacher_id
+                AND classroom.status = 'active')
+            )
+            AND (
+              NEW.action NOT IN ('price_changed', 'automatic_tick', 'news_tick')
+              OR EXISTS (
+                SELECT 1 FROM finance_stock_markets market
+                WHERE market.class_id = NEW.class_id
+                  AND market.revision = CAST(
+                    json_extract(NEW.stock_snapshot_json, '$.marketRevision')
+                    AS INTEGER
+                  )
+              )
+            )
+        )
+        THEN RAISE(ABORT, 'FINANCE_STOCK_EVENT_INVALID') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_events_update_guard
+    BEFORE UPDATE ON finance_stock_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_events_delete_guard
+    BEFORE DELETE ON finance_stock_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_insert_guard
+    BEFORE INSERT ON finance_stock_news
+    BEGIN
+      SELECT CASE WHEN NEW.status <> 'active' OR NEW.revision <> 0
+        OR NEW.updated_by_actor_type <> 'teacher'
+        OR NEW.updated_by_teacher_id <> NEW.created_by_teacher_id
+        OR NEW.cancelled_at IS NOT NULL OR NEW.cancellation_reason IS NOT NULL
+        OR NEW.cancellation_idempotency_key IS NOT NULL
+        OR NEW.cancellation_payload_hash IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM classes classroom
+          WHERE classroom.id = NEW.class_id
+            AND classroom.teacher_id = NEW.created_by_teacher_id
+            AND classroom.status = 'active'
+        )
+        THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_ACCESS_DENIED') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_update_guard
+    BEFORE UPDATE ON finance_stock_news
+    BEGIN
+      SELECT CASE WHEN NEW.id <> OLD.id OR NEW.class_id <> OLD.class_id
+        OR NEW.title <> OLD.title OR NEW.content <> OLD.content
+        OR NEW.impact_bps <> OLD.impact_bps
+        OR NEW.idempotency_key <> OLD.idempotency_key
+        OR NEW.payload_hash <> OLD.payload_hash
+        OR NEW.created_by_teacher_id <> OLD.created_by_teacher_id
+        OR NEW.created_at <> OLD.created_at OR NEW.expires_at <> OLD.expires_at
+        OR NEW.revision <> OLD.revision + 1 OR OLD.status <> 'active'
+        OR NEW.updated_at < OLD.updated_at
+        THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_IMMUTABLE') END;
+      SELECT CASE WHEN NEW.status = 'cancelled' AND NOT (
+        NEW.updated_by_actor_type = 'teacher'
+        AND NEW.updated_by_teacher_id IS NOT NULL
+        AND NEW.cancelled_at IS NOT NULL
+        AND NEW.cancelled_at = NEW.updated_at
+        AND NEW.cancellation_idempotency_key IS NOT NULL
+        AND NEW.cancellation_payload_hash IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM classes classroom
+          WHERE classroom.id = NEW.class_id
+            AND classroom.teacher_id = NEW.updated_by_teacher_id
+            AND classroom.status = 'active'
+        )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_ACCESS_DENIED') END;
+      SELECT CASE WHEN NEW.status = 'expired' AND NOT (
+        NEW.updated_by_actor_type = 'system'
+        AND NEW.updated_by_teacher_id IS NULL
+        AND NEW.cancelled_at IS NULL
+        AND NEW.cancellation_reason IS NULL
+        AND NEW.cancellation_idempotency_key IS NULL
+        AND NEW.cancellation_payload_hash IS NULL
+        AND NEW.updated_at >= NEW.expires_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_INVALID_EXPIRY') END;
+      SELECT CASE WHEN NEW.status NOT IN ('cancelled', 'expired')
+        THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_INVALID_TRANSITION') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_delete_guard
+    BEFORE DELETE ON finance_stock_news
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
+    BEFORE INSERT ON finance_stock_trades
+    BEGIN
+      SELECT CASE WHEN NEW.status <> 'pending'
+        OR NEW.posted_transaction_id IS NOT NULL
+        OR NEW.transaction_payload_hash IS NOT NULL
+        OR NEW.posted_at IS NOT NULL
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_INVALID_INITIAL_STATE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stocks stock
+        JOIN finance_stock_markets market ON market.class_id = stock.class_id
+        JOIN finance_settings setting ON setting.class_id = stock.class_id
+        JOIN students student ON student.id = NEW.student_id
+          AND student.class_id = stock.class_id AND student.status = 'active'
+        JOIN finance_accounts wallet ON wallet.id = NEW.wallet_account_id
+          AND wallet.class_id = stock.class_id
+          AND wallet.student_id = student.id
+          AND wallet.account_type = 'student_wallet'
+          AND wallet.status = 'active'
+        WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
+          AND market.is_open = 1
+          AND stock.status IN ('active', 'sell_only')
+          AND (NEW.side = 'sell' OR stock.status = 'active')
+          AND stock.revision = NEW.stock_revision
+          AND stock.inventory_revision = NEW.inventory_revision_before
+          AND stock.available_shares = NEW.available_shares_before
+          AND setting.revision = NEW.finance_settings_revision
+          AND market.revision = NEW.market_revision
+          AND wallet.revision = NEW.wallet_revision_before
+          AND NEW.reference_price = stock.current_price
+          AND NEW.spread_snapshot = CASE NEW.side
+            WHEN 'buy' THEN market.buy_spread ELSE market.sell_spread END
+          AND NEW.fee_bps_snapshot = CASE NEW.side
+            WHEN 'buy' THEN market.buy_fee_bps ELSE market.sell_fee_bps END
+          AND NEW.reference_price > market.sell_spread
+          AND NEW.reference_price + market.buy_spread <= 1000000000
+          AND NEW.reference_price % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND NEW.spread_snapshot % (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          ) = 0
+          AND NEW.fee_amount = CAST(
+            CAST((NEW.gross_amount * NEW.fee_bps_snapshot) / 10000 AS INTEGER)
+              / (
+                SELECT MIN(CAST(value AS INTEGER))
+                FROM json_each(setting.denominations_json)
+              ) AS INTEGER
+          ) * (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          )
+          AND NEW.available_shares_after BETWEEN 0 AND stock.total_shares
+          AND NEW.holding_quantity_after <= stock.max_shares_per_student
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN COALESCE((
+          SELECT holding.quantity FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_quantity_before
+        OR COALESCE((
+          SELECT holding.cost_basis FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_cost_basis_before
+        OR COALESCE((
+          SELECT holding.revision FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_revision_before
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_holdings_insert_guard
+    BEFORE INSERT ON finance_stock_holdings
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_trades trade
+        JOIN students student ON student.id = trade.student_id
+          AND student.class_id = trade.class_id AND student.status = 'active'
+        JOIN finance_accounts wallet ON wallet.id = trade.wallet_account_id
+          AND wallet.class_id = trade.class_id
+          AND wallet.student_id = trade.student_id
+          AND wallet.account_type = 'student_wallet'
+        WHERE trade.id = NEW.last_trade_id AND trade.status = 'pending'
+          AND trade.side = 'buy'
+          AND trade.class_id = NEW.class_id AND trade.stock_id = NEW.stock_id
+          AND trade.student_id = NEW.student_id
+          AND trade.wallet_account_id = NEW.wallet_account_id
+          AND trade.holding_quantity_before = 0
+          AND trade.holding_cost_basis_before = 0
+          AND trade.holding_revision_before = 0
+          AND trade.holding_quantity_after = NEW.quantity
+          AND trade.holding_cost_basis_after = NEW.cost_basis
+          AND trade.holding_revision_after = NEW.revision
+          AND NEW.created_at = trade.created_at
+          AND NEW.updated_at = trade.created_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_PROJECTION_MISMATCH') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_holdings_update_guard
+    BEFORE UPDATE ON finance_stock_holdings
+    BEGIN
+      SELECT CASE WHEN NEW.id <> OLD.id OR NEW.class_id <> OLD.class_id
+        OR NEW.stock_id <> OLD.stock_id OR NEW.student_id <> OLD.student_id
+        OR NEW.wallet_account_id <> OLD.wallet_account_id
+        OR NEW.created_at <> OLD.created_at
+        OR NEW.revision <> OLD.revision + 1
+        OR NEW.last_trade_id = OLD.last_trade_id
+        OR NOT EXISTS (
+          SELECT 1 FROM finance_stock_trades trade
+          WHERE trade.id = NEW.last_trade_id AND trade.status = 'pending'
+            AND trade.class_id = NEW.class_id AND trade.stock_id = NEW.stock_id
+            AND trade.student_id = NEW.student_id
+            AND trade.wallet_account_id = NEW.wallet_account_id
+            AND trade.holding_quantity_before = OLD.quantity
+            AND trade.holding_quantity_after = NEW.quantity
+            AND trade.holding_cost_basis_before = OLD.cost_basis
+            AND trade.holding_cost_basis_after = NEW.cost_basis
+            AND trade.holding_revision_before = OLD.revision
+            AND trade.holding_revision_after = NEW.revision
+            AND NEW.updated_at = trade.created_at
+        )
+        THEN RAISE(ABORT, 'FINANCE_STOCK_PROJECTION_MISMATCH') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_holdings_delete_guard
+    BEFORE DELETE ON finance_stock_holdings
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_HOLDING_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stocks_inventory_update_guard
+    BEFORE UPDATE ON finance_stocks
+    WHEN NEW.last_trade_id IS NOT OLD.last_trade_id
+    BEGIN
+      SELECT CASE WHEN NEW.id <> OLD.id OR NEW.class_id <> OLD.class_id
+        OR NEW.name <> OLD.name OR NEW.symbol <> OLD.symbol
+        OR NEW.description <> OLD.description
+        OR NEW.initial_price <> OLD.initial_price
+        OR NEW.current_price <> OLD.current_price
+        OR NEW.previous_price <> OLD.previous_price
+        OR NEW.total_shares <> OLD.total_shares
+        OR NEW.max_shares_per_student <> OLD.max_shares_per_student
+        OR NEW.status <> OLD.status OR NEW.revision <> OLD.revision
+        OR NEW.created_by_teacher_id <> OLD.created_by_teacher_id
+        OR NEW.updated_by_actor_type <> OLD.updated_by_actor_type
+        OR NEW.updated_by_teacher_id IS NOT OLD.updated_by_teacher_id
+        OR NEW.created_at <> OLD.created_at
+        OR NEW.inventory_revision <> OLD.inventory_revision + 1
+        OR NOT EXISTS (
+          SELECT 1 FROM finance_stock_trades trade
+          WHERE trade.id = NEW.last_trade_id AND trade.status = 'pending'
+            AND trade.class_id = NEW.class_id AND trade.stock_id = NEW.id
+            AND trade.stock_revision = OLD.revision
+            AND trade.inventory_revision_before = OLD.inventory_revision
+            AND trade.inventory_revision_after = NEW.inventory_revision
+            AND trade.available_shares_before = OLD.available_shares
+            AND trade.available_shares_after = NEW.available_shares
+            AND NEW.updated_at = trade.created_at
+        )
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stocks_delete_guard
+    BEFORE DELETE ON finance_stocks
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_identity_update_guard
+    BEFORE UPDATE OF
+      id, class_id, stock_id, stock_revision,
+      inventory_revision_before, inventory_revision_after,
+      market_revision, finance_settings_revision, student_id,
+      wallet_account_id, wallet_revision_before, wallet_revision_after,
+      side, quantity, reference_price, spread_snapshot, unit_price,
+      gross_amount, fee_bps_snapshot, fee_amount, wallet_delta,
+      available_shares_before, available_shares_after,
+      holding_quantity_before, holding_quantity_after,
+      holding_cost_basis_before, holding_cost_basis_after,
+      holding_revision_before, holding_revision_after,
+      cost_basis_removed, realized_gain, idempotency_key,
+      payload_hash, created_at
+    ON finance_stock_trades
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TRADE_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_finalize_guard
+    BEFORE UPDATE OF status, posted_transaction_id,
+      transaction_payload_hash, posted_at ON finance_stock_trades
+    BEGIN
+      SELECT CASE WHEN OLD.status <> 'pending' OR NEW.status <> 'posted'
+        OR OLD.posted_transaction_id IS NOT NULL
+        OR OLD.transaction_payload_hash IS NOT NULL OR OLD.posted_at IS NOT NULL
+        OR NEW.posted_transaction_id IS NULL
+        OR NEW.transaction_payload_hash IS NULL OR NEW.posted_at IS NULL
+        OR NEW.posted_at < NEW.created_at
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_INVALID_TRANSITION') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_transactions transaction_row
+        WHERE transaction_row.id = NEW.posted_transaction_id
+          AND transaction_row.class_id = NEW.class_id
+          AND transaction_row.status = 'posted'
+          AND transaction_row.transaction_type = CASE NEW.side
+            WHEN 'buy' THEN 'stock_buy' ELSE 'stock_sell' END
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND (
+            transaction_row.actor_type = 'system'
+            OR (
+              NEW.side = 'sell'
+              AND transaction_row.actor_type = 'teacher'
+              AND LENGTH(TRIM(COALESCE(
+                json_extract(transaction_row.metadata_json, '$.interventionReason'),
+                ''
+              ))) BETWEEN 1 AND 300
+              AND json_extract(transaction_row.metadata_json, '$.studentId') = NEW.student_id
+              AND EXISTS (
+                SELECT 1 FROM classes classroom
+                WHERE classroom.id = NEW.class_id
+                  AND classroom.teacher_id = transaction_row.actor_teacher_id
+                  AND classroom.status = 'active'
+              )
+            )
+          )
+          AND transaction_row.payload_hash = NEW.transaction_payload_hash
+          AND (SELECT COUNT(*) FROM finance_ledger_entries entry
+               WHERE entry.transaction_id = transaction_row.id) = 2
+          AND EXISTS (
+            SELECT 1 FROM finance_ledger_entries entry
+            WHERE entry.transaction_id = transaction_row.id
+              AND entry.account_id = NEW.wallet_account_id
+              AND entry.amount = NEW.wallet_delta
+              AND entry.account_revision_after = NEW.wallet_revision_after
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM finance_ledger_entries entry
+            JOIN finance_accounts issuance ON issuance.id = entry.account_id
+              AND issuance.class_id = entry.class_id
+              AND issuance.account_type = 'class_issuance'
+            WHERE entry.transaction_id = transaction_row.id
+              AND entry.amount = -NEW.wallet_delta
+          )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LEDGER_MISMATCH') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_accounts wallet
+        WHERE wallet.id = NEW.wallet_account_id
+          AND wallet.class_id = NEW.class_id
+          AND wallet.revision = NEW.wallet_revision_after
+      ) THEN RAISE(ABORT, 'FINANCE_ACCOUNT_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_stock_holdings holding
+        WHERE holding.class_id = NEW.class_id
+          AND holding.stock_id = NEW.stock_id
+          AND holding.student_id = NEW.student_id
+          AND holding.wallet_account_id = NEW.wallet_account_id
+          AND holding.quantity = NEW.holding_quantity_after
+          AND holding.cost_basis = NEW.holding_cost_basis_after
+          AND holding.revision = NEW.holding_revision_after
+          AND holding.last_trade_id = NEW.id
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_PROJECTION_MISMATCH') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_stocks stock
+        WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
+          AND stock.available_shares = NEW.available_shares_after
+          AND stock.inventory_revision = NEW.inventory_revision_after
+          AND stock.last_trade_id = NEW.id
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_delete_guard
+    BEFORE DELETE ON finance_stock_trades
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TRADE_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_transactions_reversal_guard
+    BEFORE INSERT ON finance_transactions
+    WHEN NEW.transaction_type = 'reversal' AND EXISTS (
+      SELECT 1 FROM finance_transactions original
+      WHERE original.id = NEW.reversal_of_transaction_id
+        AND original.source_type = 'stock_trade'
+    )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_REVERSAL_REQUIRES_TRADE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_classes_archive_guard
+    BEFORE UPDATE OF status ON classes
+    WHEN NEW.status = 'archived' AND OLD.status <> 'archived'
+      AND EXISTS (
+        SELECT 1 FROM finance_stock_holdings holding
+        WHERE holding.class_id = NEW.id AND holding.quantity > 0
+      )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_CLASS'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_students_exclude_guard
+    BEFORE UPDATE OF status ON students
+    WHEN NEW.status = 'excluded' AND OLD.status <> 'excluded'
+      AND EXISTS (
+        SELECT 1 FROM finance_stock_holdings holding
+        WHERE holding.class_id = NEW.class_id
+          AND holding.student_id = NEW.id AND holding.quantity > 0
+      )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_STUDENT'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_classes_create_stock_market
+    AFTER INSERT ON classes
+    BEGIN
+      INSERT OR IGNORE INTO finance_stock_markets (
+        class_id, is_open, buy_fee_bps, sell_fee_bps,
+        buy_spread, sell_spread, market_mood,
+        tick_interval_minutes, next_tick_at, revision,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        NEW.id, 0, 0, 0, 0, 0, 'mixed', 15, NULL, 0,
+        NULL, NEW.created_at, NEW.updated_at
+      );
+    END`,
   `INSERT OR IGNORE INTO finance_settings (
     class_id, currency_name, currency_unit, denominations_json,
     bank_open, deposit_enabled, withdrawal_enabled,
@@ -1639,5 +2607,15 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     class_row.id, '우리 반 화폐', '학급화폐', '[100,500,1000,5000]',
     1, 1, 1, 1, 1000000000, 0, NULL,
     class_row.created_at, class_row.updated_at
+  FROM classes class_row`,
+  `INSERT OR IGNORE INTO finance_stock_markets (
+    class_id, is_open, buy_fee_bps, sell_fee_bps,
+    buy_spread, sell_spread, market_mood,
+    tick_interval_minutes, next_tick_at, revision,
+    updated_by_teacher_id, created_at, updated_at
+  )
+  SELECT
+    class_row.id, 0, 0, 0, 0, 0, 'mixed', 15, NULL, 0,
+    NULL, class_row.created_at, class_row.updated_at
   FROM classes class_row`,
 ] as const;

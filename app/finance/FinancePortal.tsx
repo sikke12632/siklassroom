@@ -20,6 +20,7 @@ import { FinanceAuditPanel } from "./FinanceAuditPanel";
 import { FinanceDepositsPanel } from "./FinanceDepositsPanel";
 import { FinanceOperations } from "./FinanceOperations";
 import { FinanceSettingsPanel } from "./FinanceSettingsPanel";
+import { FinanceStocksPanel } from "./FinanceStocksPanel";
 
 type FinanceRole = "teacher" | "banker" | "student";
 
@@ -319,6 +320,7 @@ function TeacherFinanceHome({
       <nav className="finance-teacher-section-nav" aria-label="금융센터 교사 메뉴">
         <a href="#finance-operations">은행 업무</a>
         <a href="#finance-deposits">예금상품</a>
+        <a href="#finance-stocks">주식시장</a>
         <a href="#finance-settings">화폐·은행 설정</a>
         <a href="#finance-audit">전체 금융 기록</a>
       </nav>
@@ -345,6 +347,18 @@ function TeacherFinanceHome({
         denominations={finance.settings.denominations}
         onRefresh={onRefresh}
       />
+
+      <div>
+        <FinanceStocksPanel
+          classId={context.classroom.id}
+          financeRole={context.financeRole}
+          actorType={context.actor.type}
+          classIsActive={classIsActive}
+          currencyLabel={finance.currencyLabel}
+          denominations={finance.settings.denominations}
+          onRefresh={onRefresh}
+        />
+      </div>
 
       <div id="finance-settings">
         <FinanceSettingsPanel
@@ -425,6 +439,18 @@ function BankerFinanceHome({
         onRefresh={onRefresh}
       />
 
+      <div>
+        <FinanceStocksPanel
+          classId={context.classroom.id}
+          financeRole={context.financeRole}
+          actorType={context.actor.type}
+          classIsActive={context.classroom.status === "active"}
+          currencyLabel={finance.currencyLabel}
+          denominations={finance.settings.denominations}
+          onRefresh={onRefresh}
+        />
+      </div>
+
       <FinanceSettingsPanel
         role="banker"
         classId={context.classroom.id}
@@ -489,6 +515,18 @@ function StudentFinanceHome({
         denominations={finance.settings.denominations}
         onRefresh={onRefresh}
       />
+
+      <div>
+        <FinanceStocksPanel
+          classId={context.classroom.id}
+          financeRole={context.financeRole}
+          actorType={context.actor.type}
+          classIsActive={context.classroom.status === "active"}
+          currencyLabel={finance.currencyLabel}
+          denominations={finance.settings.denominations}
+          onRefresh={onRefresh}
+        />
+      </div>
 
       <FinanceSettingsPanel
         role="student"
