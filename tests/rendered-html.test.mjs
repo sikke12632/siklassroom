@@ -82,6 +82,8 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(openRegistration, /teacher_open_registration_activated/);
   assert.match(signup, /openRegistration\s*\?\s*undefined/);
   assert.match(signup, /openRegistration \? "invite_verified" : "pending"/);
+  assert.match(signup, /createGuardedTeacherSession/);
+  assert.doesNotMatch(signup, /createSession\(/);
   assert.match(login, /activateOpenTeacherRegistration/);
   assert.match(session, /activateOpenTeacherRegistration/);
   assert.match(portal, /mode === "signup" \? "가입하기"/);

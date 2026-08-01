@@ -7,6 +7,7 @@ const secondTeacherEmail = `other-${runId}@example.test`;
 const schoolName = `검증초${runId.slice(-6)}`;
 const firstPassword = "Teacher!234";
 const nextPassword = "Teacher!567";
+const finalPassword = "Teacher!890";
 const adminUsername = process.env.SYSTEM_ADMIN_USERNAME;
 const adminPassword = process.env.SYSTEM_ADMIN_PASSWORD;
 const adminPath = process.env.SYSTEM_ADMIN_PATH;
@@ -833,9 +834,37 @@ await request("/api/teacher/password/reset", {
   body: { token: teacherResetToken, password: nextPassword },
 });
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
-const teacherLogin = await request("/api/teacher/login", {
+const raceRecovery = await request("/api/teacher/password/request", {
+  method: "POST",
+  body: { email: teacherEmail },
+});
+const raceResetToken = new URL(raceRecovery.data.developmentResetUrl).searchParams.get("token");
+const [racingTeacherLogin, racingTeacherReset] = await Promise.all([
+  fetch(`${baseUrl}/api/teacher/login`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: teacherEmail, password: nextPassword }),
+  }),
+  fetch(`${baseUrl}/api/teacher/password/reset`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: raceResetToken, password: finalPassword }),
+  }),
+]);
+assert.equal(racingTeacherReset.status, 200);
+assert.ok([200, 401].includes(racingTeacherLogin.status));
+const racingTeacherCookie = cookieFrom(racingTeacherLogin);
+if (racingTeacherCookie) {
+  await request("/api/classes", { cookie: racingTeacherCookie, expected: 401 });
+}
+await request("/api/teacher/login", {
   method: "POST",
   body: { email: teacherEmail, password: nextPassword },
+  expected: 401,
+});
+const teacherLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: finalPassword },
 });
 teacherCookie = cookieFrom(teacherLogin.response);
 const finalRoster = await request(`/api/classes/${classId}/students`, { cookie: teacherCookie });
@@ -852,7 +881,7 @@ await request("/api/admin/teachers", {
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
 const revokedLogin = await request("/api/teacher/login", {
   method: "POST",
-  body: { email: teacherEmail, password: nextPassword },
+  body: { email: teacherEmail, password: finalPassword },
 });
 const revokedCookie = cookieFrom(revokedLogin.response);
 const revokedSession = await request("/api/session", { cookie: revokedCookie });

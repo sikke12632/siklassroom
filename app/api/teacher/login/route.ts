@@ -1,8 +1,8 @@
-import { createSession } from "@/lib/auth";
+import { createGuardedTeacherSession } from "@/lib/auth";
 import { database, ensureSchema } from "@/lib/database";
 import { verifyPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
-import { assertNotBlocked, clearFailures, recordFailure, throttleKey } from "@/lib/rate-limit";
+import { assertNotBlocked, recordFailure, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 import { teacherAccountIssue } from "@/lib/teacher-access-rules";
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     await ensureSchema();
     const teacher = await database().prepare(
       `SELECT id, email, password_hash, status, email_verified_at, teacher_access_status,
-              teacher_access_verified_at, school_id, manual_school_request_id
+              teacher_access_verified_at, school_id, manual_school_request_id, credential_revision
        FROM teachers WHERE email = ?`,
     ).bind(email).first<{
       id: string;
@@ -29,6 +29,7 @@ export async function POST(request: Request) {
       teacher_access_verified_at: number | null;
       school_id: string | null;
       manual_school_request_id: string | null;
+      credential_revision: number;
     }>();
     const accountIssue = teacher
       ? teacherAccountIssue(teacher.status, teacher.teacher_access_status)
@@ -37,7 +38,6 @@ export async function POST(request: Request) {
       await recordFailure(key);
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
-    await clearFailures(key);
     await activateOpenTeacherRegistration(teacher.id);
     if (isOpenTeacherRegistration() && teacher.teacher_access_status !== "revoked") {
       const now = Date.now();
@@ -45,7 +45,13 @@ export async function POST(request: Request) {
       teacher.teacher_access_status = "invite_verified";
       teacher.teacher_access_verified_at ??= now;
     }
-    const session = await createSession({ actorType: "teacher", teacherId: teacher.id }, request);
+    const session = await createGuardedTeacherSession({
+      teacherId: teacher.id,
+      passwordHash: teacher.password_hash,
+      credentialRevision: teacher.credential_revision,
+      request,
+      clearThrottleKey: key,
+    });
     return json({
       teacher: {
         id: teacher.id,

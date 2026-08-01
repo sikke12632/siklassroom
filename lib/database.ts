@@ -17,6 +17,7 @@ let schemaReady: Promise<void> | null = null;
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
     id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+    credential_revision INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'active', email_verified_at INTEGER,
     teacher_access_status TEXT NOT NULL DEFAULT 'pending', teacher_access_verified_at INTEGER,
     school_id TEXT, manual_school_request_id TEXT,
@@ -390,6 +391,7 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "teachers", "email_verified_at", "INTEGER");
       await ensureColumn(db, "teachers", "teacher_access_status", "TEXT NOT NULL DEFAULT 'pending'");
       await ensureColumn(db, "teachers", "teacher_access_verified_at", "INTEGER");
+      await ensureColumn(db, "teachers", "credential_revision", "INTEGER NOT NULL DEFAULT 0");
       await ensureColumn(db, "teachers", "school_id", "TEXT");
       await ensureColumn(db, "teachers", "manual_school_request_id", "TEXT");
       await ensureColumn(db, "classes", "school_id", "TEXT");

@@ -1,4 +1,4 @@
-import { createSession } from "@/lib/auth";
+import { createGuardedTeacherSession } from "@/lib/auth";
 import { audit, database, ensureSchema } from "@/lib/database";
 import { hashPassword, verifyPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     const openRegistration = isOpenTeacherRegistration();
     const existing = await database().prepare(
       `SELECT id, password_hash, email_verified_at, teacher_access_status,
-              teacher_access_verified_at, school_id, manual_school_request_id
+              teacher_access_verified_at, school_id, manual_school_request_id, credential_revision
        FROM teachers WHERE email = ?`,
     ).bind(email).first<{
       id: string;
@@ -30,16 +30,22 @@ export async function POST(request: Request) {
       teacher_access_verified_at: number | null;
       school_id: string | null;
       manual_school_request_id: string | null;
+      credential_revision: number;
     }>();
     if (existing) {
       if (!existing.email_verified_at && await verifyPassword(password, existing.password_hash)) {
         await activateOpenTeacherRegistration(existing.id);
-        const session = await createSession({ actorType: "teacher", teacherId: existing.id }, request);
         const now = Date.now();
         const openAccess = openRegistration && existing.teacher_access_status !== "revoked";
         const verification = openRegistration
           ? undefined
           : await issueEmailVerification({ teacherId: existing.id, email, request });
+        const session = await createGuardedTeacherSession({
+          teacherId: existing.id,
+          passwordHash: existing.password_hash,
+          credentialRevision: existing.credential_revision,
+          request,
+        });
         await recordFailure(throttle);
         return json({
           teacher: {
@@ -59,6 +65,7 @@ export async function POST(request: Request) {
     }
     const id = crypto.randomUUID();
     const now = Date.now();
+    const passwordHash = await hashPassword(password);
     await database().prepare(
       `INSERT INTO teachers
        (id, email, password_hash, status, email_verified_at, teacher_access_status,
@@ -67,7 +74,7 @@ export async function POST(request: Request) {
     ).bind(
       id,
       email,
-      await hashPassword(password),
+      passwordHash,
       openRegistration ? now : null,
       openRegistration ? "invite_verified" : "pending",
       openRegistration ? now : null,
@@ -75,10 +82,15 @@ export async function POST(request: Request) {
       now,
     ).run();
     await audit({ action: "teacher_signup", teacherId: id });
-    const session = await createSession({ actorType: "teacher", teacherId: id }, request);
     const verification = openRegistration
       ? undefined
       : await issueEmailVerification({ teacherId: id, email, request });
+    const session = await createGuardedTeacherSession({
+      teacherId: id,
+      passwordHash,
+      credentialRevision: 0,
+      request,
+    });
     await recordFailure(throttle);
     return json({
       teacher: {

@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { ApiError } from "./responses";
 import { teacherAccountIssue } from "./teacher-access-rules";
@@ -73,6 +73,49 @@ export async function createSession(actor: { actorType: "teacher" | "student"; t
     session.id, session.tokenHash, session.actorType, session.teacherId,
     session.studentId, session.expiresAt, session.createdAt, session.createdAt,
   ).run();
+  return { cookie: session.cookie };
+}
+
+export async function createGuardedTeacherSession(input: {
+  teacherId: string;
+  passwordHash: string;
+  credentialRevision: number;
+  request: Request;
+  clearThrottleKey?: string;
+}) {
+  await ensureSchema();
+  const session = await prepareSession({ actorType: "teacher", teacherId: input.teacherId }, input.request);
+  const guardId = crypto.randomUUID();
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [
+    database().prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN EXISTS (
+         SELECT 1 FROM teachers
+         WHERE id = ? AND status = 'active' AND password_hash = ? AND credential_revision = ?
+       ) THEN ? ELSE NULL END, 'teacher_password_login', ?`,
+    ).bind(input.teacherId, input.passwordHash, input.credentialRevision, guardId, now),
+    database().prepare(
+      `INSERT INTO sessions
+       (id, token_hash, actor_type, teacher_id, student_id, expires_at, created_at, last_seen_at)
+       VALUES (?, ?, 'teacher', ?, NULL, ?, ?, ?)`,
+    ).bind(
+      session.id, session.tokenHash, input.teacherId,
+      session.expiresAt, session.createdAt, session.createdAt,
+    ),
+  ];
+  if (input.clearThrottleKey) {
+    statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(input.clearThrottleKey));
+  }
+  statements.push(database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId));
+  try {
+    await database().batch(statements);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
+    }
+    throw error;
+  }
   return { cookie: session.cookie };
 }
 

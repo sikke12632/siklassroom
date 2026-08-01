@@ -14,6 +14,7 @@ export const teachers = sqliteTable("teachers", {
   id: text("id").primaryKey(),
   email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(),
+  credentialRevision: integer("credential_revision").notNull().default(0),
   status: text("status").notNull().default("active"),
   emailVerifiedAt: integer("email_verified_at"),
   teacherAccessStatus: text("teacher_access_status").notNull().default("pending"),
