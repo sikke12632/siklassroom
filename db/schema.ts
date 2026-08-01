@@ -890,3 +890,212 @@ export const financeSettingRevisions = sqliteTable("finance_setting_revisions", 
     sql`LENGTH(TRIM(${table.changeReason})) BETWEEN 2 AND 300`,
   ),
 ]);
+
+export const financeDepositProducts = sqliteTable("finance_deposit_products", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  termWeeks: integer("term_weeks").notNull(),
+  maturityInterestBps: integer("maturity_interest_bps").notNull(),
+  earlyInterestBps: integer("early_interest_bps").notNull().default(0),
+  minAmount: integer("min_amount").notNull(),
+  maxAmount: integer("max_amount").notNull(),
+  isOpen: integer("is_open", { mode: "boolean" }).notNull().default(true),
+  revision: integer("revision").notNull().default(0),
+  createdByTeacherId: text("created_by_teacher_id").notNull().references(() => teachers.id),
+  updatedByTeacherId: text("updated_by_teacher_id").notNull().references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_deposit_products_id_class_uq").on(table.id, table.classId),
+  index("finance_deposit_products_class_open_idx").on(
+    table.classId,
+    table.isOpen,
+    table.createdAt,
+  ),
+  check(
+    "finance_deposit_products_text_ck",
+    sql`LENGTH(TRIM(${table.name})) BETWEEN 1 AND 40
+      AND LENGTH(${table.description}) <= 200`,
+  ),
+  check(
+    "finance_deposit_products_term_ck",
+    sql`${table.termWeeks} BETWEEN 1 AND 52`,
+  ),
+  check(
+    "finance_deposit_products_rate_ck",
+    sql`${table.maturityInterestBps} BETWEEN 0 AND 10000
+      AND ${table.earlyInterestBps} BETWEEN 0 AND 10000`,
+  ),
+  check(
+    "finance_deposit_products_amount_ck",
+    sql`${table.minAmount} BETWEEN 1 AND 1000000000
+      AND ${table.maxAmount} BETWEEN ${table.minAmount} AND 1000000000`,
+  ),
+  check("finance_deposit_products_open_ck", sql`${table.isOpen} IN (0, 1)`),
+  check("finance_deposit_products_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeDepositProductEvents = sqliteTable("finance_deposit_product_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  productId: text("product_id").notNull(),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  productSnapshotJson: text("product_snapshot_json").notNull(),
+  actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_deposit_product_events_product_revision_uq").on(
+    table.productId,
+    table.revision,
+  ),
+  uniqueIndex("finance_deposit_product_events_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_deposit_product_events_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+  ),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [financeDepositProducts.id, financeDepositProducts.classId],
+    name: "finance_deposit_product_events_product_class_fk",
+  }),
+  check(
+    "finance_deposit_product_events_action_ck",
+    sql`${table.action} IN ('issued', 'opened', 'paused')`,
+  ),
+  check("finance_deposit_product_events_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeDepositContracts = sqliteTable("finance_deposit_contracts", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  productId: text("product_id").notNull(),
+  productRevision: integer("product_revision").notNull(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  walletAccountId: text("wallet_account_id").notNull(),
+  principal: integer("principal").notNull(),
+  productNameSnapshot: text("product_name_snapshot").notNull(),
+  termWeeksSnapshot: integer("term_weeks_snapshot").notNull(),
+  maturityInterestBpsSnapshot: integer("maturity_interest_bps_snapshot").notNull(),
+  earlyInterestBpsSnapshot: integer("early_interest_bps_snapshot").notNull(),
+  maturityInterest: integer("maturity_interest").notNull(),
+  earlyInterest: integer("early_interest").notNull(),
+  maturityPayout: integer("maturity_payout").notNull(),
+  earlyPayout: integer("early_payout").notNull(),
+  openedAt: integer("opened_at").notNull(),
+  maturesAt: integer("matures_at").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id").notNull(),
+  transactionPayloadHash: text("transaction_payload_hash").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_deposit_contracts_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_deposit_contracts_class_student_idempotency_uq").on(
+    table.classId,
+    table.studentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_deposit_contracts_posted_transaction_uq").on(
+    table.postedTransactionId,
+  ),
+  index("finance_deposit_contracts_student_created_idx").on(
+    table.studentId,
+    table.createdAt,
+  ),
+  index("finance_deposit_contracts_class_maturity_idx").on(
+    table.classId,
+    table.maturesAt,
+  ),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [financeDepositProducts.id, financeDepositProducts.classId],
+    name: "finance_deposit_contracts_product_class_fk",
+  }),
+  foreignKey({
+    columns: [table.walletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_deposit_contracts_wallet_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_deposit_contracts_transaction_class_fk",
+  }),
+  check(
+    "finance_deposit_contracts_amount_ck",
+    sql`${table.principal} BETWEEN 1 AND 1000000000
+      AND ${table.maturityInterest} BETWEEN 0 AND 1000000000
+      AND ${table.earlyInterest} BETWEEN 0 AND ${table.maturityInterest}
+      AND ${table.maturityPayout} = ${table.principal} + ${table.maturityInterest}
+      AND ${table.earlyPayout} = ${table.principal} + ${table.earlyInterest}
+      AND ${table.maturityPayout} <= 1000000000`,
+  ),
+  check(
+    "finance_deposit_contracts_terms_ck",
+    sql`${table.productRevision} >= 0
+      AND ${table.termWeeksSnapshot} BETWEEN 1 AND 52
+      AND ${table.maturityInterestBpsSnapshot} BETWEEN 0 AND 10000
+      AND ${table.earlyInterestBpsSnapshot} BETWEEN 0 AND 10000
+      AND ${table.maturesAt} > ${table.openedAt}`,
+  ),
+]);
+
+export const financeDepositSettlements = sqliteTable("finance_deposit_settlements", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  contractId: text("contract_id").notNull(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  settlementType: text("settlement_type").notNull(),
+  principal: integer("principal").notNull(),
+  interest: integer("interest").notNull(),
+  payout: integer("payout").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id").notNull(),
+  transactionPayloadHash: text("transaction_payload_hash").notNull(),
+  settledAt: integer("settled_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_deposit_settlements_contract_uq").on(table.contractId),
+  uniqueIndex("finance_deposit_settlements_class_student_idempotency_uq").on(
+    table.classId,
+    table.studentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_deposit_settlements_posted_transaction_uq").on(
+    table.postedTransactionId,
+  ),
+  index("finance_deposit_settlements_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+  ),
+  foreignKey({
+    columns: [table.contractId, table.classId],
+    foreignColumns: [financeDepositContracts.id, financeDepositContracts.classId],
+    name: "finance_deposit_settlements_contract_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_deposit_settlements_transaction_class_fk",
+  }),
+  check(
+    "finance_deposit_settlements_type_ck",
+    sql`${table.settlementType} IN ('early_termination', 'maturity')`,
+  ),
+  check(
+    "finance_deposit_settlements_amount_ck",
+    sql`${table.principal} BETWEEN 1 AND 1000000000
+      AND ${table.interest} BETWEEN 0 AND 1000000000
+      AND ${table.payout} = ${table.principal} + ${table.interest}
+      AND ${table.payout} <= 1000000000`,
+  ),
+]);

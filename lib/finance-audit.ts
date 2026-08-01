@@ -7,6 +7,7 @@ const AUDIT_CATEGORIES = new Set([
   "decision",
   "transaction",
   "setting",
+  "deposit",
 ]);
 
 type AuditRow = {
@@ -240,6 +241,9 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'manual_credit' THEN '교사 지급'
            WHEN 'manual_debit' THEN '교사 차감'
            WHEN 'salary' THEN '직업 월급'
+           WHEN 'deposit_open' THEN '예금 가입'
+           WHEN 'deposit_maturity' THEN '예금 만기 자동 지급'
+           WHEN 'deposit_early_termination' THEN '예금 중도해지'
            ELSE '금융 거래'
          END AS title,
          transaction_row.description AS detail,
@@ -282,6 +286,33 @@ export async function financeAuditForRequest(request: Request) {
          setting_revision.previous_settings_json AS previous_settings_json,
          setting_revision.settings_json AS settings_json
        FROM finance_setting_revisions setting_revision
+
+       UNION ALL
+
+       SELECT
+         'deposit-product:' || product_event.id AS id,
+         product_event.class_id AS class_id,
+         'deposit' AS category,
+         'deposit_product_' || product_event.action AS action,
+         CASE product_event.action
+           WHEN 'issued' THEN '예금상품 발행'
+           WHEN 'opened' THEN '예금상품 판매 재개'
+           ELSE '예금상품 판매 중지'
+         END AS title,
+         product.name || ' · ' || product.term_weeks || '주 · 만기 이자 '
+           || printf('%.2f', product.maturity_interest_bps / 100.0) || '%' AS detail,
+         '담임교사' AS actor_label,
+         NULL AS student_name,
+         NULL AS amount,
+         product_event.created_at AS occurred_at,
+         'completed' AS outcome,
+         product.id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_deposit_product_events product_event
+       JOIN finance_deposit_products product
+         ON product.id = product_event.product_id
+        AND product.class_id = product_event.class_id
      )
      SELECT id, category, action, title, detail, actor_label, student_name,
             amount, occurred_at, outcome, related_id,

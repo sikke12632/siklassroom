@@ -15,7 +15,7 @@ import {
   useState,
 } from "react";
 
-type AuditCategory = "all" | "request" | "decision" | "transaction" | "setting";
+type AuditCategory = "all" | "request" | "decision" | "transaction" | "setting" | "deposit";
 
 export type FinanceAuditEvent = {
   id: string;
@@ -51,6 +51,7 @@ const CATEGORY_OPTIONS: ReadonlyArray<{
   { value: "decision", label: "처리" },
   { value: "transaction", label: "거래" },
   { value: "setting", label: "설정" },
+  { value: "deposit", label: "예금상품" },
 ];
 
 function categoryText(category: string) {

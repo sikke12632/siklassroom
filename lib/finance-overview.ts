@@ -30,6 +30,7 @@ type SummaryRow = {
 type TransactionViewRow = {
   id: string;
   transaction_type: string;
+  source_type: string | null;
   description: string;
   actor_type: string;
   actor_label: string;
@@ -186,6 +187,8 @@ function serializeTransaction(
     && !ledgerAttention
     && row.account_status === "active"
     && row.transaction_type !== "reversal"
+    && row.source_type !== "deposit_contract"
+    && row.source_type !== "deposit_settlement"
     && !Boolean(row.is_reversed);
   const reversalBlockedReason = canReverse
     ? null
@@ -199,6 +202,9 @@ function serializeTransaction(
             ? "현재 사용 중인 학생 지갑 거래만 정정할 수 있습니다."
             : row.transaction_type === "reversal"
               ? "정정 거래는 다시 정정할 수 없습니다."
+              : row.source_type === "deposit_contract"
+                  || row.source_type === "deposit_settlement"
+                ? "예금 거래는 계약과 함께 자동 관리됩니다."
               : Boolean(row.is_reversed)
                 ? "이미 정정된 거래입니다."
                 : null;
@@ -375,9 +381,14 @@ async function studentSummary(classId: string, studentId: string) {
   ).bind(classId, studentId, classId, studentId).first<SummaryRow>();
 }
 
-async function classTransactions(classId: string, limit: number) {
+async function classTransactions(
+  classId: string,
+  limit: number,
+  includeDepositTransactions: boolean,
+) {
   return database().prepare(
     `SELECT transaction_row.id, transaction_row.transaction_type,
+            transaction_row.source_type,
             transaction_row.description, transaction_row.actor_type,
             transaction_row.actor_label, transaction_row.posted_at,
             transaction_row.reversal_of_transaction_id,
@@ -402,9 +413,11 @@ async function classTransactions(classId: string, limit: number) {
       AND student.class_id = account.class_id
      WHERE transaction_row.class_id = ?
        AND transaction_row.status = 'posted'
+       AND (? = 1 OR COALESCE(transaction_row.source_type, '')
+         NOT IN ('deposit_contract', 'deposit_settlement'))
      ORDER BY transaction_row.posted_at DESC, transaction_row.id DESC, entry.id
      LIMIT ?`,
-  ).bind(classId, limit).all<TransactionViewRow>();
+  ).bind(classId, includeDepositTransactions ? 1 : 0, limit).all<TransactionViewRow>();
 }
 
 async function studentTransactions(
@@ -414,6 +427,7 @@ async function studentTransactions(
 ) {
   return database().prepare(
     `SELECT transaction_row.id, transaction_row.transaction_type,
+            transaction_row.source_type,
             transaction_row.description, transaction_row.actor_type,
             transaction_row.actor_label, transaction_row.posted_at,
             transaction_row.reversal_of_transaction_id,
@@ -540,6 +554,7 @@ export async function financeOverviewForRequest(
       ? classTransactions(
           context.classroom.id,
           context.financeRole === "teacher" ? 150 : 30,
+          context.financeRole === "teacher",
         )
       : studentTransactions(context.classroom.id, context.actor.id, 15),
     context.financeRole === "teacher"
