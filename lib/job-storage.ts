@@ -1,8 +1,7 @@
 import { database, ensureSchema } from "./database";
-import { cleanDisplayText, integerInRange } from "./identity";
+import { integerInRange } from "./identity";
 import {
   DEFAULT_SURVEY_ANSWERS,
-  JOB_CATEGORIES,
   JOB_TEMPLATES,
   normalizeSurveyAnswers,
   sumJobCapacity,
@@ -12,7 +11,10 @@ import {
   type SetupMode,
   type SurveyAnswers,
 } from "./job-catalog";
+import { jobIdOwnedOrAvailableForClass, validateJobDrafts } from "./job-draft-rules";
 import { ApiError } from "./responses";
+
+export { validateJobDrafts } from "./job-draft-rules";
 
 type SetupRow = {
   class_id: string;
@@ -193,48 +195,25 @@ export async function loadJobSetup(classId: string) {
   return serializeSetup(row, finalJobs);
 }
 
-export function validateJobDrafts(input: unknown, options: { allowEmpty?: boolean } = {}) {
-  if (!Array.isArray(input)) throw new ApiError(400, "직업 목록을 다시 확인해 주세요.", "INVALID_JOBS");
-  if (!options.allowEmpty && input.length === 0) {
-    throw new ApiError(400, "직업을 한 개 이상 추가해 주세요.", "JOB_REQUIRED");
+export async function assertClassJobDraftIds(classId: string, jobs: ClassJobDraft[]) {
+  if (!jobs.length) return;
+  const placeholders = jobs.map(() => "?").join(", ");
+  const existing = await database().prepare(
+    `SELECT id, class_id FROM class_jobs WHERE id IN (${placeholders})`,
+  ).bind(...jobs.map((job) => job.id)).all<{ id: string; class_id: string }>();
+  const ownerById = new Map(existing.results.map((row) => [row.id, row.class_id]));
+  const invalid = jobs.find((job) => !jobIdOwnedOrAvailableForClass(
+    job.id,
+    classId,
+    ownerById.get(job.id) ?? null,
+  ));
+  if (invalid) {
+    throw new ApiError(
+      400,
+      "현재 학급에서 만든 직업만 저장할 수 있어요.",
+      "JOB_ID_CLASS_MISMATCH",
+    );
   }
-  if (input.length > 60) throw new ApiError(400, "직업은 최대 60개까지 만들 수 있어요.", "TOO_MANY_JOBS");
-
-  const seen = new Set<string>();
-  return input.map((raw, index): ClassJobDraft => {
-    const item = (raw ?? {}) as Partial<ClassJobDraft>;
-    const id = cleanDisplayText(item.id, 100);
-    if (!id || seen.has(id)) throw new ApiError(400, "직업 ID가 없거나 중복되었어요.", "INVALID_JOB_ID");
-    seen.add(id);
-    const name = cleanDisplayText(item.name, 40);
-    const description = cleanDisplayText(item.description, 240);
-    const memberCapacity = integerInRange(item.memberCapacity, 1, 60);
-    const category = String(item.category ?? "") as JobCategory;
-    const source = String(item.source ?? "") as ClassJobDraft["source"];
-    const templateId = item.templateId ? cleanDisplayText(item.templateId, 80) : null;
-    if (!name || !description || !memberCapacity) {
-      throw new ApiError(400, `${index + 1}번째 직업의 이름, 설명, 정원을 확인해 주세요.`, "INVALID_JOB");
-    }
-    if (!(category in JOB_CATEGORIES)) {
-      throw new ApiError(400, `${name}의 분류를 다시 선택해 주세요.`, "INVALID_JOB_CATEGORY");
-    }
-    if (!["recommended", "template", "custom"].includes(source)) {
-      throw new ApiError(400, `${name}의 생성 방식을 확인해 주세요.`, "INVALID_JOB_SOURCE");
-    }
-    if (templateId && !JOB_TEMPLATES.some((template) => template.id === templateId)) {
-      throw new ApiError(400, `${name}의 기본 직업을 찾을 수 없어요.`, "INVALID_TEMPLATE");
-    }
-    return {
-      id,
-      templateId,
-      name,
-      description,
-      memberCapacity,
-      category,
-      source,
-      sortOrder: index,
-    };
-  });
 }
 
 function requireExpectedRevision(value: unknown) {
@@ -257,6 +236,7 @@ export async function saveJobDraft(input: {
   await ensureSetupRow(input.classId);
   const revision = requireExpectedRevision(input.expectedRevision);
   const jobs = validateJobDrafts(input.jobs, { allowEmpty: true });
+  await assertClassJobDraftIds(input.classId, jobs);
   const lastStep = integerInRange(input.lastStep, 1, 4);
   if (!lastStep || !["recommended", "manual"].includes(input.setupMode)) {
     throw new ApiError(400, "설정 단계를 다시 확인해 주세요.", "INVALID_SETUP");
@@ -324,6 +304,7 @@ export async function completeJobSetup(input: {
   }
   const revision = requireExpectedRevision(input.expectedRevision);
   const jobs = validateJobDrafts(input.jobs);
+  await assertClassJobDraftIds(input.classId, jobs);
   const capacity = sumJobCapacity(jobs);
   if (capacity !== input.studentCount) {
     throw new ApiError(
@@ -382,6 +363,10 @@ export async function completeJobSetup(input: {
          category, source, sort_order, is_active, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         class_id = CASE
+           WHEN class_jobs.class_id = excluded.class_id THEN class_jobs.class_id
+           ELSE NULL
+         END,
          template_id = excluded.template_id,
          name = excluded.name,
          description = excluded.description,

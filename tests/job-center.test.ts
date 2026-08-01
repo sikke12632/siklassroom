@@ -17,7 +17,60 @@ import {
   type ChoiceOrderItem,
 } from "../lib/monthly-job-choice-rules";
 import { calculateJobEvaluationResults } from "../lib/job-evaluation-rules";
+import {
+  jobIdBelongsToClass,
+  jobIdOwnedOrAvailableForClass,
+  scopeAdjustedJobIds,
+  validateJobDrafts,
+} from "../lib/job-draft-rules";
 import { assignmentPeriod, randomCandidate, seoulServerTime } from "../lib/seoul-time";
+
+test("직업 초안은 현재 학급에서 만든 ID만 저장한다", () => {
+  assert.equal(jobIdBelongsToClass("class-a:template-a", "class-a"), true);
+  assert.equal(jobIdBelongsToClass("class-b:template-a", "class-a"), false);
+  assert.equal(jobIdBelongsToClass("class-a-lookalike:template-a", "class-a"), false);
+  assert.equal(jobIdOwnedOrAvailableForClass("class-a:new", "class-a", null), true);
+  assert.equal(jobIdOwnedOrAvailableForClass("class-b:new", "class-a", null), false);
+  assert.equal(jobIdOwnedOrAvailableForClass("legacy-id", "class-a", "class-a"), true);
+  assert.equal(jobIdOwnedOrAvailableForClass("class-a:poisoned", "class-a", "class-b"), false);
+  const job = {
+    id: "class-a:custom:one",
+    templateId: null,
+    name: "우리 반 직업",
+    description: "우리 반에서만 사용하는 직업",
+    memberCapacity: 1,
+    category: "life",
+    source: "custom",
+    sortOrder: 0,
+  };
+  assert.equal(validateJobDrafts([job], { classId: "class-a" })[0]?.id, job.id);
+  assert.throws(
+    () => validateJobDrafts([{ ...job, id: "class-b:custom:one" }], { classId: "class-a" }),
+    (error: unknown) => (
+      error instanceof Error
+      && "code" in error
+      && error.code === "JOB_ID_CLASS_MISMATCH"
+    ),
+  );
+});
+
+test("빈 목록 자동 맞춤이 만든 직업 ID도 현재 학급에 귀속한다", () => {
+  const generated = scopeAdjustedJobIds("class-a", [], [{
+    id: "template:banker",
+    templateId: "banker",
+    name: "은행원",
+    description: "학급 은행을 운영해요.",
+    memberCapacity: 1,
+    category: "economy",
+    source: "recommended",
+    sortOrder: 0,
+  }]);
+  assert.equal(generated[0]?.id, "class-a:banker");
+  assert.equal(jobIdBelongsToClass(generated[0]!.id, "class-a"), true);
+
+  const legacy = { ...generated[0]!, id: "legacy-owned-id" };
+  assert.equal(scopeAdjustedJobIds("class-a", [legacy], [legacy])[0]?.id, "legacy-owned-id");
+});
 
 test("26명 균형형 추천은 항상 같은 26자리를 만든다", () => {
   const first = recommendJobs(26, { ...DEFAULT_SURVEY_ANSWERS, distribution: "balanced" });
