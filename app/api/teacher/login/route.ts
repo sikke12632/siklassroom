@@ -36,7 +36,8 @@ export async function POST(request: Request) {
     const accountIssue = teacher
       ? teacherAccountIssue(teacher.status, teacher.teacher_access_status)
       : "ACCOUNT_DISABLED";
-    if (!teacher || accountIssue === "ACCOUNT_DISABLED" || !(await verifyPassword(password, teacher.password_hash))) {
+    const passwordMatches = teacher ? await verifyPassword(password, teacher.password_hash) : false;
+    if (!teacher || accountIssue || !passwordMatches) {
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
     await activateOpenTeacherRegistration(teacher.id);

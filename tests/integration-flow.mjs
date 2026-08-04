@@ -948,43 +948,24 @@ await request("/api/classes", { cookie: teacherCookie, expected: 401 });
 const revokedLogin = await request("/api/teacher/login", {
   method: "POST",
   body: { email: teacherEmail, password: finalPassword },
+  expected: 401,
 });
 const revokedCookie = cookieFrom(revokedLogin.response);
-const revokedSession = await request("/api/session", { cookie: revokedCookie });
-assert.equal(revokedSession.data.actor.teacher_access_status, "revoked");
-for (const path of [
-  "/api/classes",
-  `/api/classes/${classId}/calendar`,
-  `/api/classes/${classId}/job-assignments`,
-  `/api/classes/${classId}/job-evaluation`,
-  `/api/classes/${classId}/job-setup`,
-  `/api/classes/${classId}/monthly-job-choice`,
-]) {
-  const blocked = await request(path, { cookie: revokedCookie, expected: 403 });
-  assert.equal(blocked.data.code, "TEACHER_ACCESS_REVOKED");
-}
-const blockedClassUpdate = await request(`/api/classes/${classId}`, {
-  cookie: revokedCookie,
-  method: "PATCH",
-  body: { displayName: "revoked-change" },
-  expected: 403,
-});
-assert.equal(blockedClassUpdate.data.code, "TEACHER_ACCESS_REVOKED");
-const blockedStudentCreate = await request(`/api/classes/${classId}/students`, {
-  cookie: revokedCookie,
-  method: "POST",
-  body: { students: [{ number: 99, name: "revoked-student" }] },
-  expected: 403,
-});
-assert.equal(blockedStudentCreate.data.code, "TEACHER_ACCESS_REVOKED");
+assert.equal(revokedCookie, "");
+assert.equal(revokedLogin.data.code, "LOGIN_FAILED");
 await request("/api/admin/teachers", {
   cookie: adminCookie,
   method: "PATCH",
   headers: { "x-admin-csrf": adminCsrf },
   body: { id: signup.data.teacher.id, action: "reapprove", note: "통합 테스트 재승인" },
 });
-await request("/api/classes", { cookie: revokedCookie });
-const restoredRoster = await request(`/api/classes/${classId}/students`, { cookie: revokedCookie });
+await request("/api/classes", { cookie: teacherCookie, expected: 401 });
+const reapprovedLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: finalPassword },
+});
+const reapprovedCookie = cookieFrom(reapprovedLogin.response);
+const restoredRoster = await request(`/api/classes/${classId}/students`, { cookie: reapprovedCookie });
 assert.equal(restoredRoster.data.class.display_name, finalRoster.data.class.display_name);
 assert.equal(restoredRoster.data.students.some((row) => row.student_number === 99), false);
 

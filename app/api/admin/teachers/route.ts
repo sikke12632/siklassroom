@@ -1,4 +1,3 @@
-import { revokeActorSessions } from "@/lib/auth";
 import { database } from "@/lib/database";
 import { cleanDisplayText } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
@@ -50,13 +49,16 @@ export async function PATCH(request: Request) {
     if (!before) throw new ApiError(404, "교사 계정을 찾을 수 없습니다.", "TEACHER_NOT_FOUND");
     const nextStatus = action === "revoke" ? "revoked" : "invite_verified";
     const now = Date.now();
-    await database().prepare(
-      `UPDATE teachers
-       SET teacher_access_status = ?, teacher_access_verified_at = ?, teacher_access_note = ?,
-           teacher_access_updated_at = ?, updated_at = ?
-       WHERE id = ?`,
-    ).bind(nextStatus, nextStatus === "invite_verified" ? now : null, note, now, now, id).run();
-    if (action === "revoke") await revokeActorSessions("teacher", id);
+    await database().batch([
+      database().prepare(
+        `UPDATE teachers
+         SET teacher_access_status = ?, teacher_access_verified_at = ?, teacher_access_note = ?,
+             teacher_access_updated_at = ?, credential_revision = credential_revision + 1,
+             updated_at = ?
+         WHERE id = ?`,
+      ).bind(nextStatus, nextStatus === "invite_verified" ? now : null, note, now, now, id),
+      database().prepare(`DELETE FROM sessions WHERE teacher_id = ?`).bind(id),
+    ]);
     await auditSystemAdmin({
       adminKey: admin.adminKey,
       action: action === "revoke" ? "teacher_access_revoked" : action === "reapprove" ? "teacher_access_reapproved" : "teacher_access_approved",

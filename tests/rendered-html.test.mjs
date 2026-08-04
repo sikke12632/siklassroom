@@ -88,12 +88,14 @@ test("이메일·초대코드·학교 상태를 분리하고 가입 단계를 �
 });
 
 test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회하지 않는다", async () => {
-  const [openRegistration, signup, login, session, portal] = await Promise.all([
+  const [openRegistration, signup, login, session, portal, auth, adminTeachers] = await Promise.all([
     readFile(new URL("../lib/open-registration.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/signup/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/session/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/teachers/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(openRegistration, /OPEN_TEACHER_REGISTRATION/);
   assert.match(openRegistration, /teacher_access_status != 'revoked'/);
@@ -103,6 +105,11 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(signup, /createGuardedTeacherSession/);
   assert.doesNotMatch(signup, /createSession\(/);
   assert.match(login, /activateOpenTeacherRegistration/);
+  assert.match(login, /accountIssue \|\| !passwordMatches/);
+  assert.match(auth, /teacher_access_status != 'revoked'/);
+  assert.match(adminTeachers, /database\(\)\.batch/);
+  assert.match(adminTeachers, /credential_revision = credential_revision \+ 1/);
+  assert.match(adminTeachers, /DELETE FROM sessions WHERE teacher_id = \?/);
   assert.match(session, /activateOpenTeacherRegistration/);
   assert.match(portal, /mode === "signup" \? "가입하기"/);
   assert.match(portal, /\["계정", "학교", "학급"\]/);

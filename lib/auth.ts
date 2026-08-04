@@ -92,7 +92,8 @@ export async function createGuardedTeacherSession(input: {
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        SELECT CASE WHEN EXISTS (
          SELECT 1 FROM teachers
-         WHERE id = ? AND status = 'active' AND password_hash = ? AND credential_revision = ?
+         WHERE id = ? AND status = 'active' AND teacher_access_status != 'revoked'
+           AND password_hash = ? AND credential_revision = ?
        ) THEN ? ELSE NULL END, 'teacher_password_login', ?`,
     ).bind(input.teacherId, input.passwordHash, input.credentialRevision, guardId, now),
     database().prepare(
