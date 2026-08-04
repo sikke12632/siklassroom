@@ -84,6 +84,113 @@ const adminCsrf = adminLogin.data.csrfToken;
 assert.match(adminCookie, /^job_classroom_admin_session=/);
 assert.ok(adminCsrf);
 
+const accessRaceEmail = `admin-access-race-${runId}@example.test`;
+await request("/api/teacher/signup", {
+  method: "POST",
+  body: { email: accessRaceEmail, password: firstPassword },
+  expected: 202,
+});
+const accessRaceLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: accessRaceEmail, password: firstPassword },
+});
+const accessRaceCookie = cookieFrom(accessRaceLogin.response);
+const accessRaceVerification = await request("/api/teacher/email-verification/request", {
+  cookie: accessRaceCookie,
+  method: "POST",
+});
+const accessRaceEmailToken = bearerTokenFromFragment(
+  accessRaceVerification.data.verification.developmentUrl,
+  "verifyEmailToken",
+);
+const accessRaceRecovery = await request("/api/teacher/password/request", {
+  method: "POST",
+  body: { email: accessRaceEmail },
+});
+const accessRaceResetToken = bearerTokenFromFragment(accessRaceRecovery.data.developmentResetUrl, "token");
+const accessRaceList = await request(`/api/admin/teachers?q=${encodeURIComponent(accessRaceEmail)}`, {
+  cookie: adminCookie,
+});
+const accessRaceTeacher = accessRaceList.data.teachers.find((teacher) => teacher.email === accessRaceEmail);
+assert.ok(accessRaceTeacher, "concurrent access test teacher must be visible to the administrator");
+const accessRaceRevision = Number(accessRaceTeacher.credential_revision);
+await request("/api/admin/teachers", {
+  cookie: adminCookie,
+  method: "PATCH",
+  headers: { "x-admin-csrf": adminCsrf },
+  body: {
+    id: accessRaceTeacher.id,
+    action: "approve",
+    note: "invalid revision type must not be coerced",
+    expectedRevision: null,
+  },
+  expected: 400,
+});
+const accessRaceResponses = await Promise.all([
+  fetch(`${baseUrl}/api/admin/teachers`, {
+    method: "PATCH",
+    headers: {
+      cookie: adminCookie,
+      "content-type": "application/json",
+      "x-admin-csrf": adminCsrf,
+    },
+    body: JSON.stringify({
+      id: accessRaceTeacher.id,
+      action: "approve",
+      note: "concurrent approval test",
+      expectedRevision: accessRaceRevision,
+    }),
+  }),
+  fetch(`${baseUrl}/api/admin/teachers`, {
+    method: "PATCH",
+    headers: {
+      cookie: adminCookie,
+      "content-type": "application/json",
+      "x-admin-csrf": adminCsrf,
+    },
+    body: JSON.stringify({
+      id: accessRaceTeacher.id,
+      action: "revoke",
+      note: "concurrent revocation test",
+      expectedRevision: accessRaceRevision,
+    }),
+  }),
+]);
+assert.deepEqual(
+  accessRaceResponses.map((response) => response.status).sort(),
+  [200, 409],
+  "only one concurrent administrator access change may commit",
+);
+const accessRaceSuccess = accessRaceResponses.find((response) => response.status === 200);
+assert.ok(accessRaceSuccess);
+const accessRaceSuccessBody = await accessRaceSuccess.json();
+const accessRaceAfter = await request(`/api/admin/teachers?q=${encodeURIComponent(accessRaceEmail)}`, {
+  cookie: adminCookie,
+});
+const accessRaceFinalTeacher = accessRaceAfter.data.teachers.find((teacher) => teacher.id === accessRaceTeacher.id);
+assert.equal(accessRaceFinalTeacher.teacher_access_status, accessRaceSuccessBody.teacher.teacher_access_status);
+assert.equal(Number(accessRaceFinalTeacher.credential_revision), accessRaceRevision + 1);
+await request("/api/classes", { cookie: accessRaceCookie, expected: 401 });
+await request("/api/teacher/email-verification/confirm", {
+  cookie: accessRaceCookie,
+  method: "POST",
+  body: { token: accessRaceEmailToken },
+  expected: 410,
+});
+await request("/api/teacher/password/reset", {
+  method: "POST",
+  body: { token: accessRaceResetToken, password: "AccessRace!234" },
+  expected: 410,
+});
+const accessRaceAudit = await request("/api/admin/audit-logs", { cookie: adminCookie });
+assert.equal(
+  accessRaceAudit.data.logs.filter((log) => (
+    log.target_id === accessRaceTeacher.id && String(log.action).startsWith("teacher_access_")
+  )).length,
+  1,
+  "the committed access change must have exactly one atomic audit record",
+);
+
 const signup = await request("/api/teacher/signup", {
   method: "POST",
   body: { email: teacherEmail, password: firstPassword },
@@ -1242,13 +1349,43 @@ assert.equal(finalRoster.data.students[0].id, student.id);
 assert.equal(finalRoster.data.students[0].official_name, "김하늘");
 await request("/api/admin/dashboard", { cookie: teacherCookie, expected: 401 });
 
-await request("/api/admin/teachers", {
+const preRevokeRecovery = await request("/api/teacher/password/request", {
+  method: "POST",
+  body: { email: teacherEmail },
+});
+const preRevokeResetToken = bearerTokenFromFragment(preRevokeRecovery.data.developmentResetUrl, "token");
+const primaryAdminList = await request(`/api/admin/teachers?q=${encodeURIComponent(teacherEmail)}`, {
+  cookie: adminCookie,
+});
+const primaryAdminTeacher = primaryAdminList.data.teachers.find((teacher) => teacher.id === primaryTeacherId);
+assert.ok(primaryAdminTeacher);
+const revokedAccess = await request("/api/admin/teachers", {
   cookie: adminCookie,
   method: "PATCH",
   headers: { "x-admin-csrf": adminCsrf },
-  body: { id: primaryTeacherId, action: "revoke", note: "통합 테스트 권한 회수" },
+  body: {
+    id: primaryTeacherId,
+    action: "revoke",
+    note: "통합 테스트 권한 회수",
+    expectedRevision: Number(primaryAdminTeacher.credential_revision),
+  },
 });
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
+await request("/api/teacher/password/reset", {
+  method: "POST",
+  body: { token: preRevokeResetToken, password: "RevokedReset!234" },
+  expected: 410,
+});
+const revokedRecovery = await request("/api/teacher/password/request", {
+  method: "POST",
+  body: { email: teacherEmail },
+});
+const revokedResetToken = bearerTokenFromFragment(revokedRecovery.data.developmentResetUrl, "token");
+await request("/api/teacher/password/reset", {
+  method: "POST",
+  body: { token: revokedResetToken, password: "RevokedReset!567" },
+  expected: 410,
+});
 const revokedLogin = await request("/api/teacher/login", {
   method: "POST",
   body: { email: teacherEmail, password: finalPassword },
@@ -1261,7 +1398,12 @@ await request("/api/admin/teachers", {
   cookie: adminCookie,
   method: "PATCH",
   headers: { "x-admin-csrf": adminCsrf },
-  body: { id: primaryTeacherId, action: "reapprove", note: "통합 테스트 재승인" },
+  body: {
+    id: primaryTeacherId,
+    action: "reapprove",
+    note: "통합 테스트 재승인",
+    expectedRevision: Number(revokedAccess.data.teacher.credential_revision),
+  },
 });
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
 const reapprovedLogin = await request("/api/teacher/login", {

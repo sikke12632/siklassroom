@@ -26,6 +26,7 @@ export async function POST(request: Request) {
              JOIN teachers t ON t.id = r.teacher_id
              WHERE r.id = ? AND r.teacher_id = ? AND r.used_at IS NULL
                AND r.expires_at > ? AND t.status = 'active'
+               AND t.teacher_access_status != 'revoked'
            ) THEN ? ELSE NULL END, 'teacher_password_reset', ?`,
         ).bind(row.id, row.teacher_id, now, guardId, now),
         database().prepare(

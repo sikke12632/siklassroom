@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { ClipboardList, KeyRound, LogOut, Megaphone, School, Settings2, ShieldCheck, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
@@ -22,7 +22,7 @@ type InviteCode = {
 type Teacher = {
   id: string; email: string; status: string; email_verified_at: number | null;
   teacher_access_status: string; teacher_access_note: string | null; created_at: number;
-  school_name: string | null; joined_with_invite: number;
+  school_name: string | null; joined_with_invite: number; credential_revision: number;
 };
 type SchoolRequest = {
   id: string; entered_name: string; province_name: string; school_level: string;
@@ -213,14 +213,25 @@ function TeacherManager({ request, onError, onMessage }: { request: Requester; o
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
+  const actionInFlight = useRef<string | null>(null);
+  const [busyTeacherId, setBusyTeacherId] = useState<string | null>(null);
   const load = useCallback(() => request<{ teachers: Teacher[] }>(`/api/admin/teachers?q=${encodeURIComponent(query)}&status=${status}`).then((data) => setTeachers(data.teachers)), [request, query, status]);
-  useEffect(() => { load(); }, [load]);
-  async function change(id: string, action: string) {
-    const note = prompt("관리자 메모(선택)") || "";
-    try { await request("/api/admin/teachers", { method: "PATCH", body: JSON.stringify({ id, action, note }) }); onMessage("교사 이용 권한을 변경했습니다."); load(); }
+  useEffect(() => { void load().catch((reason) => onError((reason as Error).message)); }, [load, onError]);
+  async function change(id: string, action: string, expectedRevision: number) {
+    if (actionInFlight.current) return;
+    const note = prompt("관리자 메모(선택)");
+    if (note === null) return;
+    actionInFlight.current = id;
+    setBusyTeacherId(id);
+    try { await request("/api/admin/teachers", { method: "PATCH", body: JSON.stringify({ id, action, note, expectedRevision }) }); onMessage("교사 이용 권한을 변경했습니다."); }
     catch (reason) { onError((reason as Error).message); }
+    finally {
+      actionInFlight.current = null;
+      setBusyTeacherId(null);
+      void load().catch((reason) => onError((reason as Error).message));
+    }
   }
-  return <section className="admin-section"><div className="admin-filters"><input placeholder="이메일 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">전체 상태</option><option value="pending">승인 대기</option><option value="invite_verified">이용 중</option><option value="revoked">권한 회수</option></select></div><div className="admin-table-wrap"><table><thead><tr><th>교사</th><th>학교</th><th>가입일</th><th>이메일 확인</th><th>상태</th><th>처리</th></tr></thead><tbody>{teachers.map((teacher) => <tr key={teacher.id}><td><b>{teacher.email}</b><small>{teacher.joined_with_invite ? "초대코드 사용" : "공개 가입 또는 관리자 승인"}</small></td><td>{teacher.school_name || "미선택"}</td><td>{when(teacher.created_at)}</td><td>{teacher.email_verified_at ? "완료" : "대기"}</td><td>{teacher.teacher_access_status}</td><td>{teacher.teacher_access_status === "pending" ? <button onClick={() => change(teacher.id, "approve")}>승인</button> : teacher.teacher_access_status === "revoked" ? <button onClick={() => change(teacher.id, "reapprove")}>재승인</button> : <button className="danger-link" onClick={() => change(teacher.id, "revoke")}>권한 회수</button>}</td></tr>)}</tbody></table></div></section>;
+  return <section className="admin-section"><div className="admin-filters"><input placeholder="이메일 검색" value={query} onChange={(e) => setQuery(e.target.value)} /><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">전체 상태</option><option value="pending">승인 대기</option><option value="invite_verified">이용 중</option><option value="revoked">권한 회수</option></select></div><div className="admin-table-wrap"><table><thead><tr><th>교사</th><th>학교</th><th>가입일</th><th>이메일 확인</th><th>상태</th><th>처리</th></tr></thead><tbody>{teachers.map((teacher) => <tr key={teacher.id}><td><b>{teacher.email}</b><small>{teacher.joined_with_invite ? "초대코드 사용" : "공개 가입 또는 관리자 승인"}</small></td><td>{teacher.school_name || "미선택"}</td><td>{when(teacher.created_at)}</td><td>{teacher.email_verified_at ? "완료" : "대기"}</td><td>{teacher.teacher_access_status}</td><td aria-busy={busyTeacherId === teacher.id}>{teacher.teacher_access_status === "pending" ? <button disabled={busyTeacherId !== null} onClick={() => change(teacher.id, "approve", teacher.credential_revision)}>{busyTeacherId === teacher.id ? "처리 중…" : "승인"}</button> : teacher.teacher_access_status === "revoked" ? <button disabled={busyTeacherId !== null} onClick={() => change(teacher.id, "reapprove", teacher.credential_revision)}>{busyTeacherId === teacher.id ? "처리 중…" : "재승인"}</button> : <button disabled={busyTeacherId !== null} className="danger-link" onClick={() => change(teacher.id, "revoke", teacher.credential_revision)}>{busyTeacherId === teacher.id ? "처리 중…" : "권한 회수"}</button>}</td></tr>)}</tbody></table></div></section>;
 }
 
 function SchoolManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {

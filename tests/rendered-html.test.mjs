@@ -218,6 +218,33 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(portal, /"3 \/ 3"/);
 });
 
+test("관리자 교사 권한 변경은 revision과 복구 수단을 원자적으로 처리한다", async () => {
+  const [adminTeachers, adminPortal, passwordRequest, passwordReset, adminAudit] = await Promise.all([
+    readFile(new URL("../app/api/admin/teachers/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ops/[operatorPath]/AdminPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/password/request/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/password/reset/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/system-admin-audit.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(adminTeachers, /expectedRevision/);
+  assert.match(adminTeachers, /slice\(0, 48\)/);
+  assert.match(adminTeachers, /typeof body\.expectedRevision !== "number"/);
+  assert.match(adminTeachers, /admin_teacher_access/);
+  assert.match(adminTeachers, /isOperationGuardFailure/);
+  assert.match(adminTeachers, /systemAdminAuditStatement/);
+  assert.match(adminTeachers, /UPDATE teacher_password_resets SET used_at/);
+  assert.match(adminTeachers, /UPDATE teacher_email_verifications SET invalidated_at/);
+  assert.doesNotMatch(adminTeachers, /auditSystemAdmin\(/);
+  assert.match(adminAudit, /export function systemAdminAuditStatement/);
+  assert.match(passwordRequest, /teacher_access_status != 'revoked'/);
+  assert.match(passwordReset, /teacher_access_status != 'revoked'/);
+  assert.match(adminPortal, /note === null/);
+  assert.match(adminPortal, /actionInFlight/);
+  assert.match(adminPortal, /busyTeacherId/);
+  assert.match(adminPortal, /expectedRevision/);
+  assert.match(adminPortal, /credential_revision/);
+});
+
 test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
   const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),

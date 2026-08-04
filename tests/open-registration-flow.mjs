@@ -70,11 +70,23 @@ if (phase === "setup") {
     method: "POST",
     body: { username: adminUsername, password: adminPassword },
   });
+  const adminTeacherList = await request(
+    runId,
+    `/api/admin/teachers?q=${encodeURIComponent(revokedEmail)}`,
+    { cookie: responseCookie(adminLogin.response) },
+  );
+  const adminTeacher = adminTeacherList.data.teachers.find((teacher) => teacher.id === revokedLogin.data.teacher.id);
+  assert.ok(adminTeacher, "권한을 회수할 공개가입 교사가 관리자 목록에 있어야 합니다.");
   await request(runId, "/api/admin/teachers", {
     cookie: responseCookie(adminLogin.response),
     method: "PATCH",
     headers: { "x-admin-csrf": adminLogin.data.csrfToken },
-    body: { id: revokedLogin.data.teacher.id, action: "revoke", note: "공개가입 전환 테스트" },
+    body: {
+      id: revokedLogin.data.teacher.id,
+      action: "revoke",
+      note: "공개가입 전환 테스트",
+      expectedRevision: Number(adminTeacher.credential_revision),
+    },
   });
   await writeFile(statePath, JSON.stringify({ runId, email, revokedEmail, password, cookieA, cookieB }), {
     encoding: "utf8",

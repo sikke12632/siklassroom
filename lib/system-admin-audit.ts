@@ -12,14 +12,15 @@ export type AdminAuditInput = {
 
 function safeJson(value: unknown) {
   if (value === undefined) return null;
-  return JSON.stringify(value, (key, item) => {
+  const serialized = JSON.stringify(value, (key, item) => {
     if (["password", "token", "code", "cookie", "csrfToken"].includes(key)) return "[REDACTED]";
     return item;
-  }).slice(0, 4000);
+  });
+  return typeof serialized === "string" ? serialized.slice(0, 4000) : null;
 }
 
-export async function auditSystemAdmin(input: AdminAuditInput) {
-  await database().prepare(
+export function systemAdminAuditStatement(input: AdminAuditInput, createdAt = Date.now()) {
+  return database().prepare(
     `INSERT INTO system_admin_audit_logs
      (id, admin_key, action, target_type, target_id, before_json, after_json, success, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -32,6 +33,10 @@ export async function auditSystemAdmin(input: AdminAuditInput) {
     safeJson(input.before),
     safeJson(input.after),
     input.success === false ? 0 : 1,
-    Date.now(),
-  ).run();
+    createdAt,
+  );
+}
+
+export async function auditSystemAdmin(input: AdminAuditInput) {
+  await systemAdminAuditStatement(input).run();
 }

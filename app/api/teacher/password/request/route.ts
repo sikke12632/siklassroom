@@ -22,7 +22,10 @@ export async function POST(request: Request) {
       blockMs: 60 * 60 * 1000,
     });
     await ensureSchema();
-    const teacher = await database().prepare(`SELECT id FROM teachers WHERE email = ? AND status = 'active'`).bind(email).first<{ id: string }>();
+    const teacher = await database().prepare(
+      `SELECT id FROM teachers
+       WHERE email = ? AND status = 'active' AND teacher_access_status != 'revoked'`,
+    ).bind(email).first<{ id: string }>();
     const rawToken = randomToken(32);
     const tokenHash = await sha256(rawToken);
     const now = Date.now();
@@ -34,7 +37,8 @@ export async function POST(request: Request) {
       ).bind(now, teacherId),
       database().prepare(
         `INSERT INTO teacher_password_resets (id, teacher_id, token_hash, expires_at, created_at)
-         SELECT ?, id, ?, ?, ? FROM teachers WHERE id = ? AND status = 'active'`,
+         SELECT ?, id, ?, ?, ? FROM teachers
+         WHERE id = ? AND status = 'active' AND teacher_access_status != 'revoked'`,
       ).bind(crypto.randomUUID(), tokenHash, now + 30 * 60 * 1000, now, teacherId),
     ]);
     const resetUrl = new URL("/teacher/reset", request.url);
