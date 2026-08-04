@@ -22,6 +22,8 @@ const stockLiquidationWorkerPath = "tests/fixtures/stock-liquidation-worker.ts";
 const stockLiquidationConfigPath = "tests/fixtures/wrangler.stock-liquidation.jsonc";
 const stockPositionLimitWorkerPath = "tests/fixtures/stock-position-limit-worker.ts";
 const stockPositionLimitConfigPath = "tests/fixtures/wrangler.stock-position-limit.jsonc";
+const stockTickRaceWorkerPath = "tests/fixtures/stock-tick-race-worker.ts";
+const stockTickRaceConfigPath = "tests/fixtures/wrangler.stock-tick-race.jsonc";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
   const result = spawnSync(process.execPath, [wranglerPath, ...args], {
@@ -1998,6 +2000,139 @@ test("position value limits protect teacher prices, real buys, and idempotent ca
        JOIN finance_stock_markets market ON market.class_id = stock.class_id
        WHERE stock.id = 'stock-class';`,
     )), afterFirstTick);
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("overlapping automatic stock runs apply one due tick only once", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-tick-race-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, created_at, updated_at
+      ) VALUES (
+        'teacher-stock-race', 'teacher-stock-race@test.local', 'hash',
+        'active', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stock-race', 'teacher-stock-race', 'Test School', 'test school',
+        2099, 6, 9, 'active', 1, 1
+      );
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        'stock-race', 'class-stock-race', 'Race Company', 'RACE',
+        'Automatic tick overlap probe', 1000, 1000, 1000,
+        20, 20, 10, 'active', 0, 0, NULL,
+        'teacher-stock-race', 'teacher', 'teacher-stock-race', 10, 10
+      );
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, previous_snapshot_json,
+        stock_snapshot_json, actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-race-issued', 'class-stock-race', 'stock-race', 0, 'issued',
+        'Initial issue', 'stock:race:issued', 'hash:stock:race:issued',
+        NULL, '{"price":1000,"availableShares":20}',
+        'teacher', 'teacher-stock-race', 10
+      );
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 0, sell_fee_bps = 0,
+          buy_spread = 0, sell_spread = 0,
+          market_mood = 'surge', tick_interval_minutes = 15,
+          next_tick_at = 1000, revision = 1,
+          updated_by_teacher_id = 'teacher-stock-race', updated_at = 20
+      WHERE class_id = 'class-stock-race';
+      INSERT INTO finance_stock_market_events (
+        id, class_id, revision, action, idempotency_key, payload_hash,
+        previous_snapshot_json, market_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES (
+        'market-race-opened', 'class-stock-race', 1, 'opened',
+        'stock:race:market:opened', 'hash:stock:race:market:opened',
+        '{"isOpen":false,"revision":0}',
+        '{"isOpen":true,"mood":"surge","revision":1}',
+        'teacher-stock-race', 20
+      );
+    `);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockTickRaceWorkerPath,
+      {
+        config: stockTickRaceConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+
+    const response = await worker.fetch("http://test.local/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ now: 2000, limit: 1 }),
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.innerRuns, 1);
+    assert.equal(result.innerResult.due, 1);
+    assert.equal(result.innerResult.failed, 0);
+    assert.equal(result.innerResult.ticked + result.innerResult.skipped, 1);
+    assert.deepEqual(result.outerResult, {
+      due: 1,
+      ticked: 0,
+      skipped: 0,
+      failed: 0,
+      expiredNews: 0,
+    });
+
+    const finalState = lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.previous_price, stock.revision,
+              market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events event
+               WHERE event.stock_id = stock.id
+                 AND event.action IN ('automatic_tick', 'news_tick')) AS tick_event_count,
+              (SELECT MAX(event.revision) FROM finance_stock_events event
+               WHERE event.stock_id = stock.id) AS maximum_event_revision
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id = 'stock-race';`,
+    ))[0];
+    assert.deepEqual(finalState, result.innerState);
+    assert.equal(finalState.previous_price, 1000);
+    assert.equal(finalState.revision, 1);
+    assert.equal(finalState.next_tick_at, 902000);
+    assert.equal(finalState.tick_event_count, 1);
+    assert.equal(finalState.maximum_event_revision, 1);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

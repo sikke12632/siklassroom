@@ -3583,7 +3583,13 @@ export async function processFinanceStockMarketTicks(
         marketForClass(db, row.class_id),
         stockForClass(db, row.class_id),
       ]);
-      if (!market || !stock || !market.is_open || market.next_tick_at === null) continue;
+      if (
+        !market
+        || !stock
+        || !market.is_open
+        || market.next_tick_at === null
+        || Number(market.next_tick_at) > now
+      ) continue;
       const bucket = Math.floor(
         Number(market.next_tick_at)
           / (Number(market.tick_interval_minutes) * 60_000),
