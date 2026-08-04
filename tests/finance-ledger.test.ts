@@ -8,6 +8,7 @@ import {
   normalizeFinanceTransaction,
   stableFinanceJson,
 } from "../lib/finance-ledger-rules";
+import { FINANCE_SCHEMA_STATEMENTS } from "../lib/finance-schema";
 
 function validInput() {
   return {
@@ -249,5 +250,25 @@ test("교사·학생 감사 기록은 생성 후 수정하거나 삭제할 수 �
     assert.match(source, /audit_logs_update_guard/);
     assert.match(source, /audit_logs_delete_guard/);
     assert.match(source, /AUDIT_LOG_IMMUTABLE/);
+  }
+});
+
+test("금융계정 상태는 학급과 학생의 실제 운영 상태를 따라간다", async () => {
+  const migration = await readFile(
+    new URL("../drizzle/0027_finance_account_status_guard.sql", import.meta.url),
+    "utf8",
+  );
+  const runtime = FINANCE_SCHEMA_STATEMENTS.join("\n");
+  for (const source of [migration, runtime]) {
+    assert.match(source, /UPDATE [`]?finance_accounts[`]?/);
+    assert.match(source, /finance_accounts_insert_status_guard/);
+    assert.match(source, /BEFORE INSERT ON [`]?finance_accounts/);
+    assert.match(source, /finance_accounts_status_guard/);
+    assert.match(source, /BEFORE UPDATE OF [`]?status[`]? ON [`]?finance_accounts/);
+    assert.match(source, /FINANCE_ACCOUNT_STATUS_MISMATCH/);
+    assert.match(source, /account_type[`]? = 'class_issuance'/);
+    assert.match(source, /account_type[`]? = 'student_wallet'/);
+    assert.match(source, /student\.[`]?status[`]? <> 'excluded'/);
+    assert.match(source, /student\.[`]?status[`]? = 'excluded'/);
   }
 });

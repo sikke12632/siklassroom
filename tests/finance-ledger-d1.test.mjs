@@ -131,6 +131,46 @@ test("D1은 확정된 금융 원장만 잔액에 반영하고 보존 상태를 �
       "pending 원장은 실제 잔액을 바꾸면 안 됩니다.",
     );
 
+    executeSql(
+      persistPath,
+      `DROP TRIGGER finance_accounts_insert_status_guard;
+       DROP TRIGGER finance_accounts_status_guard;
+       UPDATE finance_accounts
+       SET status = CASE
+         WHEN account_type = 'class_issuance' THEN 'closed'
+         ELSE 'frozen'
+       END
+       WHERE class_id = 'class-test';`,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT account_type, status FROM finance_accounts
+       WHERE class_id = 'class-test' ORDER BY account_type;`,
+    )), [
+      { account_type: "class_issuance", status: "closed" },
+      { account_type: "student_wallet", status: "frozen" },
+    ]);
+    runWrangler([
+      "d1",
+      "execute",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+      `--file=${path.join(
+        projectRoot,
+        "drizzle",
+        "0027_finance_account_status_guard.sql",
+      )}`,
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT account_type, status FROM finance_accounts
+       WHERE class_id = 'class-test' ORDER BY account_type;`,
+    )), [
+      { account_type: "class_issuance", status: "active" },
+      { account_type: "student_wallet", status: "active" },
+    ]);
+
     const posted = executeSql(
       persistPath,
       `
@@ -243,6 +283,140 @@ test("D1은 확정된 금융 원장만 잔액에 반영하고 보존 상태를 �
     );
     assert.deepEqual(lastResults(frozen), [
       { balance: 100, revision: 1, status: "frozen" },
+    ]);
+
+    const invalidWalletInsert = executeSql(
+      persistPath,
+      `INSERT INTO finance_accounts (
+         id, class_id, student_id, account_type, balance, allow_negative,
+         status, revision, created_at, updated_at
+       ) VALUES (
+         'invalid-wallet-insert', 'class-test', 'student-test',
+         'student_wallet', 0, 0, 'active', 0, 50, 50
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(invalidWalletInsert.output, /FINANCE_ACCOUNT_STATUS_MISMATCH/);
+
+    const invalidIssuanceReplace = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_accounts (
+         id, class_id, student_id, account_type, balance, allow_negative,
+         status, revision, created_at, updated_at
+       ) VALUES (
+         'finance:class:class-test:issuance', 'class-test', NULL,
+         'class_issuance', -100, 1, 'closed', 1, 1, 50
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      invalidIssuanceReplace.output,
+      /FINANCE_ACCOUNT_STATUS_MISMATCH/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT balance, revision, status FROM finance_accounts
+       WHERE id = 'finance:class:class-test:issuance';`,
+    )), [{ balance: -100, revision: 1, status: "active" }]);
+
+    const invalidWalletStatus = executeSql(
+      persistPath,
+      `UPDATE finance_accounts
+       SET status = 'active', updated_at = 51
+       WHERE id = 'finance:student:student-test:wallet';`,
+      { expectSuccess: false },
+    );
+    assert.match(invalidWalletStatus.output, /FINANCE_ACCOUNT_STATUS_MISMATCH/);
+
+    const invalidIssuanceStatus = executeSql(
+      persistPath,
+      `UPDATE finance_accounts
+       SET status = 'closed', updated_at = 52
+       WHERE id = 'finance:class:class-test:issuance';`,
+      { expectSuccess: false },
+    );
+    assert.match(invalidIssuanceStatus.output, /FINANCE_ACCOUNT_STATUS_MISMATCH/);
+
+    const archivedAccounts = executeSql(
+      persistPath,
+      `UPDATE classes
+       SET status = 'archived', updated_at = 53
+       WHERE id = 'class-test';
+       SELECT account_type, status
+       FROM finance_accounts
+       WHERE class_id = 'class-test'
+       ORDER BY account_type;`,
+    );
+    assert.deepEqual(lastResults(archivedAccounts), [
+      { account_type: "class_issuance", status: "closed" },
+      { account_type: "student_wallet", status: "closed" },
+    ]);
+
+    const invalidArchivedWalletStatus = executeSql(
+      persistPath,
+      `UPDATE finance_accounts
+       SET status = 'frozen', updated_at = 54
+       WHERE id = 'finance:student:student-test:wallet';`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      invalidArchivedWalletStatus.output,
+      /FINANCE_ACCOUNT_STATUS_MISMATCH/,
+    );
+
+    const invalidArchivedIssuanceStatus = executeSql(
+      persistPath,
+      `UPDATE finance_accounts
+       SET status = 'active', updated_at = 55
+       WHERE id = 'finance:class:class-test:issuance';`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      invalidArchivedIssuanceStatus.output,
+      /FINANCE_ACCOUNT_STATUS_MISMATCH/,
+    );
+
+    const lockedAccounts = executeSql(
+      persistPath,
+      `UPDATE classes
+       SET status = 'active', updated_at = 56
+       WHERE id = 'class-test';
+       UPDATE students
+       SET status = 'locked', updated_at = 57
+       WHERE id = 'student-test';
+       SELECT account_type, status
+       FROM finance_accounts
+       WHERE class_id = 'class-test'
+       ORDER BY account_type;`,
+    );
+    assert.deepEqual(lastResults(lockedAccounts), [
+      { account_type: "class_issuance", status: "active" },
+      { account_type: "student_wallet", status: "active" },
+    ]);
+
+    const pendingWallet = executeSql(
+      persistPath,
+      `UPDATE students
+       SET status = 'pending', updated_at = 58
+       WHERE id = 'student-test';
+       SELECT status FROM finance_accounts
+       WHERE id = 'finance:student:student-test:wallet';`,
+    );
+    assert.deepEqual(lastResults(pendingWallet), [{ status: "active" }]);
+
+    const restoredAccounts = executeSql(
+      persistPath,
+      `UPDATE students
+       SET status = 'active', updated_at = 59
+       WHERE id = 'student-test';
+       SELECT account_type, status
+       FROM finance_accounts
+       WHERE class_id = 'class-test'
+       ORDER BY account_type;`,
+    );
+    assert.deepEqual(lastResults(restoredAccounts), [
+      { account_type: "class_issuance", status: "active" },
+      { account_type: "student_wallet", status: "active" },
     ]);
 
     const duplicateIssuance = executeSql(

@@ -1,3 +1,47 @@
+function financeAccountExpectedStatusSql(accountReference: string) {
+  return `CASE
+    WHEN ${accountReference}.account_type = 'class_issuance'
+      AND EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = ${accountReference}.class_id
+          AND classroom.status = 'active'
+      )
+    THEN 'active'
+    WHEN ${accountReference}.account_type = 'student_wallet'
+      AND EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = ${accountReference}.class_id
+          AND classroom.status = 'active'
+      )
+      AND EXISTS (
+        SELECT 1 FROM students student
+        WHERE student.id = ${accountReference}.student_id
+          AND student.class_id = ${accountReference}.class_id
+          AND student.status <> 'excluded'
+      )
+    THEN 'active'
+    WHEN ${accountReference}.account_type = 'student_wallet'
+      AND EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = ${accountReference}.class_id
+          AND classroom.status = 'active'
+      )
+      AND EXISTS (
+        SELECT 1 FROM students student
+        WHERE student.id = ${accountReference}.student_id
+          AND student.class_id = ${accountReference}.class_id
+          AND student.status = 'excluded'
+      )
+    THEN 'frozen'
+    ELSE 'closed'
+  END`;
+}
+
+const financeAccountExpectedCurrentStatus = financeAccountExpectedStatusSql(
+  "finance_accounts",
+);
+const financeAccountExpectedNewStatus = financeAccountExpectedStatusSql("NEW");
+
 export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS finance_accounts (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, student_id TEXT,
@@ -1001,6 +1045,21 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_accounts
     BEGIN
       SELECT RAISE(ABORT, 'FINANCE_ACCOUNT_IDENTITY_IMMUTABLE');
+    END`,
+  `UPDATE finance_accounts
+    SET status = ${financeAccountExpectedCurrentStatus}
+    WHERE status <> ${financeAccountExpectedCurrentStatus}`,
+  `CREATE TRIGGER IF NOT EXISTS finance_accounts_insert_status_guard
+    BEFORE INSERT ON finance_accounts
+    WHEN NEW.status <> ${financeAccountExpectedNewStatus}
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_ACCOUNT_STATUS_MISMATCH');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_accounts_status_guard
+    BEFORE UPDATE OF status ON finance_accounts
+    WHEN NEW.status <> ${financeAccountExpectedNewStatus}
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_ACCOUNT_STATUS_MISMATCH');
     END`,
   `CREATE TRIGGER IF NOT EXISTS finance_accounts_projection_guard
     BEFORE UPDATE OF balance, revision ON finance_accounts
