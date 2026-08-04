@@ -27,13 +27,19 @@ const settlementRetryConfigPath = path.join(
 const settlementRetryWorkerPath = "tests/fixtures/deposit-settlement-retry-worker.ts";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
-  const result = spawnSync(process.execPath, [wranglerPath, ...args], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: process.env,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  let result;
+  let output = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    result = spawnSync(process.execPath, [wranglerPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    if (result.status === 0 || !output.includes("bad port")) break;
+  }
+  assert.ok(result, "Wrangler did not start.");
   if (expectSuccess) {
     assert.equal(
       result.status,

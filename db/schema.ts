@@ -1593,3 +1593,264 @@ export const financeStockTrades = sqliteTable("finance_stock_trades", {
         AND ${table.postedAt} IS NOT NULL)`,
   ),
 ]);
+
+export const financeStockLiquidationOperations = sqliteTable(
+  "finance_stock_liquidation_operations",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull(),
+    stockId: text("stock_id").notNull(),
+    studentId: text("student_id").notNull().references(() => students.id),
+    teacherId: text("teacher_id").notNull().references(() => teachers.id),
+    rootIdempotencyKey: text("root_idempotency_key").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    origin: text("origin").notNull(),
+    interventionReason: text("intervention_reason").notNull(),
+    status: text("status").notNull().default("running"),
+    snapshotReferencePrice: integer("snapshot_reference_price").notNull(),
+    snapshotSpread: integer("snapshot_spread").notNull(),
+    snapshotUnitPrice: integer("snapshot_unit_price").notNull(),
+    snapshotFeeBps: integer("snapshot_fee_bps").notNull(),
+    snapshotDenominationStep: integer("snapshot_denomination_step").notNull(),
+    snapshotStockRevision: integer("snapshot_stock_revision").notNull(),
+    snapshotMarketRevision: integer("snapshot_market_revision").notNull(),
+    snapshotFinanceSettingsRevision: integer("snapshot_finance_settings_revision")
+      .notNull(),
+    snapshotHoldingRevision: integer("snapshot_holding_revision").notNull(),
+    snapshotWalletRevision: integer("snapshot_wallet_revision").notNull(),
+    snapshotWalletBalance: integer("snapshot_wallet_balance").notNull(),
+    snapshotStudentStatus: text("snapshot_student_status").notNull(),
+    snapshotStockStatus: text("snapshot_stock_status").notNull(),
+    snapshotMarketWasOpen: integer("snapshot_market_was_open").notNull(),
+    initialQuantity: integer("initial_quantity").notNull(),
+    remainingQuantity: integer("remaining_quantity").notNull(),
+    soldQuantity: integer("sold_quantity").notNull(),
+    initialCostBasis: integer("initial_cost_basis").notNull(),
+    remainingCostBasis: integer("remaining_cost_basis").notNull(),
+    expectedGrossAmount: integer("expected_gross_amount").notNull(),
+    expectedFeeAmount: integer("expected_fee_amount").notNull(),
+    expectedWalletDelta: integer("expected_wallet_delta").notNull(),
+    completedChunkCount: integer("completed_chunk_count").notNull().default(0),
+    totalGrossAmount: integer("total_gross_amount").notNull().default(0),
+    totalFeeAmount: integer("total_fee_amount").notNull().default(0),
+    totalWalletDelta: integer("total_wallet_delta").notNull().default(0),
+    totalCostBasisRemoved: integer("total_cost_basis_removed").notNull().default(0),
+    totalRealizedGain: integer("total_realized_gain").notNull().default(0),
+    nextChunkIndex: integer("next_chunk_index").notNull().default(0),
+    lastTradeId: text("last_trade_id"),
+    revision: integer("revision").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    completedAt: integer("completed_at"),
+    cancelledAt: integer("cancelled_at"),
+    cancellationReason: text("cancellation_reason"),
+    cancellationIdempotencyKey: text("cancellation_idempotency_key"),
+    cancellationPayloadHash: text("cancellation_payload_hash"),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_liquidation_operations_id_class_uq").on(
+      table.id,
+      table.classId,
+    ),
+    uniqueIndex("finance_stock_liquidation_operations_root_uq").on(
+      table.rootIdempotencyKey,
+    ),
+    uniqueIndex("finance_stock_liquidation_operations_running_uq")
+      .on(table.classId, table.stockId, table.studentId)
+      .where(sql`${table.status} = 'running'`),
+    uniqueIndex("finance_stock_liquidation_operations_cancellation_uq")
+      .on(table.cancellationIdempotencyKey)
+      .where(sql`${table.cancellationIdempotencyKey} IS NOT NULL`),
+    index("finance_stock_liquidation_operations_class_status_idx").on(
+      table.classId,
+      table.status,
+      table.updatedAt,
+    ),
+    foreignKey({
+      columns: [table.stockId, table.classId],
+      foreignColumns: [financeStocks.id, financeStocks.classId],
+      name: "finance_stock_liquidation_operations_stock_class_fk",
+    }),
+    foreignKey({
+      columns: [table.lastTradeId, table.classId],
+      foreignColumns: [financeStockTrades.id, financeStockTrades.classId],
+      name: "finance_stock_liquidation_operations_trade_class_fk",
+    }),
+    check(
+      "finance_stock_liquidation_operations_text_ck",
+      sql`LENGTH(TRIM(${table.rootIdempotencyKey})) BETWEEN 8 AND 200
+        AND LENGTH(TRIM(${table.payloadHash})) BETWEEN 8 AND 500
+        AND ${table.origin} IN (
+          'finance_center', 'student_exclusion', 'class_archive', 'account_recovery'
+        )
+        AND LENGTH(TRIM(${table.interventionReason})) BETWEEN 2 AND 300`,
+    ),
+    check(
+      "finance_stock_liquidation_operations_snapshot_ck",
+      sql`${table.snapshotReferencePrice} BETWEEN 1 AND 1000000000
+        AND ${table.snapshotSpread} BETWEEN 0 AND 1000000000
+        AND ${table.snapshotUnitPrice} = ${table.snapshotReferencePrice}
+          - ${table.snapshotSpread}
+        AND ${table.snapshotUnitPrice} BETWEEN 1 AND 1000000000
+        AND ${table.snapshotFeeBps} BETWEEN 0 AND 1000
+        AND ${table.snapshotDenominationStep} BETWEEN 1 AND 1000000000
+        AND ${table.snapshotReferencePrice} % ${table.snapshotDenominationStep} = 0
+        AND ${table.snapshotSpread} % ${table.snapshotDenominationStep} = 0
+        AND ${table.snapshotStockRevision} >= 0
+        AND ${table.snapshotMarketRevision} >= 0
+        AND ${table.snapshotFinanceSettingsRevision} >= 0
+        AND ${table.snapshotHoldingRevision} > 0
+        AND ${table.snapshotWalletRevision} >= 0
+        AND ${table.snapshotWalletBalance} BETWEEN 0 AND 1000000000
+        AND ${table.snapshotMarketWasOpen} IN (0, 1)`,
+    ),
+    check(
+      "finance_stock_liquidation_operations_progress_ck",
+      sql`${table.initialQuantity} BETWEEN 1 AND 1000000000
+        AND ${table.remainingQuantity} BETWEEN 0 AND ${table.initialQuantity}
+        AND ${table.soldQuantity} = ${table.initialQuantity}
+          - ${table.remainingQuantity}
+        AND ${table.initialCostBasis} BETWEEN 1 AND 1000000000
+        AND ${table.remainingCostBasis} BETWEEN 0 AND ${table.initialCostBasis}
+        AND ((${table.remainingQuantity} = 0 AND ${table.remainingCostBasis} = 0)
+          OR (${table.remainingQuantity} > 0 AND ${table.remainingCostBasis} > 0))
+        AND ${table.expectedGrossAmount}
+          = ${table.snapshotUnitPrice} * ${table.initialQuantity}
+        AND ${table.expectedGrossAmount} BETWEEN 1 AND 1111111111
+        AND ${table.expectedFeeAmount} BETWEEN 0 AND ${table.expectedGrossAmount}
+        AND ${table.expectedFeeAmount} <= CAST(
+          ${table.expectedGrossAmount} * ${table.snapshotFeeBps} / 10000
+          AS INTEGER)
+        AND ${table.expectedWalletDelta}
+          = ${table.expectedGrossAmount} - ${table.expectedFeeAmount}
+        AND ${table.expectedWalletDelta} > 0
+        AND ${table.expectedWalletDelta}
+          <= 1000000000 - ${table.snapshotWalletBalance}
+        AND ${table.completedChunkCount} BETWEEN 0 AND 2
+        AND ${table.nextChunkIndex} = ${table.completedChunkCount}
+        AND ${table.revision} = ${table.completedChunkCount}
+          + CASE ${table.status} WHEN 'cancelled' THEN 1 ELSE 0 END
+        AND ${table.totalGrossAmount}
+          = ${table.snapshotUnitPrice} * ${table.soldQuantity}
+        AND ${table.totalFeeAmount} BETWEEN 0 AND ${table.totalGrossAmount}
+        AND ${table.totalWalletDelta}
+          = ${table.totalGrossAmount} - ${table.totalFeeAmount}
+        AND ${table.totalCostBasisRemoved}
+          = ${table.initialCostBasis} - ${table.remainingCostBasis}
+        AND ${table.totalRealizedGain}
+          = ${table.totalWalletDelta} - ${table.totalCostBasisRemoved}`,
+    ),
+    check(
+      "finance_stock_liquidation_operations_state_ck",
+      sql`((${table.status} = 'running'
+          AND ${table.remainingQuantity} > 0
+          AND ${table.completedChunkCount} < 2
+          AND ${table.completedAt} IS NULL
+          AND ${table.cancelledAt} IS NULL
+          AND ${table.cancellationReason} IS NULL
+          AND ${table.cancellationIdempotencyKey} IS NULL
+          AND ${table.cancellationPayloadHash} IS NULL)
+        OR (${table.status} = 'completed'
+          AND ${table.remainingQuantity} = 0
+          AND ${table.remainingCostBasis} = 0
+          AND ${table.soldQuantity} = ${table.initialQuantity}
+          AND ${table.totalGrossAmount} = ${table.expectedGrossAmount}
+          AND ${table.totalFeeAmount} = ${table.expectedFeeAmount}
+          AND ${table.totalWalletDelta} = ${table.expectedWalletDelta}
+          AND ${table.totalCostBasisRemoved} = ${table.initialCostBasis}
+          AND ${table.completedAt} IS NOT NULL
+          AND ${table.cancelledAt} IS NULL
+          AND ${table.cancellationReason} IS NULL
+          AND ${table.cancellationIdempotencyKey} IS NULL
+          AND ${table.cancellationPayloadHash} IS NULL)
+        OR (${table.status} = 'cancelled'
+          AND ${table.remainingQuantity} > 0
+          AND ${table.completedAt} IS NULL
+          AND ${table.cancelledAt} IS NOT NULL
+          AND LENGTH(TRIM(COALESCE(${table.cancellationReason}, '')))
+            BETWEEN 2 AND 300
+          AND LENGTH(TRIM(COALESCE(${table.cancellationIdempotencyKey}, '')))
+            BETWEEN 8 AND 200
+          AND LENGTH(TRIM(COALESCE(${table.cancellationPayloadHash}, '')))
+            BETWEEN 8 AND 500))
+        AND ((${table.completedChunkCount} = 0 AND ${table.lastTradeId} IS NULL)
+          OR (${table.completedChunkCount} > 0 AND ${table.lastTradeId} IS NOT NULL))
+        AND ${table.updatedAt} >= ${table.createdAt}
+        AND (${table.completedAt} IS NULL OR ${table.completedAt} = ${table.updatedAt})
+        AND (${table.cancelledAt} IS NULL OR ${table.cancelledAt} = ${table.updatedAt})`,
+    ),
+  ],
+);
+
+export const financeStockLiquidationChunks = sqliteTable(
+  "finance_stock_liquidation_chunks",
+  {
+    id: text("id").primaryKey(),
+    operationId: text("operation_id").notNull(),
+    classId: text("class_id").notNull(),
+    chunkIndex: integer("chunk_index").notNull(),
+    tradeId: text("trade_id").notNull(),
+    quantity: integer("quantity").notNull(),
+    grossAmount: integer("gross_amount").notNull(),
+    feeAmount: integer("fee_amount").notNull(),
+    walletDelta: integer("wallet_delta").notNull(),
+    costBasisRemoved: integer("cost_basis_removed").notNull(),
+    realizedGain: integer("realized_gain").notNull(),
+    holdingQuantityBefore: integer("holding_quantity_before").notNull(),
+    holdingQuantityAfter: integer("holding_quantity_after").notNull(),
+    holdingCostBasisBefore: integer("holding_cost_basis_before").notNull(),
+    holdingCostBasisAfter: integer("holding_cost_basis_after").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_liquidation_chunks_operation_index_uq").on(
+      table.operationId,
+      table.chunkIndex,
+    ),
+    uniqueIndex("finance_stock_liquidation_chunks_trade_uq").on(table.tradeId),
+    index("finance_stock_liquidation_chunks_class_created_idx").on(
+      table.classId,
+      table.createdAt,
+    ),
+    foreignKey({
+      columns: [table.operationId, table.classId],
+      foreignColumns: [
+        financeStockLiquidationOperations.id,
+        financeStockLiquidationOperations.classId,
+      ],
+      name: "finance_stock_liquidation_chunks_operation_class_fk",
+    }),
+    foreignKey({
+      columns: [table.tradeId, table.classId],
+      foreignColumns: [financeStockTrades.id, financeStockTrades.classId],
+      name: "finance_stock_liquidation_chunks_trade_class_fk",
+    }),
+    check(
+      "finance_stock_liquidation_chunks_amount_ck",
+      sql`${table.chunkIndex} BETWEEN 0 AND 1
+        AND ${table.quantity} BETWEEN 1 AND 1000000000
+        AND ${table.grossAmount} BETWEEN 1 AND 1000000000
+        AND ${table.feeAmount} BETWEEN 0 AND ${table.grossAmount}
+        AND ${table.walletDelta} = ${table.grossAmount} - ${table.feeAmount}
+        AND ${table.walletDelta} > 0
+        AND ${table.costBasisRemoved} BETWEEN 0 AND 1000000000
+        AND ${table.realizedGain} = ${table.walletDelta}
+          - ${table.costBasisRemoved}`,
+    ),
+    check(
+      "finance_stock_liquidation_chunks_holding_ck",
+      sql`${table.holdingQuantityBefore} BETWEEN 1 AND 1000000000
+        AND ${table.holdingQuantityAfter}
+          = ${table.holdingQuantityBefore} - ${table.quantity}
+        AND ${table.holdingQuantityAfter} BETWEEN 0 AND 1000000000
+        AND ${table.holdingCostBasisBefore} BETWEEN 1 AND 1000000000
+        AND ${table.holdingCostBasisAfter}
+          = ${table.holdingCostBasisBefore} - ${table.costBasisRemoved}
+        AND ${table.holdingCostBasisAfter} BETWEEN 0 AND 1000000000
+        AND ((${table.holdingQuantityAfter} = 0
+            AND ${table.holdingCostBasisAfter} = 0)
+          OR (${table.holdingQuantityAfter} > 0
+            AND ${table.holdingCostBasisAfter} > 0))`,
+    ),
+  ],
+);

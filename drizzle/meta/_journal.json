@@ -141,6 +141,13 @@
       "when": 1785824344906,
       "tag": "0019_stock-position-value-limit",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1785828507373,
+      "tag": "0020_stock_liquidation_operations",
+      "breakpoints": true
     }
   ]
 }

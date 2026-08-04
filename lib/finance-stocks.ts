@@ -19,6 +19,8 @@ import {
   FinanceStockRuleError,
   assertFinanceStockPositionMarketValue,
   calculateFinanceStockExecutionPrice,
+  calculateFinanceStockLiquidationChunk,
+  calculateFinanceStockLiquidationTotals,
   calculateFinanceStockPositionAfterTrade,
   limitFinanceStockPriceIncrease,
   normalizeFinanceStockDefinition,
@@ -159,6 +161,80 @@ type TradeRow = {
   posted_at: number | null;
   student_number?: number;
   student_name?: string;
+};
+
+type StockLiquidationStatus = "running" | "completed" | "cancelled";
+
+type StockLiquidationOperationRow = {
+  id: string;
+  class_id: string;
+  stock_id: string;
+  student_id: string;
+  teacher_id: string;
+  root_idempotency_key: string;
+  payload_hash: string;
+  origin: string;
+  intervention_reason: string;
+  status: string;
+  snapshot_reference_price: number;
+  snapshot_spread: number;
+  snapshot_unit_price: number;
+  snapshot_fee_bps: number;
+  snapshot_denomination_step: number;
+  snapshot_stock_revision: number;
+  snapshot_market_revision: number;
+  snapshot_finance_settings_revision: number;
+  snapshot_holding_revision: number;
+  snapshot_wallet_revision: number;
+  snapshot_wallet_balance: number;
+  snapshot_student_status: string;
+  snapshot_stock_status: string;
+  snapshot_market_was_open: number;
+  initial_quantity: number;
+  remaining_quantity: number;
+  sold_quantity: number;
+  initial_cost_basis: number;
+  remaining_cost_basis: number;
+  expected_gross_amount: number;
+  expected_fee_amount: number;
+  expected_wallet_delta: number;
+  completed_chunk_count: number;
+  total_gross_amount: number;
+  total_fee_amount: number;
+  total_wallet_delta: number;
+  total_cost_basis_removed: number;
+  total_realized_gain: number;
+  next_chunk_index: number;
+  last_trade_id: string | null;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+  cancelled_at: number | null;
+  cancellation_reason: string | null;
+  cancellation_idempotency_key: string | null;
+  cancellation_payload_hash: string | null;
+  student_number?: number;
+  student_name?: string;
+};
+
+type StockLiquidationChunkRow = {
+  id: string;
+  operation_id: string;
+  class_id: string;
+  chunk_index: number;
+  trade_id: string;
+  quantity: number;
+  gross_amount: number;
+  fee_amount: number;
+  wallet_delta: number;
+  cost_basis_removed: number;
+  realized_gain: number;
+  holding_quantity_before: number;
+  holding_quantity_after: number;
+  holding_cost_basis_before: number;
+  holding_cost_basis_after: number;
+  created_at: number;
 };
 
 type StockEventRow = {
@@ -367,9 +443,17 @@ function serializeStock(row: StockRow) {
 function serializeHolding(row: HoldingRow | null, currentPrice = 0) {
   const quantity = Number(row?.quantity ?? 0);
   const totalCost = Number(row?.cost_basis ?? 0);
-  const marketValue = quantity * currentPrice;
+  const marketValueExact = BigInt(quantity) * BigInt(currentPrice);
   const averageCost = quantity > 0 ? Math.floor(totalCost / quantity) : 0;
-  const unrealizedProfit = marketValue - totalCost;
+  const unrealizedProfitExact = marketValueExact - BigInt(totalCost);
+  const exactJsonInteger = (value: bigint) => (
+    value <= BigInt(Number.MAX_SAFE_INTEGER)
+      && value >= BigInt(Number.MIN_SAFE_INTEGER)
+      ? Number(value)
+      : value.toString()
+  );
+  const marketValue = exactJsonInteger(marketValueExact);
+  const unrealizedProfit = exactJsonInteger(unrealizedProfitExact);
   return {
     shares: quantity,
     quantity,
@@ -378,8 +462,11 @@ function serializeHolding(row: HoldingRow | null, currentPrice = 0) {
     averageCost,
     averagePrice: averageCost,
     marketValue,
+    marketValueExact: marketValueExact.toString(),
     unrealizedProfit,
+    unrealizedProfitExact: unrealizedProfitExact.toString(),
     evaluationProfit: unrealizedProfit,
+    evaluationProfitExact: unrealizedProfitExact.toString(),
     revision: Number(row?.revision ?? 0),
     updatedAt: row ? Number(row.updated_at) : null,
   };
@@ -421,6 +508,67 @@ function serializeTrade(row: TradeRow) {
           name: row.student_name,
         }
       : null,
+  };
+}
+
+function serializeStockLiquidationOperation(row: StockLiquidationOperationRow) {
+  return {
+    id: row.id,
+    stockId: row.stock_id,
+    studentId: row.student_id,
+    teacherId: row.teacher_id,
+    rootIdempotencyKey: row.root_idempotency_key,
+    origin: row.origin as TeacherLiquidationOrigin,
+    interventionReason: row.intervention_reason,
+    status: row.status as StockLiquidationStatus,
+    initialQuantity: Number(row.initial_quantity),
+    remainingQuantity: Number(row.remaining_quantity),
+    soldQuantity: Number(row.sold_quantity),
+    initialCostBasis: Number(row.initial_cost_basis),
+    remainingCostBasis: Number(row.remaining_cost_basis),
+    expectedGrossAmount: Number(row.expected_gross_amount),
+    expectedFeeAmount: Number(row.expected_fee_amount),
+    expectedPayoutAmount: Number(row.expected_wallet_delta),
+    completedChunkCount: Number(row.completed_chunk_count),
+    totalGrossAmount: Number(row.total_gross_amount),
+    totalFeeAmount: Number(row.total_fee_amount),
+    totalPayoutAmount: Number(row.total_wallet_delta),
+    totalCostBasisRemoved: Number(row.total_cost_basis_removed),
+    totalRealizedGain: Number(row.total_realized_gain),
+    nextChunkIndex: Number(row.next_chunk_index),
+    lastTradeId: row.last_trade_id,
+    revision: Number(row.revision),
+    frozenQuote: {
+      referencePrice: Number(row.snapshot_reference_price),
+      sellSpread: Number(row.snapshot_spread),
+      unitPrice: Number(row.snapshot_unit_price),
+      feeBps: Number(row.snapshot_fee_bps),
+      denominationStep: Number(row.snapshot_denomination_step),
+      stockRevision: Number(row.snapshot_stock_revision),
+      marketRevision: Number(row.snapshot_market_revision),
+      financeSettingsRevision: Number(row.snapshot_finance_settings_revision),
+    },
+    snapshot: {
+      holdingRevision: Number(row.snapshot_holding_revision),
+      walletRevision: Number(row.snapshot_wallet_revision),
+      walletBalance: Number(row.snapshot_wallet_balance),
+      studentStatus: row.snapshot_student_status,
+      stockStatus: row.snapshot_stock_status,
+      marketWasOpen: Boolean(row.snapshot_market_was_open),
+    },
+    student: row.student_name
+      ? {
+          id: row.student_id,
+          number: Number(row.student_number ?? 0),
+          name: row.student_name,
+        }
+      : null,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+    completedAt: row.completed_at === null ? null : Number(row.completed_at),
+    cancelledAt: row.cancelled_at === null ? null : Number(row.cancelled_at),
+    cancellationReason: row.cancellation_reason,
+    cancellationIdempotencyKey: row.cancellation_idempotency_key,
   };
 }
 
@@ -644,8 +792,13 @@ function mapDatabaseError(error: unknown): never {
     ["FINANCE_STOCK_INSUFFICIENT_HOLDINGS", 409, "보유한 주식보다 많이 팔 수 없습니다.", "FINANCE_STOCK_INSUFFICIENT_HOLDINGS"],
     ["FINANCE_STOCK_HOLDING_LIMIT", 409, "한 학생이 보유할 수 있는 최대 수량을 넘습니다.", "FINANCE_STOCK_HOLDING_LIMIT"],
     ["FINANCE_STOCK_POSITION_VALUE_LIMIT", 409, "이 거래나 가격 인상을 반영하면 한 학생의 주식 평가액이 10억을 넘습니다.", "FINANCE_STOCK_POSITION_VALUE_LIMIT"],
+    ["FINANCE_STOCK_LIQUIDATION_IN_PROGRESS", 409, "이 학생의 주식은 이미 비상 청산을 진행하고 있습니다.", "FINANCE_STOCK_LIQUIDATION_IN_PROGRESS"],
+    ["FINANCE_STOCK_LIQUIDATION_OPERATION_STALE", 409, "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.", "FINANCE_STOCK_LIQUIDATION_STALE"],
+    ["FINANCE_STOCK_LIQUIDATION_CHUNK_STALE", 409, "비상 청산의 다음 처리 순서가 바뀌었습니다. 최신 진행률을 확인해 주세요.", "FINANCE_STOCK_LIQUIDATION_STALE"],
+    ["FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE", 409, "완료되었거나 취소된 비상 청산 기록은 바꿀 수 없습니다.", "FINANCE_STOCK_LIQUIDATION_IMMUTABLE"],
     ["FINANCE_STOCK_LEDGER_MISMATCH", 409, "주식과 지갑 기록이 맞지 않아 거래를 멈췄습니다.", "FINANCE_STOCK_LEDGER_MISMATCH"],
     ["FINANCE_STOCK_PROJECTION_MISMATCH", 409, "주식 보유 기록이 달라져 거래를 멈췄습니다.", "FINANCE_STOCK_PROJECTION_MISMATCH"],
+    ["FINANCE_ISSUANCE_BALANCE_LIMIT", 409, "학급 발행계정의 안전 한도가 부족해 이번 청산 묶음을 반영하지 않았습니다. 최신 금융 기록을 확인해 주세요.", "FINANCE_STOCK_LIQUIDATION_ISSUANCE_LIMIT"],
     ["FINANCE_INSUFFICIENT_AVAILABLE_BALANCE", 409, "출금 신청 금액을 빼면 주식을 살 수 있는 금액이 부족합니다.", "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE"],
     ["FINANCE_INSUFFICIENT_FUNDS", 409, "지갑 잔액이 부족합니다.", "FINANCE_INSUFFICIENT_FUNDS"],
     ["FINANCE_ACCOUNT_STALE", 409, "다른 거래가 먼저 반영되었습니다. 최신 잔액으로 다시 시도해 주세요.", "FINANCE_ACCOUNT_STALE"],
@@ -664,6 +817,31 @@ function mapDatabaseError(error: unknown): never {
       409,
       "주가나 종목 상태가 다른 화면에서 먼저 바뀌었습니다. 최신 정보를 다시 불러와 주세요.",
       "FINANCE_STOCK_STALE",
+    );
+  }
+  if (
+    message.includes("finance_stock_liquidation_operations_running_uq")
+    || message.includes(
+      "finance_stock_liquidation_operations.class_id, finance_stock_liquidation_operations.stock_id, finance_stock_liquidation_operations.student_id",
+    )
+  ) {
+    throw new ApiError(
+      409,
+      "이 학생의 주식은 이미 비상 청산을 진행하고 있습니다.",
+      "FINANCE_STOCK_LIQUIDATION_IN_PROGRESS",
+    );
+  }
+  if (
+    message.includes("finance_stock_liquidation_operations_root_uq")
+    || message.includes(
+      "finance_stock_liquidation_operations.root_idempotency_key",
+    )
+    || message.includes("finance_stock_liquidation_operations_cancellation_uq")
+  ) {
+    throw new ApiError(
+      409,
+      "같은 저장 요청 번호가 다른 비상 청산 작업에 사용되었습니다.",
+      "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
     );
   }
   if (
@@ -736,6 +914,194 @@ async function tradeByIdempotency(
      WHERE trade.class_id = ? AND trade.student_id = ?
        AND trade.idempotency_key = ? LIMIT 1`,
   ).bind(classId, studentId, key).first<TradeRow>();
+}
+
+async function stockLiquidationOperationByRootKey(
+  db: D1Database,
+  classId: string,
+  rootIdempotencyKey: string,
+) {
+  return db.prepare(
+    `SELECT operation.*, student.student_number,
+            student.official_name AS student_name
+     FROM finance_stock_liquidation_operations operation
+     JOIN students student ON student.id = operation.student_id
+       AND student.class_id = operation.class_id
+     WHERE operation.class_id = ? AND operation.root_idempotency_key = ?
+     LIMIT 1`,
+  ).bind(classId, rootIdempotencyKey).first<StockLiquidationOperationRow>();
+}
+
+async function stockLiquidationOperationById(
+  db: D1Database,
+  classId: string,
+  operationId: string,
+) {
+  return db.prepare(
+    `SELECT operation.*, student.student_number,
+            student.official_name AS student_name
+     FROM finance_stock_liquidation_operations operation
+     JOIN students student ON student.id = operation.student_id
+       AND student.class_id = operation.class_id
+     WHERE operation.class_id = ? AND operation.id = ? LIMIT 1`,
+  ).bind(classId, operationId).first<StockLiquidationOperationRow>();
+}
+
+async function stockLiquidationOperationByCancellationKey(
+  db: D1Database,
+  classId: string,
+  cancellationIdempotencyKey: string,
+) {
+  return db.prepare(
+    `SELECT operation.*, student.student_number,
+            student.official_name AS student_name
+     FROM finance_stock_liquidation_operations operation
+     JOIN students student ON student.id = operation.student_id
+       AND student.class_id = operation.class_id
+     WHERE operation.class_id = ?
+       AND operation.cancellation_idempotency_key = ? LIMIT 1`,
+  ).bind(classId, cancellationIdempotencyKey)
+    .first<StockLiquidationOperationRow>();
+}
+
+async function stockLiquidationChunkByIndex(
+  db: D1Database,
+  classId: string,
+  operationId: string,
+  chunkIndex: number,
+) {
+  return db.prepare(
+    `SELECT id, operation_id, class_id, chunk_index, trade_id, quantity,
+            gross_amount, fee_amount, wallet_delta, cost_basis_removed,
+            realized_gain, holding_quantity_before, holding_quantity_after,
+            holding_cost_basis_before, holding_cost_basis_after, created_at
+     FROM finance_stock_liquidation_chunks
+     WHERE class_id = ? AND operation_id = ? AND chunk_index = ? LIMIT 1`,
+  ).bind(classId, operationId, chunkIndex).first<StockLiquidationChunkRow>();
+}
+
+async function tradeById(db: D1Database, classId: string, tradeId: string) {
+  return db.prepare(
+    `SELECT trade.*, student.student_number,
+            student.official_name AS student_name
+     FROM finance_stock_trades trade
+     JOIN students student ON student.id = trade.student_id
+       AND student.class_id = trade.class_id
+     WHERE trade.class_id = ? AND trade.id = ? LIMIT 1`,
+  ).bind(classId, tradeId).first<TradeRow>();
+}
+
+async function reconcileStockLiquidationProgress(
+  db: D1Database,
+  classId: string,
+  operationId: string,
+  requestedRevision: number,
+) {
+  const operation = await stockLiquidationOperationById(
+    db,
+    classId,
+    operationId,
+  );
+  if (!operation) {
+    throw new ApiError(
+      409,
+      "이어갈 비상 청산 작업을 찾지 못했습니다.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  if (operation.status === "cancelled") {
+    throw new ApiError(
+      409,
+      "취소된 비상 청산은 다시 이어서 처리할 수 없습니다.",
+      "FINANCE_STOCK_LIQUIDATION_CANCELLED",
+    );
+  }
+  const operationRevision = Number(operation.revision);
+  if (requestedRevision > operationRevision) {
+    throw new ApiError(
+      409,
+      "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  if (requestedRevision < operationRevision) {
+    const committedChunk = await stockLiquidationChunkByIndex(
+      db,
+      classId,
+      operation.id,
+      requestedRevision,
+    );
+    const committedTrade = committedChunk
+      ? await tradeById(db, classId, committedChunk.trade_id)
+      : null;
+    if (committedTrade) {
+      return {
+        operation,
+        result: {
+          trade: serializeTrade(committedTrade),
+          operation: serializeStockLiquidationOperation(operation),
+          chunksProcessed: 0,
+          deduplicated: true,
+        },
+      };
+    }
+    throw new ApiError(
+      409,
+      "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  if (operation.status === "completed") {
+    const completedTrade = operation.last_trade_id
+      ? await tradeById(db, classId, operation.last_trade_id)
+      : null;
+    if (!completedTrade) {
+      throw new ApiError(
+        500,
+        "완료된 비상 청산의 마지막 거래를 확인하지 못했습니다.",
+        "FINANCE_STOCK_LIQUIDATION_UNAVAILABLE",
+      );
+    }
+    return {
+      operation,
+      result: {
+        trade: serializeTrade(completedTrade),
+        operation: serializeStockLiquidationOperation(operation),
+        chunksProcessed: 0,
+        deduplicated: true,
+      },
+    };
+  }
+  return { operation, result: null };
+}
+
+async function recentStockLiquidationOperations(
+  db: D1Database,
+  classId: string,
+  stockId: string,
+  limit: number,
+) {
+  const select = `SELECT operation.*, student.student_number,
+                          student.official_name AS student_name
+                   FROM finance_stock_liquidation_operations operation
+                   JOIN students student ON student.id = operation.student_id
+                     AND student.class_id = operation.class_id`;
+  const [running, recentFinished] = await Promise.all([
+    db.prepare(
+      `${select}
+       WHERE operation.class_id = ? AND operation.stock_id = ?
+         AND operation.status = 'running'
+       ORDER BY operation.updated_at DESC, operation.id DESC`,
+    ).bind(classId, stockId).all<StockLiquidationOperationRow>(),
+    db.prepare(
+      `${select}
+       WHERE operation.class_id = ? AND operation.stock_id = ?
+         AND operation.status <> 'running'
+       ORDER BY operation.updated_at DESC, operation.id DESC
+       LIMIT ?`,
+    ).bind(classId, stockId, limit).all<StockLiquidationOperationRow>(),
+  ]);
+  return [...running.results, ...recentFinished.results];
 }
 
 async function latestTrades(
@@ -832,6 +1198,7 @@ export async function financeStocksForRequest(request: Request) {
   let trades: TradeRow[] = [];
   let events: StockEventRow[] = [];
   let holders: HoldingRow[] = [];
+  let liquidationOperations: StockLiquidationOperationRow[] = [];
   if (stock) {
     if (context.actor.type === "student") {
       [wallet, holding] = await Promise.all([
@@ -845,7 +1212,7 @@ export async function financeStocksForRequest(request: Request) {
       ]);
       trades = (await latestTrades(db, context.classroom.id, context.actor.id, 30)).results;
     } else {
-      const [tradeResult, eventResult, holderResult] = await Promise.all([
+      const [tradeResult, eventResult, holderResult, liquidationResult] = await Promise.all([
         latestTrades(db, context.classroom.id, null, 100),
         latestStockEvents(db, context.classroom.id, 80),
         db.prepare(
@@ -858,10 +1225,12 @@ export async function financeStocksForRequest(request: Request) {
              AND holding.quantity > 0
            ORDER BY holding.quantity DESC, student.student_number, student.id`,
         ).bind(context.classroom.id, stock.id).all<HoldingRow>(),
+        recentStockLiquidationOperations(db, context.classroom.id, stock.id, 40),
       ]);
       trades = tradeResult.results;
       events = eventResult.results;
       holders = holderResult.results;
+      liquidationOperations = liquidationResult;
     }
     if (events.length === 0) {
       events = (await latestStockEvents(db, context.classroom.id, 40)).results;
@@ -905,6 +1274,9 @@ export async function financeStocksForRequest(request: Request) {
           },
           ...serializeHolding(row, Number(stock.current_price)),
         }))
+      : [],
+    liquidations: context.financeRole === "teacher" && stock
+      ? liquidationOperations.map(serializeStockLiquidationOperation)
       : [],
     trades: trades.map(serializeTrade),
     news: newsResult.results.map((row) => serializeNews(row, now, latestPriceTickAt(events))),
@@ -1454,6 +1826,10 @@ export async function tradeFinanceStock(
       reason: string;
       origin: TeacherLiquidationOrigin;
       operationId: string;
+      chunk?: {
+        operation: StockLiquidationOperationRow;
+        chunkIndex: number;
+      };
     };
   } = {},
 ) {
@@ -1480,8 +1856,17 @@ export async function tradeFinanceStock(
           teacherId: context.actor.id,
           reason: options.teacherLiquidation.reason,
           origin: options.teacherLiquidation.origin,
-          operationId: options.teacherLiquidation.operationId,
-          confirmedSnapshot: {
+           operationId: options.teacherLiquidation.operationId,
+           ...(options.teacherLiquidation.chunk
+             ? {
+                 rootIdempotencyKey:
+                   options.teacherLiquidation.chunk.operation.root_idempotency_key,
+                 chunkIndex: options.teacherLiquidation.chunk.chunkIndex,
+                 operationRevisionBefore:
+                   Number(options.teacherLiquidation.chunk.operation.revision),
+               }
+             : {}),
+           confirmedSnapshot: {
             stockRevision: order.expectedStockRevision,
             marketRevision: order.expectedMarketRevision,
             financeSettingsRevision: order.expectedFinanceSettingsRevision,
@@ -1542,6 +1927,17 @@ export async function tradeFinanceStock(
         "FINANCE_STOCK_LIQUIDATION_STUDENT_UNAVAILABLE",
       );
     }
+    if (options.teacherLiquidation.chunk && (
+      options.teacherLiquidation.chunk.operation.status !== "running"
+      || Number(options.teacherLiquidation.chunk.operation.next_chunk_index)
+        !== options.teacherLiquidation.chunk.chunkIndex
+    )) {
+      throw new ApiError(
+        409,
+        "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 다시 확인해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_STALE",
+      );
+    }
   } else {
     if (!market.is_open) {
       throw new ApiError(409, "지금은 주식시장이 쉬는 시간입니다.", "FINANCE_STOCK_MARKET_CLOSED");
@@ -1570,20 +1966,35 @@ export async function tradeFinanceStock(
     throw new ApiError(409, "지갑 잔액이 바뀌었습니다. 최신 정보를 다시 확인해 주세요.", "FINANCE_ACCOUNT_STALE");
   }
 
-  const step = Math.min(...settings.denominations);
-  const feeBps = order.side === "buy"
-    ? Number(market.buy_fee_bps)
-    : Number(market.sell_fee_bps);
+  const liquidationChunk = options.teacherLiquidation?.chunk;
+  const step = liquidationChunk
+    ? Number(liquidationChunk.operation.snapshot_denomination_step)
+    : Math.min(...settings.denominations);
+  const feeBps = liquidationChunk
+    ? Number(liquidationChunk.operation.snapshot_fee_bps)
+    : order.side === "buy"
+      ? Number(market.buy_fee_bps)
+      : Number(market.sell_fee_bps);
+  const referencePrice = liquidationChunk
+    ? Number(liquidationChunk.operation.snapshot_reference_price)
+    : Number(stock.current_price);
+  const spread = liquidationChunk
+    ? Number(liquidationChunk.operation.snapshot_spread)
+    : order.side === "buy"
+      ? Number(market.buy_spread)
+      : Number(market.sell_spread);
   let unitPrice: number;
   let position: ReturnType<typeof calculateFinanceStockPositionAfterTrade>;
   try {
-    unitPrice = calculateFinanceStockExecutionPrice({
-      side: order.side,
-      currentPrice: stock.current_price,
-      buySpread: market.buy_spread,
-      sellSpread: market.sell_spread,
-      denominationStep: step,
-    }).unitPrice;
+    unitPrice = liquidationChunk
+      ? Number(liquidationChunk.operation.snapshot_unit_price)
+      : calculateFinanceStockExecutionPrice({
+          side: order.side,
+          currentPrice: stock.current_price,
+          buySpread: market.buy_spread,
+          sellSpread: market.sell_spread,
+          denominationStep: step,
+        }).unitPrice;
     position = calculateFinanceStockPositionAfterTrade({
       side: order.side,
       unitPrice,
@@ -1638,9 +2049,6 @@ export async function tradeFinanceStock(
   const holdingRevisionAfter = holdingRevision + 1;
   const inventoryRevisionAfter = Number(stock.inventory_revision) + 1;
   const walletRevisionAfter = Number(accounts.wallet.revision) + 1;
-  const spread = order.side === "buy"
-    ? Number(market.buy_spread)
-    : Number(market.sell_spread);
   const transaction = normalizeFinanceTransaction({
     classId: context.classroom.id,
     idempotencyKey: `stock-trade:${tradeId}:ledger`,
@@ -1676,7 +2084,7 @@ export async function tradeFinanceStock(
       studentId: tradingStudentId,
       side: order.side,
       quantity: order.quantity,
-      referencePrice: Number(stock.current_price),
+      referencePrice,
       spreadSnapshot: spread,
       unitPrice,
       grossAmount: position.quote.grossAmount,
@@ -1706,7 +2114,28 @@ export async function tradeFinanceStock(
             studentStatusSnapshot: targetStudent?.status,
             marketWasOpen: Boolean(market.is_open),
             stockStatusSnapshot: stock.status,
-            liquidationPolicy: "current_market_terms_at_liquidation",
+            liquidationPolicy: liquidationChunk
+              ? "frozen_quote_resumable"
+              : "current_market_terms_at_liquidation",
+            ...(liquidationChunk
+              ? {
+                  rootIdempotencyKey:
+                    liquidationChunk.operation.root_idempotency_key,
+                  chunkIndex: liquidationChunk.chunkIndex,
+                  operationRevisionBefore:
+                    Number(liquidationChunk.operation.revision),
+                  frozenStockRevision:
+                    Number(liquidationChunk.operation.snapshot_stock_revision),
+                  frozenMarketRevision:
+                    Number(liquidationChunk.operation.snapshot_market_revision),
+                  frozenFinanceSettingsRevision: Number(
+                    liquidationChunk.operation.snapshot_finance_settings_revision,
+                  ),
+                  frozenDenominationStep: Number(
+                    liquidationChunk.operation.snapshot_denomination_step,
+                  ),
+                }
+              : {}),
           }
         : {}),
     },
@@ -1749,7 +2178,7 @@ export async function tradeFinanceStock(
       walletRevisionAfter,
       order.side,
       order.quantity,
-      stock.current_price,
+      referencePrice,
       spread,
       unitPrice,
       position.quote.grossAmount,
@@ -1850,6 +2279,36 @@ export async function tradeFinanceStock(
       context.classroom.id,
     ),
   );
+  if (liquidationChunk) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO finance_stock_liquidation_chunks (
+           id, operation_id, class_id, chunk_index, trade_id,
+           quantity, gross_amount, fee_amount, wallet_delta,
+           cost_basis_removed, realized_gain,
+           holding_quantity_before, holding_quantity_after,
+           holding_cost_basis_before, holding_cost_basis_after, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        `${liquidationChunk.operation.id}:chunk:${liquidationChunk.chunkIndex}`,
+        liquidationChunk.operation.id,
+        context.classroom.id,
+        liquidationChunk.chunkIndex,
+        tradeId,
+        order.quantity,
+        position.quote.grossAmount,
+        position.quote.feeAmount,
+        position.quote.walletChange,
+        position.costBasisRemoved,
+        position.realizedProfit,
+        position.quantityBefore,
+        position.quantityAfter,
+        position.totalCostBefore,
+        position.totalCostAfter,
+        now,
+      ),
+    );
+  }
   try {
     await db.batch(statements);
   } catch (error) {
@@ -1911,29 +2370,360 @@ export async function liquidateFinanceStockHolding(
     idempotencyKey: key,
   }))).slice(0, 48)}`;
   const db = database();
+  const requestedOperationId = input.operationId === undefined
+    ? null
+    : requiredId(input.operationId, "비상 청산 작업 ID");
+  const requestedOperationRevision = input.expectedOperationRevision === undefined
+    ? 0
+    : expectedRevision(input.expectedOperationRevision, "비상 청산 진행 상태");
+  const operationPayloadHash = await sha256(stableFinanceJson({
+    classId: context.classroom.id,
+    stockId,
+    studentId,
+    teacherId: context.actor.id,
+    rootIdempotencyKey: key,
+    reason,
+    origin,
+  }));
 
-  const duplicate = await tradeByIdempotency(
+  let operation = await stockLiquidationOperationByRootKey(
     db,
     context.classroom.id,
-    studentId,
     key,
   );
-  if (duplicate) {
-    return tradeFinanceStock(request, stockId, {
-      side: "sell",
-      quantity: Number(duplicate.quantity),
-      expectedStockRevision: expectedStock,
-      expectedMarketRevision: expectedMarket,
-      expectedFinanceSettingsRevision: expectedSettings,
-      expectedHoldingRevision: expectedHolding,
-      expectedWalletRevision: Number(duplicate.wallet_revision_before),
-      idempotencyKey: key,
-    }, {
-      teacherLiquidation: { studentId, reason, origin, operationId },
-    });
+  if (operation) {
+    if (
+      operation.payload_hash !== operationPayloadHash
+      || operation.stock_id !== stockId
+      || operation.student_id !== studentId
+      || operation.teacher_id !== context.actor.id
+    ) {
+      throw new ApiError(
+        409,
+        "같은 비상 청산 요청 번호가 다른 작업에 사용되었습니다.",
+        "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
+      );
+    }
+    if (requestedOperationId && requestedOperationId !== operation.id) {
+      throw new ApiError(
+        409,
+        "비상 청산 작업 번호가 현재 진행 중인 작업과 다릅니다.",
+        "FINANCE_STOCK_LIQUIDATION_STALE",
+      );
+    }
+    if (operation.status === "cancelled") {
+      throw new ApiError(
+        409,
+        "취소된 비상 청산은 다시 이어서 처리할 수 없습니다.",
+        "FINANCE_STOCK_LIQUIDATION_CANCELLED",
+      );
+    }
+    if (requestedOperationRevision > Number(operation.revision)) {
+      throw new ApiError(
+        409,
+        "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_STALE",
+      );
+    }
+    if (requestedOperationRevision < Number(operation.revision)) {
+      const committedChunk = await stockLiquidationChunkByIndex(
+        db,
+        context.classroom.id,
+        operation.id,
+        requestedOperationRevision,
+      );
+      const committedTrade = committedChunk
+        ? await tradeById(db, context.classroom.id, committedChunk.trade_id)
+        : null;
+      if (committedTrade) {
+        return {
+          trade: serializeTrade(committedTrade),
+          operation: serializeStockLiquidationOperation(operation),
+          chunksProcessed: 0,
+          deduplicated: true,
+        };
+      }
+      throw new ApiError(
+        409,
+        "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_STALE",
+      );
+    }
+    if (operation.status === "completed") {
+      const completedTrade = operation.last_trade_id
+        ? await tradeById(db, context.classroom.id, operation.last_trade_id)
+        : null;
+      if (!completedTrade) {
+        throw new ApiError(
+          500,
+          "완료된 비상 청산의 마지막 거래를 확인하지 못했습니다.",
+          "FINANCE_STOCK_LIQUIDATION_UNAVAILABLE",
+        );
+      }
+      return {
+        trade: serializeTrade(completedTrade),
+        operation: serializeStockLiquidationOperation(operation),
+        chunksProcessed: 0,
+        deduplicated: true,
+      };
+    }
+  } else {
+    if (requestedOperationId || requestedOperationRevision !== 0) {
+      throw new ApiError(
+        409,
+        "이어갈 비상 청산 작업을 찾지 못했습니다.",
+        "FINANCE_STOCK_LIQUIDATION_STALE",
+      );
+    }
+
+    // Preserve the original one-transaction behavior for positions whose gross
+    // proceeds already fit within a single ledger-safe trade.
+    const replaySmallLiquidation = (trade: TradeRow) => tradeFinanceStock(
+      request,
+      stockId,
+      {
+        side: "sell",
+        quantity: Number(trade.quantity),
+        expectedStockRevision: expectedStock,
+        expectedMarketRevision: expectedMarket,
+        expectedFinanceSettingsRevision: expectedSettings,
+        expectedHoldingRevision: expectedHolding,
+        expectedWalletRevision: Number(trade.wallet_revision_before),
+        idempotencyKey: key,
+      },
+      {
+        teacherLiquidation: { studentId, reason, origin, operationId },
+      },
+    );
+    const duplicate = await tradeByIdempotency(
+      db,
+      context.classroom.id,
+      studentId,
+      key,
+    );
+    if (duplicate) {
+      return replaySmallLiquidation(duplicate);
+    }
+
+    const [market, stock, settings, holding, accounts, targetStudent] = await Promise.all([
+      marketForClass(db, context.classroom.id),
+      stockById(db, context.classroom.id, stockId),
+      financeSettingsForClass(context.classroom.id),
+      holdingForStudent(db, context.classroom.id, stockId, studentId),
+      accountRows(db, context.classroom.id, studentId),
+      db.prepare(
+        `SELECT id, status FROM students
+         WHERE id = ? AND class_id = ? LIMIT 1`,
+      ).bind(studentId, context.classroom.id).first<StudentStatusRow>(),
+    ]);
+    const concurrentDuplicate = await tradeByIdempotency(
+      db,
+      context.classroom.id,
+      studentId,
+      key,
+    );
+    if (concurrentDuplicate) {
+      return replaySmallLiquidation(concurrentDuplicate);
+    }
+    if (!market || !stock) {
+      throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
+    }
+    if (!holding || Number(holding.quantity) <= 0) {
+      throw new ApiError(409, "이 학생이 보유한 주식이 없습니다.", "FINANCE_STOCK_NO_HOLDINGS");
+    }
+    const wallet = accounts.wallet;
+    if (
+      wallet.status !== "active"
+      || !targetStudent
+      || !TEACHER_LIQUIDATION_STUDENT_STATUSES.has(targetStudent.status)
+    ) {
+      throw new ApiError(
+        409,
+        "현재 이 학생의 지갑이나 계정 상태로는 비상 청산을 시작할 수 없습니다.",
+        "FINANCE_STOCK_LIQUIDATION_STUDENT_UNAVAILABLE",
+      );
+    }
+    if (stock.status === "archived") {
+      throw new ApiError(
+        409,
+        "보관된 종목은 비상 청산할 수 없습니다.",
+        "FINANCE_STOCK_IMMUTABLE",
+      );
+    }
+    if (
+      Number(stock.revision) !== expectedStock
+      || Number(market.revision) !== expectedMarket
+      || settings.revision !== expectedSettings
+      || Number(holding.revision) !== expectedHolding
+    ) {
+      throw new ApiError(
+        409,
+        "시세·수수료·학급화폐 설정 또는 학생 보유량이 바뀌었습니다. 최신 지급 예정액을 다시 확인해 주세요.",
+        "FINANCE_STOCK_TRADE_STALE",
+      );
+    }
+
+    const denominationStep = Math.min(...settings.denominations);
+    const referencePrice = Number(stock.current_price);
+    const sellSpread = Number(market.sell_spread);
+    let unitPrice: number;
+    let totals: ReturnType<typeof calculateFinanceStockLiquidationTotals>;
+    try {
+      unitPrice = calculateFinanceStockExecutionPrice({
+        side: "sell",
+        currentPrice: referencePrice,
+        buySpread: market.buy_spread,
+        sellSpread,
+        denominationStep,
+      }).unitPrice;
+      totals = calculateFinanceStockLiquidationTotals({
+        quantity: holding.quantity,
+        unitPrice,
+        feeBps: market.sell_fee_bps,
+        denominationStep,
+      });
+    } catch (error) {
+      ruleError(error);
+    }
+
+    const payoutHeadroom = BigInt(MAX_FINANCE_AMOUNT - Number(wallet.balance));
+    if (totals.payoutAmount > payoutHeadroom) {
+      throw new ApiError(
+        409,
+        "청산 예정액을 모두 지급하면 학생 지갑 한도를 넘습니다. 지갑 여유를 만들거나 주가를 낮춘 뒤 다시 확인해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_PAYOUT_LIMIT",
+      );
+    }
+    const issuanceHeadroom = BigInt(
+      MAX_FINANCE_AMOUNT + Number(accounts.issuance.balance),
+    );
+    if (totals.payoutAmount > issuanceHeadroom) {
+      throw new ApiError(
+        409,
+        "학급 금융 원장의 안전 한도 때문에 이 청산액을 한 번에 예약할 수 없습니다. 주가를 낮춘 뒤 다시 확인해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_ISSUANCE_LIMIT",
+      );
+    }
+    if (totals.grossAmount <= BigInt(MAX_FINANCE_AMOUNT)) {
+      return tradeFinanceStock(request, stockId, {
+        side: "sell",
+        quantity: Number(holding.quantity),
+        expectedStockRevision: expectedStock,
+        expectedMarketRevision: expectedMarket,
+        expectedFinanceSettingsRevision: settings.revision,
+        expectedHoldingRevision: expectedHolding,
+        expectedWalletRevision: Number(wallet.revision),
+        idempotencyKey: key,
+      }, {
+        teacherLiquidation: { studentId, reason, origin, operationId },
+      });
+    }
+    if (
+      totals.chunkCount > 2
+      || totals.grossAmount > BigInt(Number.MAX_SAFE_INTEGER)
+      || totals.feeAmount > BigInt(Number.MAX_SAFE_INTEGER)
+      || totals.payoutAmount > BigInt(Number.MAX_SAFE_INTEGER)
+    ) {
+      throw new ApiError(
+        409,
+        "이 보유량은 한 번의 비상 청산 작업으로 안전하게 처리할 수 없습니다. 주가를 낮춘 뒤 다시 시도해 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_TOO_LARGE",
+      );
+    }
+
+    const now = Date.now();
+    try {
+      await db.prepare(
+        `INSERT INTO finance_stock_liquidation_operations (
+           id, class_id, stock_id, student_id, teacher_id,
+           root_idempotency_key, payload_hash, origin, intervention_reason,
+           status, snapshot_reference_price, snapshot_spread,
+           snapshot_unit_price, snapshot_fee_bps,
+           snapshot_denomination_step, snapshot_stock_revision,
+           snapshot_market_revision, snapshot_finance_settings_revision,
+           snapshot_holding_revision, snapshot_wallet_revision,
+           snapshot_wallet_balance, snapshot_student_status,
+           snapshot_stock_status, snapshot_market_was_open,
+           initial_quantity, remaining_quantity, sold_quantity,
+           initial_cost_basis, remaining_cost_basis,
+           expected_gross_amount, expected_fee_amount, expected_wallet_delta,
+           completed_chunk_count, total_gross_amount, total_fee_amount,
+           total_wallet_delta, total_cost_basis_removed, total_realized_gain,
+           next_chunk_index, last_trade_id, revision,
+           created_at, updated_at, completed_at, cancelled_at,
+           cancellation_reason, cancellation_idempotency_key,
+           cancellation_payload_hash
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?,
+                   ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, 0, 0, 0,
+                   0, 0, 0, NULL, 0, ?, ?, NULL, NULL, NULL, NULL, NULL)`,
+      ).bind(
+        operationId,
+        context.classroom.id,
+        stockId,
+        studentId,
+        context.actor.id,
+        key,
+        operationPayloadHash,
+        origin,
+        reason,
+        referencePrice,
+        sellSpread,
+        unitPrice,
+        Number(market.sell_fee_bps),
+        denominationStep,
+        Number(stock.revision),
+        Number(market.revision),
+        settings.revision,
+        Number(holding.revision),
+        Number(wallet.revision),
+        Number(wallet.balance),
+        targetStudent.status,
+        stock.status,
+        Number(Boolean(market.is_open)),
+        Number(holding.quantity),
+        Number(holding.quantity),
+        Number(holding.cost_basis),
+        Number(holding.cost_basis),
+        Number(totals.grossAmount),
+        Number(totals.feeAmount),
+        Number(totals.payoutAmount),
+        now,
+        now,
+      ).run();
+    } catch (error) {
+      const concurrent = await stockLiquidationOperationByRootKey(
+        db,
+        context.classroom.id,
+        key,
+      );
+      if (!concurrent || concurrent.payload_hash !== operationPayloadHash) {
+        mapDatabaseError(error);
+      }
+    }
+    operation = await stockLiquidationOperationByRootKey(
+      db,
+      context.classroom.id,
+      key,
+    );
+    if (!operation) {
+      throw new ApiError(
+        500,
+        "비상 청산 진행 기록을 준비하지 못했습니다.",
+        "FINANCE_STOCK_LIQUIDATION_UNAVAILABLE",
+      );
+    }
   }
 
-  const [market, stock, settings, holding, wallet] = await Promise.all([
+  const reconciledProgress = await reconcileStockLiquidationProgress(
+    db,
+    context.classroom.id,
+    operation.id,
+    requestedOperationRevision,
+  );
+  operation = reconciledProgress.operation;
+  if (reconciledProgress.result) return reconciledProgress.result;
+
+  const [liveMarket, liveStock, liveSettings, liveHolding, liveWallet] = await Promise.all([
     marketForClass(db, context.classroom.id),
     stockById(db, context.classroom.id, stockId),
     financeSettingsForClass(context.classroom.id),
@@ -1945,40 +2735,301 @@ export async function liquidateFinanceStockHolding(
        LIMIT 1`,
     ).bind(context.classroom.id, studentId).first<AccountRow>(),
   ]);
-  if (!market || !stock) {
-    throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
-  }
-  if (!holding || Number(holding.quantity) <= 0) {
-    throw new ApiError(409, "이 학생이 보유한 주식이 없습니다.", "FINANCE_STOCK_NO_HOLDINGS");
-  }
-  if (!wallet) {
-    throw new ApiError(409, "학생 지갑을 찾지 못했습니다.", "FINANCE_ACCOUNT_NOT_FOUND");
-  }
-  if (
-    Number(stock.revision) !== expectedStock
-    || Number(market.revision) !== expectedMarket
-    || settings.revision !== expectedSettings
-    || Number(holding.revision) !== expectedHolding
-  ) {
+  if (!liveMarket || !liveStock || !liveHolding || !liveWallet) {
+    const latestProgress = await reconcileStockLiquidationProgress(
+      db,
+      context.classroom.id,
+      operation.id,
+      requestedOperationRevision,
+    );
+    if (latestProgress.result) return latestProgress.result;
     throw new ApiError(
       409,
-      "시세·수수료·학급화폐 설정 또는 학생 보유량이 바뀌었습니다. 최신 지급 예정액을 다시 확인해 주세요.",
-      "FINANCE_STOCK_TRADE_STALE",
+      "비상 청산에 필요한 현재 주식 또는 지갑 기록을 찾지 못했습니다.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  if (
+    Number(liveHolding.quantity) !== Number(operation.remaining_quantity)
+    || Number(liveHolding.cost_basis) !== Number(operation.remaining_cost_basis)
+    || Number(liveWallet.balance)
+      !== Number(operation.snapshot_wallet_balance) + Number(operation.total_wallet_delta)
+  ) {
+    const latestProgress = await reconcileStockLiquidationProgress(
+      db,
+      context.classroom.id,
+      operation.id,
+      requestedOperationRevision,
+    );
+    if (latestProgress.result) return latestProgress.result;
+    throw new ApiError(
+      409,
+      "비상 청산 중인 보유 주식 또는 지갑 기록이 예상과 다릅니다. 작업을 취소하고 기록을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_PROJECTION_MISMATCH",
     );
   }
 
-  return tradeFinanceStock(request, stockId, {
-    side: "sell",
-    quantity: Number(holding.quantity),
-    expectedStockRevision: expectedStock,
-    expectedMarketRevision: expectedMarket,
-    expectedFinanceSettingsRevision: settings.revision,
-    expectedHoldingRevision: expectedHolding,
-    expectedWalletRevision: Number(wallet.revision),
-    idempotencyKey: key,
-  }, {
-    teacherLiquidation: { studentId, reason, origin, operationId },
-  });
+  let nextChunk: ReturnType<typeof calculateFinanceStockLiquidationChunk>;
+  try {
+    nextChunk = calculateFinanceStockLiquidationChunk({
+      remainingQuantity: operation.remaining_quantity,
+      remainingCostBasis: operation.remaining_cost_basis,
+      unitPrice: operation.snapshot_unit_price,
+      feeBps: operation.snapshot_fee_bps,
+      denominationStep: operation.snapshot_denomination_step,
+    });
+  } catch (error) {
+    ruleError(error);
+  }
+  const chunkIndex = Number(operation.next_chunk_index);
+  const chunkIdempotencyKey = `${operation.id}:chunk:${chunkIndex}`;
+  try {
+    const tradeResult = await tradeFinanceStock(request, stockId, {
+      side: "sell",
+      quantity: nextChunk.quantity,
+      expectedStockRevision: Number(liveStock.revision),
+      expectedMarketRevision: Number(liveMarket.revision),
+      expectedFinanceSettingsRevision: liveSettings.revision,
+      expectedHoldingRevision: Number(liveHolding.revision),
+      expectedWalletRevision: Number(liveWallet.revision),
+      idempotencyKey: chunkIdempotencyKey,
+    }, {
+      teacherLiquidation: {
+        studentId,
+        reason: operation.intervention_reason,
+        origin: operation.origin as TeacherLiquidationOrigin,
+        operationId: operation.id,
+        chunk: { operation, chunkIndex },
+      },
+    });
+    const savedOperation = await stockLiquidationOperationById(
+      db,
+      context.classroom.id,
+      operation.id,
+    );
+    const savedChunk = await stockLiquidationChunkByIndex(
+      db,
+      context.classroom.id,
+      operation.id,
+      chunkIndex,
+    );
+    if (!savedOperation || !savedChunk) {
+      throw new ApiError(
+        503,
+        "거래는 완료되지 않았습니다. 최신 진행률을 불러온 뒤 같은 작업을 다시 이어 주세요.",
+        "FINANCE_STOCK_LIQUIDATION_RETRY_REQUIRED",
+      );
+    }
+    return {
+      trade: tradeResult.trade,
+      operation: serializeStockLiquidationOperation(savedOperation),
+      chunksProcessed: tradeResult.deduplicated ? 0 : 1,
+      deduplicated: tradeResult.deduplicated,
+    };
+  } catch (error) {
+    const [committedChunk, savedOperation] = await Promise.all([
+      stockLiquidationChunkByIndex(
+        db,
+        context.classroom.id,
+        operation.id,
+        chunkIndex,
+      ),
+      stockLiquidationOperationById(db, context.classroom.id, operation.id),
+    ]);
+    if (committedChunk && savedOperation) {
+      const committedTrade = await tradeById(
+        db,
+        context.classroom.id,
+        committedChunk.trade_id,
+      );
+      if (committedTrade) {
+        return {
+          trade: serializeTrade(committedTrade),
+          operation: serializeStockLiquidationOperation(savedOperation),
+          chunksProcessed: 0,
+          deduplicated: true,
+        };
+      }
+    }
+    if (savedOperation?.status === "cancelled") {
+      throw new ApiError(
+        409,
+        "이 비상 청산 작업은 다른 화면에서 취소되었습니다.",
+        "FINANCE_STOCK_LIQUIDATION_CANCELLED",
+      );
+    }
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(
+      503,
+      "청산 거래가 반영되지 않았습니다. 최신 진행률을 불러온 뒤 같은 작업을 다시 이어 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_RETRY_REQUIRED",
+    );
+  }
+}
+
+export async function cancelFinanceStockLiquidation(
+  request: Request,
+  operationIdValue: unknown,
+  input: Record<string, unknown>,
+) {
+  const context = await financeContextForRequest(request);
+  assertTeacher(context);
+  const operationId = requiredId(operationIdValue, "비상 청산 작업 ID");
+  const revision = expectedRevision(
+    input.expectedOperationRevision,
+    "비상 청산 진행 상태",
+  );
+  const reason = normalizedText(input.reason, "취소 이유", 300);
+  if (reason.length < 2) {
+    throw new ApiError(
+      400,
+      "취소 이유를 2자 이상 적어 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_REASON_REQUIRED",
+    );
+  }
+  const key = idempotencyKey(input.idempotencyKey);
+  const payloadHash = await sha256(stableFinanceJson({
+    classId: context.classroom.id,
+    operationId,
+    expectedOperationRevision: revision,
+    reason,
+  }));
+  const db = database();
+  const duplicate = await stockLiquidationOperationByCancellationKey(
+    db,
+    context.classroom.id,
+    key,
+  );
+  if (duplicate) {
+    if (
+      duplicate.id !== operationId
+      || duplicate.cancellation_payload_hash !== payloadHash
+    ) {
+      throw new ApiError(
+        409,
+        "같은 취소 요청 번호가 다른 작업에 사용되었습니다.",
+        "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
+      );
+    }
+    return {
+      operation: serializeStockLiquidationOperation(duplicate),
+      deduplicated: true,
+    };
+  }
+  const operation = await stockLiquidationOperationById(
+    db,
+    context.classroom.id,
+    operationId,
+  );
+  if (!operation) {
+    throw new ApiError(
+      404,
+      "비상 청산 작업을 찾지 못했습니다.",
+      "FINANCE_STOCK_LIQUIDATION_NOT_FOUND",
+    );
+  }
+  if (operation.status === "completed") {
+    throw new ApiError(
+      409,
+      "이미 완료된 비상 청산은 취소할 수 없습니다.",
+      "FINANCE_STOCK_LIQUIDATION_COMPLETED",
+    );
+  }
+  if (operation.status === "cancelled") {
+    throw new ApiError(
+      409,
+      "이미 취소된 비상 청산입니다.",
+      "FINANCE_STOCK_LIQUIDATION_CANCELLED",
+    );
+  }
+  if (Number(operation.revision) !== revision) {
+    throw new ApiError(
+      409,
+      "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  const now = Date.now();
+  let cancelledByThisRequest = false;
+  try {
+    const result = await db.prepare(
+      `UPDATE finance_stock_liquidation_operations
+       SET status = 'cancelled', revision = revision + 1,
+           cancellation_reason = ?, cancellation_idempotency_key = ?,
+           cancellation_payload_hash = ?, cancelled_at = ?, updated_at = ?
+       WHERE id = ? AND class_id = ? AND status = 'running' AND revision = ?`,
+    ).bind(
+      reason,
+      key,
+      payloadHash,
+      now,
+      now,
+      operationId,
+      context.classroom.id,
+      revision,
+    ).run();
+    cancelledByThisRequest = Boolean(result.meta.changes);
+  } catch (error) {
+    const concurrent = await stockLiquidationOperationByCancellationKey(
+      db,
+      context.classroom.id,
+      key,
+    );
+    if (
+      concurrent
+      && concurrent.id === operationId
+      && concurrent.cancellation_payload_hash === payloadHash
+    ) {
+      return {
+        operation: serializeStockLiquidationOperation(concurrent),
+        deduplicated: true,
+      };
+    }
+    mapDatabaseError(error);
+  }
+  if (!cancelledByThisRequest) {
+    const concurrent = await stockLiquidationOperationByCancellationKey(
+      db,
+      context.classroom.id,
+      key,
+    );
+    if (
+      concurrent
+      && concurrent.id === operationId
+      && concurrent.cancellation_payload_hash === payloadHash
+    ) {
+      return {
+        operation: serializeStockLiquidationOperation(concurrent),
+        deduplicated: true,
+      };
+    }
+    throw new ApiError(
+      409,
+      "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  const saved = await stockLiquidationOperationById(
+    db,
+    context.classroom.id,
+    operationId,
+  );
+  if (
+    !saved
+    || saved.status !== "cancelled"
+    || saved.cancellation_idempotency_key !== key
+    || saved.cancellation_payload_hash !== payloadHash
+  ) {
+    throw new ApiError(
+      409,
+      "비상 청산 진행 상태가 바뀌었습니다. 최신 진행률을 확인해 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_STALE",
+    );
+  }
+  return {
+    operation: serializeStockLiquidationOperation(saved),
+    deduplicated: false,
+  };
 }
 
 async function newsById(db: D1Database, classId: string, newsId: string) {

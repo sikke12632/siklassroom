@@ -98,7 +98,9 @@ type FinanceStockHolding = {
   averagePrice: number;
   costBasis: number;
   marketValue: number;
+  marketValueExact: bigint;
   evaluationProfit: number;
+  evaluationProfitExact: bigint;
   revision: number;
 };
 
@@ -135,6 +137,42 @@ type FinanceStockTrade = {
   };
 };
 
+type FinanceStockLiquidation = {
+  id: string;
+  stockId: string;
+  studentId: string;
+  rootIdempotencyKey: string;
+  interventionReason: string;
+  status: "running" | "completed" | "cancelled";
+  initialQuantity: number;
+  remainingQuantity: number;
+  soldQuantity: number;
+  expectedPayoutAmount: number;
+  completedChunkCount: number;
+  totalPayoutAmount: number;
+  revision: number;
+  frozenQuote: {
+    referencePrice: number;
+    sellSpread: number;
+    unitPrice: number;
+    feeBps: number;
+    denominationStep: number;
+    stockRevision: number;
+    marketRevision: number;
+    financeSettingsRevision: number;
+  };
+  snapshot: {
+    holdingRevision: number;
+  };
+  student: null | {
+    id: string;
+    number: number;
+    name: string;
+  };
+  cancellationReason: string | null;
+  cancellationIdempotencyKey: string | null;
+};
+
 type FinanceStocksData = {
   serverTime: number;
   settingsRevision: number;
@@ -146,6 +184,7 @@ type FinanceStocksData = {
   holdings: FinanceStockHolder[];
   trades: FinanceStockTrade[];
   news: FinanceStockNews[];
+  liquidations: FinanceStockLiquidation[];
 };
 
 type Notice = {
@@ -410,6 +449,21 @@ function numberValue(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function bigintValue(value: unknown, fallback = BigInt(0)) {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && /^-?\d+$/u.test(value)) {
+    try {
+      return BigInt(value);
+    } catch {
+      return fallback;
+    }
+  }
+  return fallback;
+}
+
 function booleanValue(value: unknown, fallback = false) {
   if (typeof value === "boolean") return value;
   const normalized = textValue(value).toLocaleLowerCase("en-US");
@@ -491,16 +545,31 @@ function normalizeHolding(value: unknown, stock: FinanceStockAsset | null): Fina
   const shares = numberValue(raw.shares ?? raw.quantity);
   const averagePrice = numberValue(raw.averagePrice ?? raw.average_price ?? raw.avgPrice ?? raw.avg_price);
   const costBasis = numberValue(raw.costBasis ?? raw.cost_basis, shares * averagePrice);
-  const marketValue = numberValue(raw.marketValue ?? raw.market_value, shares * (stock?.currentPrice ?? 0));
+  const calculatedMarketValue = BigInt(shares) * BigInt(stock?.currentPrice ?? 0);
+  const marketValueExact = bigintValue(
+    raw.marketValueExact ?? raw.market_value_exact ?? raw.marketValue ?? raw.market_value,
+    calculatedMarketValue,
+  );
+  const evaluationProfitExact = bigintValue(
+    raw.evaluationProfitExact
+      ?? raw.evaluation_profit_exact
+      ?? raw.unrealizedProfitExact
+      ?? raw.unrealized_profit_exact
+      ?? raw.evaluationProfit
+      ?? raw.evaluation_profit
+      ?? raw.unrealizedProfit
+      ?? raw.unrealized_profit,
+    marketValueExact - BigInt(costBasis),
+  );
+  const marketValue = Number(marketValueExact);
   return {
     shares,
     averagePrice,
     costBasis,
     marketValue,
-    evaluationProfit: numberValue(
-      raw.evaluationProfit ?? raw.evaluation_profit ?? raw.unrealizedProfit ?? raw.unrealized_profit,
-      marketValue - costBasis,
-    ),
+    marketValueExact,
+    evaluationProfit: Number(evaluationProfitExact),
+    evaluationProfitExact,
     revision: numberValue(raw.revision),
   };
 }
@@ -579,6 +648,96 @@ function normalizeNews(value: unknown): FinanceStockNews | null {
   };
 }
 
+function normalizeLiquidation(value: unknown): FinanceStockLiquidation | null {
+  if (!isRecord(value)) return null;
+  const id = textValue(value.id);
+  const stockId = textValue(value.stockId ?? value.stock_id);
+  const studentId = textValue(value.studentId ?? value.student_id);
+  const rootIdempotencyKey = textValue(
+    value.rootIdempotencyKey ?? value.root_idempotency_key,
+  );
+  const rawStatus = textValue(value.status).toLocaleLowerCase("en-US");
+  if (
+    !id
+    || !stockId
+    || !studentId
+    || !rootIdempotencyKey
+    || !["running", "completed", "cancelled"].includes(rawStatus)
+  ) return null;
+  const frozenRaw = isRecord(value.frozenQuote) ? value.frozenQuote : {};
+  const snapshotRaw = isRecord(value.snapshot) ? value.snapshot : {};
+  const studentRaw = isRecord(value.student) ? value.student : {};
+  const operationStudentId = textValue(studentRaw.id ?? studentId);
+  return {
+    id,
+    stockId,
+    studentId,
+    rootIdempotencyKey,
+    interventionReason: textValue(
+      value.interventionReason ?? value.intervention_reason,
+    ),
+    status: rawStatus as FinanceStockLiquidation["status"],
+    initialQuantity: numberValue(value.initialQuantity ?? value.initial_quantity),
+    remainingQuantity: numberValue(value.remainingQuantity ?? value.remaining_quantity),
+    soldQuantity: numberValue(value.soldQuantity ?? value.sold_quantity),
+    expectedPayoutAmount: numberValue(
+      value.expectedPayoutAmount ?? value.expected_wallet_delta,
+    ),
+    completedChunkCount: numberValue(
+      value.completedChunkCount ?? value.completed_chunk_count,
+    ),
+    totalPayoutAmount: numberValue(
+      value.totalPayoutAmount ?? value.total_wallet_delta,
+    ),
+    revision: numberValue(value.revision),
+    frozenQuote: {
+      referencePrice: numberValue(
+        frozenRaw.referencePrice ?? frozenRaw.reference_price,
+      ),
+      sellSpread: numberValue(frozenRaw.sellSpread ?? frozenRaw.sell_spread),
+      unitPrice: numberValue(frozenRaw.unitPrice ?? frozenRaw.unit_price),
+      feeBps: numberValue(frozenRaw.feeBps ?? frozenRaw.fee_bps),
+      denominationStep: Math.max(1, numberValue(
+        frozenRaw.denominationStep ?? frozenRaw.denomination_step,
+        1,
+      )),
+      stockRevision: numberValue(
+        frozenRaw.stockRevision ?? frozenRaw.stock_revision,
+      ),
+      marketRevision: numberValue(
+        frozenRaw.marketRevision ?? frozenRaw.market_revision,
+      ),
+      financeSettingsRevision: numberValue(
+        frozenRaw.financeSettingsRevision
+          ?? frozenRaw.finance_settings_revision,
+      ),
+    },
+    snapshot: {
+      holdingRevision: numberValue(
+        snapshotRaw.holdingRevision ?? snapshotRaw.holding_revision,
+      ),
+    },
+    student: operationStudentId
+      ? {
+          id: operationStudentId,
+          number: numberValue(studentRaw.number),
+          name: textValue(studentRaw.name, "학생"),
+        }
+      : null,
+    cancellationReason: value.cancellationReason === null
+      || value.cancellation_reason === null
+      ? null
+      : textValue(value.cancellationReason ?? value.cancellation_reason) || null,
+    cancellationIdempotencyKey: value.cancellationIdempotencyKey === null
+      || value.cancellation_idempotency_key === null
+      ? null
+      : textValue(
+        value.cancellationIdempotencyKey
+          ?? value.cancellation_idempotency_key,
+      ) || null,
+  };
+}
+
 export function normalizeStocksResponse(value: unknown): FinanceStocksData {
   if (!isRecord(value)) throw new Error("주식 정보를 확인할 수 없어요. 새로고침해 주세요.");
   const root = isRecord(value.stocks) ? value.stocks : value;
@@ -642,6 +801,11 @@ export function normalizeStocksResponse(value: unknown): FinanceStocksData {
     news: Array.isArray(root.news)
       ? root.news.map(normalizeNews).filter((item): item is FinanceStockNews => item !== null)
       : [],
+    liquidations: Array.isArray(root.liquidations)
+      ? root.liquidations
+        .map(normalizeLiquidation)
+        .filter((item): item is FinanceStockLiquidation => item !== null)
+      : [],
   };
 }
 
@@ -689,9 +853,17 @@ function moneyText(value: number, unit: string) {
   return `${Math.round(value).toLocaleString("ko-KR")} ${unit}`;
 }
 
+function exactMoneyText(value: bigint, unit: string) {
+  return `${value.toLocaleString("ko-KR")} ${unit}`;
+}
+
 function signedMoneyText(value: number, unit: string) {
   const rounded = Math.round(value);
   return `${rounded > 0 ? "+" : ""}${rounded.toLocaleString("ko-KR")} ${unit}`;
+}
+
+function signedExactMoneyText(value: bigint, unit: string) {
+  return `${value > BigInt(0) ? "+" : ""}${value.toLocaleString("ko-KR")} ${unit}`;
 }
 
 function dateTimeText(value: number) {
@@ -1047,6 +1219,7 @@ function TradeHistory({ trades, unit, teacherView }: {
 
 function TeacherHoldingCard({
   holder,
+  liquidation,
   stock,
   market,
   settingsRevision,
@@ -1055,8 +1228,10 @@ function TeacherHoldingCard({
   disabled,
   busyId,
   onLiquidate,
+  onCancelLiquidation,
 }: {
   holder: FinanceStockHolder;
+  liquidation: FinanceStockLiquidation | null;
   stock: FinanceStockAsset;
   market: FinanceStockMarket;
   settingsRevision: number;
@@ -1064,9 +1239,18 @@ function TeacherHoldingCard({
   denominationStep: number;
   disabled: boolean;
   busyId: string | null;
-  onLiquidate: (holder: FinanceStockHolder, reason: string) => Promise<boolean>;
+  onLiquidate: (
+    holder: FinanceStockHolder,
+    reason: string,
+    liquidation?: FinanceStockLiquidation,
+  ) => Promise<boolean>;
+  onCancelLiquidation: (
+    liquidation: FinanceStockLiquidation,
+    reason: string,
+  ) => Promise<boolean>;
 }) {
   const [reason, setReason] = useState("");
+  const [cancellationReason, setCancellationReason] = useState("");
   const [confirmedSnapshot, setConfirmedSnapshot] = useState<string | null>(null);
   const [snapshotChanged, setSnapshotChanged] = useState(false);
   const snapshot = `${holder.revision}:${holder.shares}:${stock.revision}:${stock.currentPrice}:${market.revision}:${market.sellSpread}:${market.sellFeeBps}:${settingsRevision}:${denominationStep}`;
@@ -1074,10 +1258,13 @@ function TeacherHoldingCard({
   const previousSnapshot = useRef(snapshot);
   const slot = `stock-liquidate:${holder.student.id}`;
   const sellPrice = Math.max(0, stock.currentPrice - market.sellSpread);
-  const gross = sellPrice * holder.shares;
-  const fee = tradeFee(gross, market.sellFeeBps, denominationStep);
-  const payout = Math.max(0, gross - fee);
-  const canLiquidate = stock.status !== "archived";
+  const gross = BigInt(sellPrice) * BigInt(holder.shares);
+  const rawFee = (gross * BigInt(market.sellFeeBps)) / BigInt(10_000);
+  const step = BigInt(denominationStep);
+  const fee = (rawFee / step) * step;
+  const payout = gross - fee;
+  const quoteWithinSystemLimit = payout <= BigInt(MAX_AMOUNT);
+  const canLiquidate = stock.status !== "archived" && quoteWithinSystemLimit;
 
   useEffect(() => {
     if (previousSnapshot.current === snapshot) return;
@@ -1094,6 +1281,107 @@ function TeacherHoldingCard({
     if (completed) setSnapshotChanged(false);
   }
 
+  if (liquidation?.status === "running") {
+    const progress = liquidation.initialQuantity > 0
+      ? Math.round((liquidation.soldQuantity * 100) / liquidation.initialQuantity)
+      : 0;
+    const resumeSlot = `stock-liquidate:${holder.student.id}`;
+    const cancelSlot = `stock-liquidation-cancel:${liquidation.id}`;
+    return (
+      <article style={{ ...styles.newsCard, borderColor: "var(--color-warning)" }}>
+        <div style={{ ...styles.actions, justifyContent: "space-between" }}>
+          <strong>{holder.student.number}번 {holder.student.name}</strong>
+          <span className="finance-request-status pending">청산 진행 중</span>
+        </div>
+        <p style={styles.muted}>
+          시작할 때 확인한 매도가와 수수료를 고정해 안전한 크기로 나누어 처리합니다.
+        </p>
+        <progress
+          value={liquidation.soldQuantity}
+          max={liquidation.initialQuantity}
+          aria-label={`비상 청산 ${progress}% 완료`}
+          style={{ width: "100%", minHeight: 14 }}
+        />
+        <div style={styles.preview}>
+          <div style={styles.previewRow}>
+            <span>고정 매도가·수수료</span>
+            <strong>{moneyText(liquidation.frozenQuote.unitPrice, unit)} · {bpsText(liquidation.frozenQuote.feeBps)}</strong>
+          </div>
+          <div style={styles.previewRow}>
+            <span>처리한 수량</span>
+            <strong>{liquidation.soldQuantity.toLocaleString("ko-KR")} / {liquidation.initialQuantity.toLocaleString("ko-KR")}주</strong>
+          </div>
+          <div style={styles.previewRow}>
+            <span>남은 수량</span>
+            <strong>{liquidation.remainingQuantity.toLocaleString("ko-KR")}주</strong>
+          </div>
+          <div style={styles.previewRow}>
+            <span>지급 완료</span>
+            <strong>{moneyText(liquidation.totalPayoutAmount, unit)}</strong>
+          </div>
+          <div style={styles.previewRow}>
+            <span>전체 예상 지급</span>
+            <strong>{moneyText(liquidation.expectedPayoutAmount, unit)}</strong>
+          </div>
+        </div>
+        <div className="finance-action-notice info" style={{ marginTop: 10 }}>
+          <ShieldCheck aria-hidden="true" />
+          <p>다음 버튼은 남은 수량 중 안전한 한 묶음만 처리합니다. 중복 클릭해도 같은 묶음은 한 번만 반영됩니다.</p>
+        </div>
+        <button
+          className="button button-primary button-large"
+          style={styles.fullAction}
+          type="button"
+          disabled={disabled}
+          onClick={() => void onLiquidate(
+            holder,
+            liquidation.interventionReason,
+            liquidation,
+          )}
+        >
+          {busyId === resumeSlot
+            ? <LoaderCircle className="spin" aria-hidden="true" />
+            : <RefreshCw aria-hidden="true" />}
+          다음 묶음 이어 처리
+        </button>
+        <details>
+          <summary style={{ cursor: "pointer", fontWeight: 750 }}>작업을 중단해야 하나요?</summary>
+          <form
+            style={{ display: "grid", gap: 8, marginTop: 10 }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (cancellationReason.trim().length >= 2) {
+                void onCancelLiquidation(liquidation, cancellationReason.trim());
+              }
+            }}
+          >
+            <label style={styles.label}>
+              취소 이유
+              <input
+                value={cancellationReason}
+                minLength={2}
+                maxLength={300}
+                onChange={(event) => setCancellationReason(event.target.value)}
+                disabled={disabled}
+                required
+              />
+            </label>
+            <button
+              className="button finance-danger-button"
+              type="submit"
+              disabled={disabled || cancellationReason.trim().length < 2}
+            >
+              {busyId === cancelSlot
+                ? <LoaderCircle className="spin" aria-hidden="true" />
+                : <CircleAlert aria-hidden="true" />}
+              진행 작업 취소
+            </button>
+          </form>
+        </details>
+      </article>
+    );
+  }
+
   return (
     <article style={styles.newsCard}>
       <div style={{ ...styles.actions, justifyContent: "space-between" }}>
@@ -1104,9 +1392,9 @@ function TeacherHoldingCard({
       </div>
       <div style={styles.preview}>
         <div style={styles.previewRow}><span>평균 매수가</span><strong>{moneyText(holder.averagePrice, unit)}</strong></div>
-        <div style={styles.previewRow}><span>현재 평가액</span><strong>{moneyText(holder.marketValue, unit)}</strong></div>
-        <div style={styles.previewRow}><span>예상 수수료</span><strong>{moneyText(fee, unit)}</strong></div>
-        <div style={styles.previewRow}><span>전량 매도 예상 지급</span><strong>{moneyText(payout, unit)}</strong></div>
+        <div style={styles.previewRow}><span>현재 평가액</span><strong>{exactMoneyText(BigInt(stock.currentPrice) * BigInt(holder.shares), unit)}</strong></div>
+        <div style={styles.previewRow}><span>예상 수수료</span><strong>{exactMoneyText(fee, unit)}</strong></div>
+        <div style={styles.previewRow}><span>전량 매도 예상 지급</span><strong>{exactMoneyText(payout, unit)}</strong></div>
       </div>
       <details>
         <summary style={{ cursor: "pointer", fontWeight: 750 }}>문제 발생 시 교사가 비상 청산</summary>
@@ -1131,7 +1419,11 @@ function TeacherHoldingCard({
             </small>
           )}
           {!canLiquidate && (
-            <small style={styles.fieldHelp}>보관된 종목은 비상 청산할 수 없어요.</small>
+            <small style={styles.fieldHelp}>
+              {stock.status === "archived"
+                ? "보관된 종목은 비상 청산할 수 없어요."
+                : "예상 지급액이 지갑 안전 한도 10억을 넘어요. 현재 가격을 낮춘 뒤 다시 확인해 주세요."}
+            </small>
           )}
           {canLiquidate && (!market.isOpen || stock.status === "halted") && (
             <small style={styles.fieldHelp}>
@@ -1147,7 +1439,7 @@ function TeacherHoldingCard({
               )}
               disabled={disabled || !canLiquidate}
             />
-            <span>{holder.student.name} 학생의 {holder.shares.toLocaleString("ko-KR")}주를 전량 매도하고 약 {moneyText(payout, unit)}을 지갑에 지급하는 것을 확인했어요.</span>
+            <span>{holder.student.name} 학생의 {holder.shares.toLocaleString("ko-KR")}주를 전량 매도하고 약 {exactMoneyText(payout, unit)}을 지갑에 지급하는 것을 확인했어요.</span>
           </label>
           <button
             className="button finance-danger-button"
@@ -1535,52 +1827,173 @@ export function FinanceStocksPanel({
     }
   }
 
-  async function liquidateHolding(holder: FinanceStockHolder, reason: string) {
+  async function liquidateHolding(
+    holder: FinanceStockHolder,
+    reason: string,
+    liquidation?: FinanceStockLiquidation,
+  ) {
     if (!data?.stock) return false;
     const input = {
       studentId: holder.student.id,
       reason,
       origin: "finance_center",
-      expectedStockRevision: data.stock.revision,
-      expectedMarketRevision: data.market.revision,
-      expectedFinanceSettingsRevision: data.settingsRevision,
-      expectedHoldingRevision: holder.revision,
+      expectedStockRevision: liquidation?.frozenQuote.stockRevision
+        ?? data.stock.revision,
+      expectedMarketRevision: liquidation?.frozenQuote.marketRevision
+        ?? data.market.revision,
+      expectedFinanceSettingsRevision:
+        liquidation?.frozenQuote.financeSettingsRevision
+        ?? data.settingsRevision,
+      expectedHoldingRevision: liquidation?.snapshot.holdingRevision
+        ?? holder.revision,
+      ...(liquidation
+        ? {
+            operationId: liquidation.id,
+            expectedOperationRevision: liquidation.revision,
+          }
+        : {}),
     };
     const slot = `stock-liquidate:${holder.student.id}`;
-    const idempotencyKey = getStableActionKey(
-      actionKeys,
-      slot,
-      JSON.stringify({ stockId: data.stock.id, ...input }),
-    );
+    const idempotencyKey = liquidation?.rootIdempotencyKey
+      ?? getStableActionKey(
+        actionKeys,
+        slot,
+        JSON.stringify({ stockId: data.stock.id, ...input }),
+      );
     setBusyId(slot);
     setNotice(null);
     try {
-      await sendAction(
+      const result = await sendAction(
         `/api/finance/stocks/assets/${encodeURIComponent(data.stock.id)}/liquidate?classId=${encodeURIComponent(classId)}`,
         "POST",
         { ...input, idempotencyKey },
       );
       delete actionKeys.current[slot];
+      const savedOperation = isRecord(result)
+        ? normalizeLiquidation(result.operation)
+        : null;
+      if (savedOperation?.status === "running") {
+        setNotice({
+          tone: "info",
+          message: `${holder.student.number}번 ${holder.student.name} 학생의 비상 청산 ${savedOperation.completedChunkCount}단계를 반영했어요. 남은 ${savedOperation.remainingQuantity.toLocaleString("ko-KR")}주는 ‘다음 묶음 이어 처리’를 눌러 주세요.`,
+        });
+      } else {
+        setNotice({
+          tone: "success",
+          message: `${holder.student.number}번 ${holder.student.name} 학생의 보유 주식을 전량 청산해 지갑에 반영했어요. 처리 이유도 금융 기록에 남겼습니다.`,
+        });
+      }
+      await refreshEverything();
+      return true;
+    } catch (reasonValue) {
+      const refreshed = await loadStocks(true).catch(() => null);
+      const refreshedOperation = refreshed?.liquidations.find(
+        (item) => item.rootIdempotencyKey === idempotencyKey,
+      );
+      const refreshedTrade = refreshed?.trades.find(
+        (item) => item.idempotencyKey === idempotencyKey,
+      );
+      if (refreshedOperation?.status === "completed") {
+        delete actionKeys.current[slot];
+        setNotice({
+          tone: "success",
+          message: "응답이 늦었지만 비상 청산이 중복 없이 모두 반영된 것을 확인했어요.",
+        });
+        await onRefresh?.().catch(() => undefined);
+        return true;
+      }
+      if (!refreshedOperation && refreshedTrade) {
+        delete actionKeys.current[slot];
+        setNotice({
+          tone: "success",
+          message: "응답이 늦었지만 비상 청산 거래가 중복 없이 반영된 것을 확인했어요.",
+        });
+        await onRefresh?.().catch(() => undefined);
+        return true;
+      }
+      if (
+        refreshedOperation?.status === "running"
+        && refreshedOperation.revision > (liquidation?.revision ?? 0)
+      ) {
+        setNotice({
+          tone: "info",
+          message: `응답은 늦었지만 한 묶음이 정상 반영됐어요. 남은 ${refreshedOperation.remainingQuantity.toLocaleString("ko-KR")}주는 진행 카드에서 이어서 처리해 주세요.`,
+        });
+        await onRefresh?.().catch(() => undefined);
+        return true;
+      }
+      if (refreshedOperation?.status === "running") {
+        setNotice({
+          tone: "error",
+          message: reasonValue instanceof Error
+            ? reasonValue.message
+            : "이번 묶음은 반영되지 않았어요. 진행 카드에서 다시 시도하거나 작업을 취소할 수 있습니다.",
+        });
+        await onRefresh?.().catch(() => undefined);
+        return false;
+      }
       setNotice({
-        tone: "success",
-        message: `${holder.student.number}번 ${holder.student.name} 학생의 보유 주식을 전량 청산해 지갑에 반영했어요. 처리 이유도 금융 기록에 남겼습니다.`,
+        tone: "error",
+        message: reasonValue instanceof Error ? reasonValue.message : "비상 청산을 마치지 못했어요.",
+      });
+      await onRefresh?.().catch(() => undefined);
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function cancelLiquidation(
+    liquidation: FinanceStockLiquidation,
+    reason: string,
+  ) {
+    const input = {
+      expectedOperationRevision: liquidation.revision,
+      reason: reason.trim(),
+    };
+    const slot = `stock-liquidation-cancel:${liquidation.id}`;
+    const idempotencyKey = getStableActionKey(
+      actionKeys,
+      slot,
+      JSON.stringify(input),
+    );
+    setBusyId(slot);
+    setNotice(null);
+    try {
+      await sendAction(
+        `/api/finance/stocks/liquidations/${encodeURIComponent(liquidation.id)}/cancel?classId=${encodeURIComponent(classId)}`,
+        "POST",
+        { ...input, idempotencyKey },
+      );
+      delete actionKeys.current[slot];
+      setNotice({
+        tone: "info",
+        message: "비상 청산 진행 작업을 취소했어요. 이미 반영된 거래와 취소 이유는 기록에 그대로 남습니다.",
       });
       await refreshEverything();
       return true;
     } catch (reasonValue) {
       const refreshed = await loadStocks(true).catch(() => null);
-      if (refreshed?.trades.some((item) => item.idempotencyKey === idempotencyKey)) {
+      const refreshedOperation = refreshed?.liquidations.find(
+        (item) => item.id === liquidation.id,
+      );
+      if (
+        refreshedOperation?.status === "cancelled"
+        && refreshedOperation.cancellationIdempotencyKey === idempotencyKey
+      ) {
         delete actionKeys.current[slot];
         setNotice({
-          tone: "success",
-          message: "응답이 늦었지만 비상 청산이 한 번만 정상 반영된 것을 확인했어요.",
+          tone: "info",
+          message: "응답이 늦었지만 비상 청산 작업이 취소된 것을 확인했어요. 이미 반영된 거래와 취소 이유는 기록에 남습니다.",
         });
         await onRefresh?.().catch(() => undefined);
         return true;
       }
       setNotice({
         tone: "error",
-        message: reasonValue instanceof Error ? reasonValue.message : "비상 청산을 마치지 못했어요.",
+        message: reasonValue instanceof Error
+          ? reasonValue.message
+          : "비상 청산 작업을 취소하지 못했어요.",
       });
       await onRefresh?.().catch(() => undefined);
       return false;
@@ -1741,6 +2154,7 @@ export function FinanceStocksPanel({
           onCreateNews={createNews}
           onCancelNews={cancelNews}
           onLiquidate={liquidateHolding}
+          onCancelLiquidation={cancelLiquidation}
           onRefresh={() => void refreshEverything()}
         />
       ) : (
@@ -1773,6 +2187,7 @@ function TeacherStocks({
   onCreateNews,
   onCancelNews,
   onLiquidate,
+  onCancelLiquidation,
   onRefresh,
 }: {
   data: FinanceStocksData;
@@ -1787,7 +2202,15 @@ function TeacherStocks({
   onTick: () => Promise<boolean>;
   onCreateNews: (draft: NewsDraft) => Promise<boolean>;
   onCancelNews: (item: FinanceStockNews, reason: string) => Promise<boolean>;
-  onLiquidate: (holder: FinanceStockHolder, reason: string) => Promise<boolean>;
+  onLiquidate: (
+    holder: FinanceStockHolder,
+    reason: string,
+    liquidation?: FinanceStockLiquidation,
+  ) => Promise<boolean>;
+  onCancelLiquidation: (
+    liquidation: FinanceStockLiquidation,
+    reason: string,
+  ) => Promise<boolean>;
   onRefresh: () => void;
 }) {
   const suggestedPrice = Math.max(10_000, moneyStep * 100);
@@ -2134,6 +2557,11 @@ function TeacherStocks({
               <TeacherHoldingCard
                 key={holder.student.id}
                 holder={holder}
+                liquidation={data.liquidations.find((item) => (
+                  item.studentId === holder.student.id
+                  && item.stockId === stock.id
+                  && item.status === "running"
+                )) ?? null}
                 stock={stock}
                 market={data.market}
                 settingsRevision={data.settingsRevision}
@@ -2142,9 +2570,50 @@ function TeacherStocks({
                 disabled={disabled}
                 busyId={busyId}
                 onLiquidate={onLiquidate}
+                onCancelLiquidation={onCancelLiquidation}
               />
             ))}
           </div>
+        )}
+        {data.liquidations.length > 0 && (
+          <details style={{ marginTop: 14 }}>
+            <summary style={{ cursor: "pointer", fontWeight: 800 }}>
+              최근 비상 청산 작업 기록 {data.liquidations.length.toLocaleString("ko-KR")}건
+            </summary>
+            <div style={{ ...styles.newsGrid, marginTop: 10 }}>
+              {data.liquidations.slice(0, 10).map((item) => (
+                <article key={item.id} style={styles.newsCard}>
+                  <div style={{ ...styles.actions, justifyContent: "space-between" }}>
+                    <strong>
+                      {item.student?.number ? `${item.student.number}번 ` : ""}
+                      {item.student?.name ?? "학생"}
+                    </strong>
+                    <span className={`finance-request-status ${
+                      item.status === "completed"
+                        ? "approved"
+                        : item.status === "cancelled"
+                          ? "rejected"
+                          : "pending"
+                    }`}>
+                      {item.status === "completed"
+                        ? "완료"
+                        : item.status === "cancelled"
+                          ? "취소"
+                          : "진행 중"}
+                    </span>
+                  </div>
+                  <p style={styles.muted}>
+                    {item.soldQuantity.toLocaleString("ko-KR")} / {item.initialQuantity.toLocaleString("ko-KR")}주 처리
+                    {` · ${moneyText(item.totalPayoutAmount, unit)} 지급`}
+                  </p>
+                  <small style={styles.fieldHelp}>처리 이유: {item.interventionReason}</small>
+                  {item.cancellationReason && (
+                    <small style={styles.fieldHelp}>취소 이유: {item.cancellationReason}</small>
+                  )}
+                </article>
+              ))}
+            </div>
+          </details>
         )}
       </section>
 
@@ -2223,7 +2692,7 @@ function StudentStocks({
       : quantity <= data.holding.shares
   );
   const trading = busyId === `stock-trade:${stock.id}:${side}`;
-  const profitUp = data.holding.evaluationProfit >= 0;
+  const profitUp = data.holding.evaluationProfitExact >= BigInt(0);
 
   async function submitTrade(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -2258,8 +2727,8 @@ function StudentStocks({
               : "수수료까지 포함해 확인해요"}
         />
         <SummaryCard icon={<Coins />} label="내 보유 주식" value={`${data.holding.shares.toLocaleString("ko-KR")}주`} help={`평균 매수가 ${moneyText(data.holding.averagePrice, unit)}`} />
-        <SummaryCard icon={<BarChart3 />} label="현재 평가금액" value={moneyText(data.holding.marketValue, unit)} help={`현재가 ${moneyText(stock.currentPrice, unit)}`} />
-        <SummaryCard icon={profitUp ? <TrendingUp /> : <TrendingDown />} label="평가 손익" value={signedMoneyText(data.holding.evaluationProfit, unit)} help={profitUp ? "현재 가격 기준 이익" : "현재 가격 기준 손실"} />
+        <SummaryCard icon={<BarChart3 />} label="현재 평가금액" value={exactMoneyText(data.holding.marketValueExact, unit)} help={`현재가 ${moneyText(stock.currentPrice, unit)}`} />
+        <SummaryCard icon={profitUp ? <TrendingUp /> : <TrendingDown />} label="평가 손익" value={signedExactMoneyText(data.holding.evaluationProfitExact, unit)} help={profitUp ? "현재 가격 기준 이익" : "현재 가격 기준 손실"} />
       </div>
 
       <StockNewsSection

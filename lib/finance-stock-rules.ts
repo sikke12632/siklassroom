@@ -639,6 +639,120 @@ export function calculateFinanceStockPositionAfterTrade(
   };
 }
 
+/**
+ * Calculates only the next safe emergency-liquidation chunk.
+ *
+ * The function never builds an array for the whole position. This keeps the
+ * work constant even when a legacy holding contains an unusually large number
+ * of shares. Calling it again with the returned remaining values advances the
+ * liquidation by exactly one ledger-safe trade.
+ */
+export function calculateFinanceStockLiquidationChunk(input: {
+  remainingQuantity: unknown;
+  remainingCostBasis: unknown;
+  unitPrice: unknown;
+  feeBps: unknown;
+  denominationStep: unknown;
+}) {
+  const denominationStep = normalizeFinanceStockDenominationStep(
+    input.denominationStep,
+  );
+  const unitPrice = normalizeFinanceStockPrice(
+    input.unitPrice,
+    denominationStep,
+  );
+  const remaining = positionValues(
+    input.remainingQuantity,
+    input.remainingCostBasis,
+  );
+  if (remaining.quantity === 0) {
+    throw new FinanceStockRuleError(
+      "청산할 주식이 남아 있지 않습니다.",
+      "FINANCE_STOCK_INSUFFICIENT_HOLDINGS",
+    );
+  }
+  const maximumChunkQuantity = Math.floor(
+    FINANCE_MAX_ABSOLUTE_AMOUNT / unitPrice,
+  );
+  const quantity = Math.min(remaining.quantity, maximumChunkQuantity);
+  const position = calculateFinanceStockPositionAfterTrade({
+    side: "sell",
+    unitPrice,
+    quantity,
+    feeBps: input.feeBps,
+    denominationStep,
+    quantityBefore: remaining.quantity,
+    totalCostBefore: remaining.totalCost,
+  });
+  return {
+    quantity,
+    grossAmount: position.quote.grossAmount,
+    feeAmount: position.quote.feeAmount,
+    payoutAmount: position.quote.cashAmount,
+    walletChange: position.quote.walletChange,
+    issuanceChange: position.quote.issuanceChange,
+    costBasisRemoved: position.costBasisRemoved,
+    realizedGain: position.realizedProfit,
+    remainingQuantity: position.quantityAfter,
+    remainingCostBasis: position.totalCostAfter,
+  };
+}
+
+/** Returns exact chunked liquidation totals without iterating over each chunk. */
+export function calculateFinanceStockLiquidationTotals(input: {
+  quantity: unknown;
+  unitPrice: unknown;
+  feeBps: unknown;
+  denominationStep: unknown;
+}) {
+  const denominationStep = normalizeFinanceStockDenominationStep(
+    input.denominationStep,
+  );
+  const unitPrice = normalizeFinanceStockPrice(
+    input.unitPrice,
+    denominationStep,
+  );
+  const quantity = normalizeFinanceStockQuantity(input.quantity);
+  const feeBps = normalizeFinanceStockFeeBps(input.feeBps);
+  const maximumChunkQuantity = Math.floor(
+    FINANCE_MAX_ABSOLUTE_AMOUNT / unitPrice,
+  );
+  const fullChunkCount = Math.floor(quantity / maximumChunkQuantity);
+  const finalChunkQuantity = quantity % maximumChunkQuantity;
+  const fullChunk = fullChunkCount > 0
+    ? calculateFinanceStockTradeQuote({
+        side: "sell",
+        unitPrice,
+        quantity: maximumChunkQuantity,
+        feeBps,
+        denominationStep,
+      })
+    : null;
+  const finalChunk = finalChunkQuantity > 0
+    ? calculateFinanceStockTradeQuote({
+        side: "sell",
+        unitPrice,
+        quantity: finalChunkQuantity,
+        feeBps,
+        denominationStep,
+      })
+    : null;
+  const repeat = BigInt(fullChunkCount);
+  const grossAmount = BigInt(fullChunk?.grossAmount ?? 0) * repeat
+    + BigInt(finalChunk?.grossAmount ?? 0);
+  const feeAmount = BigInt(fullChunk?.feeAmount ?? 0) * repeat
+    + BigInt(finalChunk?.feeAmount ?? 0);
+  const payoutAmount = BigInt(fullChunk?.cashAmount ?? 0) * repeat
+    + BigInt(finalChunk?.cashAmount ?? 0);
+  return {
+    chunkCount: fullChunkCount + (finalChunk ? 1 : 0),
+    maximumChunkQuantity,
+    grossAmount,
+    feeAmount,
+    payoutAmount,
+  };
+}
+
 export function normalizeFinanceStockDefinition(
   input: FinanceStockDefinitionInput,
 ): FinanceStockDefinitionValues {

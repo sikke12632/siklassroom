@@ -883,6 +883,18 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         THEN RAISE(ABORT, 'FINANCE_INSUFFICIENT_FUNDS')
       END;
     END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_ledger_entries_issuance_floor_guard
+    BEFORE INSERT ON finance_ledger_entries
+    WHEN NEW.amount < 0 AND NEW.balance_after < -1000000000
+      AND EXISTS (
+        SELECT 1 FROM finance_accounts account
+        WHERE account.id = NEW.account_id
+          AND account.class_id = NEW.class_id
+          AND account.account_type = 'class_issuance'
+      )
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_ISSUANCE_BALANCE_LIMIT');
+    END`,
   `CREATE TRIGGER IF NOT EXISTS finance_ledger_entries_pending_withdrawal_guard
     BEFORE INSERT ON finance_ledger_entries
     WHEN NEW.amount < 0
@@ -2035,6 +2047,188 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_stock_trades(student_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS finance_stock_trades_class_created_idx
     ON finance_stock_trades(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_liquidation_operations (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    student_id TEXT NOT NULL, teacher_id TEXT NOT NULL,
+    root_idempotency_key TEXT NOT NULL, payload_hash TEXT NOT NULL,
+    origin TEXT NOT NULL, intervention_reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    snapshot_reference_price INTEGER NOT NULL,
+    snapshot_spread INTEGER NOT NULL, snapshot_unit_price INTEGER NOT NULL,
+    snapshot_fee_bps INTEGER NOT NULL,
+    snapshot_denomination_step INTEGER NOT NULL,
+    snapshot_stock_revision INTEGER NOT NULL,
+    snapshot_market_revision INTEGER NOT NULL,
+    snapshot_finance_settings_revision INTEGER NOT NULL,
+    snapshot_holding_revision INTEGER NOT NULL,
+    snapshot_wallet_revision INTEGER NOT NULL,
+    snapshot_wallet_balance INTEGER NOT NULL,
+    snapshot_student_status TEXT NOT NULL,
+    snapshot_stock_status TEXT NOT NULL,
+    snapshot_market_was_open INTEGER NOT NULL,
+    initial_quantity INTEGER NOT NULL, remaining_quantity INTEGER NOT NULL,
+    sold_quantity INTEGER NOT NULL, initial_cost_basis INTEGER NOT NULL,
+    remaining_cost_basis INTEGER NOT NULL,
+    expected_gross_amount INTEGER NOT NULL,
+    expected_fee_amount INTEGER NOT NULL,
+    expected_wallet_delta INTEGER NOT NULL,
+    completed_chunk_count INTEGER NOT NULL DEFAULT 0,
+    total_gross_amount INTEGER NOT NULL DEFAULT 0,
+    total_fee_amount INTEGER NOT NULL DEFAULT 0,
+    total_wallet_delta INTEGER NOT NULL DEFAULT 0,
+    total_cost_basis_removed INTEGER NOT NULL DEFAULT 0,
+    total_realized_gain INTEGER NOT NULL DEFAULT 0,
+    next_chunk_index INTEGER NOT NULL DEFAULT 0,
+    last_trade_id TEXT, revision INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    completed_at INTEGER, cancelled_at INTEGER,
+    cancellation_reason TEXT, cancellation_idempotency_key TEXT,
+    cancellation_payload_hash TEXT,
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    FOREIGN KEY (last_trade_id, class_id)
+      REFERENCES finance_stock_trades(id, class_id),
+    CONSTRAINT finance_stock_liquidation_operations_text_ck CHECK (
+      LENGTH(TRIM(root_idempotency_key)) BETWEEN 8 AND 200
+      AND LENGTH(TRIM(payload_hash)) BETWEEN 8 AND 500
+      AND origin IN (
+        'finance_center', 'student_exclusion', 'class_archive', 'account_recovery'
+      )
+      AND LENGTH(TRIM(intervention_reason)) BETWEEN 2 AND 300
+    ),
+    CONSTRAINT finance_stock_liquidation_operations_snapshot_ck CHECK (
+      snapshot_reference_price BETWEEN 1 AND 1000000000
+      AND snapshot_spread BETWEEN 0 AND 1000000000
+      AND snapshot_unit_price = snapshot_reference_price - snapshot_spread
+      AND snapshot_unit_price BETWEEN 1 AND 1000000000
+      AND snapshot_fee_bps BETWEEN 0 AND 1000
+      AND snapshot_denomination_step BETWEEN 1 AND 1000000000
+      AND snapshot_reference_price % snapshot_denomination_step = 0
+      AND snapshot_spread % snapshot_denomination_step = 0
+      AND snapshot_stock_revision >= 0 AND snapshot_market_revision >= 0
+      AND snapshot_finance_settings_revision >= 0
+      AND snapshot_holding_revision > 0 AND snapshot_wallet_revision >= 0
+      AND snapshot_wallet_balance BETWEEN 0 AND 1000000000
+      AND snapshot_market_was_open IN (0, 1)
+    ),
+    CONSTRAINT finance_stock_liquidation_operations_progress_ck CHECK (
+      initial_quantity BETWEEN 1 AND 1000000000
+      AND remaining_quantity BETWEEN 0 AND initial_quantity
+      AND sold_quantity = initial_quantity - remaining_quantity
+      AND initial_cost_basis BETWEEN 1 AND 1000000000
+      AND remaining_cost_basis BETWEEN 0 AND initial_cost_basis
+      AND ((remaining_quantity = 0 AND remaining_cost_basis = 0)
+        OR (remaining_quantity > 0 AND remaining_cost_basis > 0))
+      AND expected_gross_amount = snapshot_unit_price * initial_quantity
+      AND expected_gross_amount BETWEEN 1 AND 1111111111
+      AND expected_fee_amount BETWEEN 0 AND expected_gross_amount
+      AND expected_fee_amount <= CAST(
+        expected_gross_amount * snapshot_fee_bps / 10000 AS INTEGER)
+      AND expected_wallet_delta = expected_gross_amount - expected_fee_amount
+      AND expected_wallet_delta > 0
+      AND expected_wallet_delta <= 1000000000 - snapshot_wallet_balance
+      AND completed_chunk_count BETWEEN 0 AND 2
+      AND next_chunk_index = completed_chunk_count
+      AND revision = completed_chunk_count
+        + CASE status WHEN 'cancelled' THEN 1 ELSE 0 END
+      AND total_gross_amount = snapshot_unit_price * sold_quantity
+      AND total_fee_amount BETWEEN 0 AND total_gross_amount
+      AND total_wallet_delta = total_gross_amount - total_fee_amount
+      AND total_cost_basis_removed = initial_cost_basis - remaining_cost_basis
+      AND total_realized_gain = total_wallet_delta - total_cost_basis_removed
+    ),
+    CONSTRAINT finance_stock_liquidation_operations_state_ck CHECK (
+      (
+        (status = 'running' AND remaining_quantity > 0
+          AND completed_chunk_count < 2 AND completed_at IS NULL
+          AND cancelled_at IS NULL AND cancellation_reason IS NULL
+          AND cancellation_idempotency_key IS NULL
+          AND cancellation_payload_hash IS NULL)
+        OR (status = 'completed' AND remaining_quantity = 0
+          AND remaining_cost_basis = 0 AND sold_quantity = initial_quantity
+          AND total_gross_amount = expected_gross_amount
+          AND total_fee_amount = expected_fee_amount
+          AND total_wallet_delta = expected_wallet_delta
+          AND total_cost_basis_removed = initial_cost_basis
+          AND completed_at IS NOT NULL AND cancelled_at IS NULL
+          AND cancellation_reason IS NULL
+          AND cancellation_idempotency_key IS NULL
+          AND cancellation_payload_hash IS NULL)
+        OR (status = 'cancelled' AND remaining_quantity > 0
+          AND completed_at IS NULL AND cancelled_at IS NOT NULL
+          AND LENGTH(TRIM(COALESCE(cancellation_reason, ''))) BETWEEN 2 AND 300
+          AND LENGTH(TRIM(COALESCE(cancellation_idempotency_key, '')))
+            BETWEEN 8 AND 200
+          AND LENGTH(TRIM(COALESCE(cancellation_payload_hash, '')))
+            BETWEEN 8 AND 500)
+      )
+      AND ((completed_chunk_count = 0 AND last_trade_id IS NULL)
+        OR (completed_chunk_count > 0 AND last_trade_id IS NOT NULL))
+      AND updated_at >= created_at
+      AND (completed_at IS NULL OR completed_at = updated_at)
+      AND (cancelled_at IS NULL OR cancelled_at = updated_at)
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_liquidation_operations_id_class_uq
+    ON finance_stock_liquidation_operations(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_liquidation_operations_root_uq
+    ON finance_stock_liquidation_operations(root_idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_liquidation_operations_running_uq
+    ON finance_stock_liquidation_operations(class_id, stock_id, student_id)
+    WHERE status = 'running'`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_liquidation_operations_cancellation_uq
+    ON finance_stock_liquidation_operations(cancellation_idempotency_key)
+    WHERE cancellation_idempotency_key IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS
+      finance_stock_liquidation_operations_class_status_idx
+    ON finance_stock_liquidation_operations(class_id, status, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_liquidation_chunks (
+    id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, class_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL, trade_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL, gross_amount INTEGER NOT NULL,
+    fee_amount INTEGER NOT NULL, wallet_delta INTEGER NOT NULL,
+    cost_basis_removed INTEGER NOT NULL, realized_gain INTEGER NOT NULL,
+    holding_quantity_before INTEGER NOT NULL,
+    holding_quantity_after INTEGER NOT NULL,
+    holding_cost_basis_before INTEGER NOT NULL,
+    holding_cost_basis_after INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (operation_id, class_id)
+      REFERENCES finance_stock_liquidation_operations(id, class_id),
+    FOREIGN KEY (trade_id, class_id)
+      REFERENCES finance_stock_trades(id, class_id),
+    CONSTRAINT finance_stock_liquidation_chunks_amount_ck CHECK (
+      chunk_index BETWEEN 0 AND 1 AND quantity BETWEEN 1 AND 1000000000
+      AND gross_amount BETWEEN 1 AND 1000000000
+      AND fee_amount BETWEEN 0 AND gross_amount
+      AND wallet_delta = gross_amount - fee_amount AND wallet_delta > 0
+      AND cost_basis_removed BETWEEN 0 AND 1000000000
+      AND realized_gain = wallet_delta - cost_basis_removed
+    ),
+    CONSTRAINT finance_stock_liquidation_chunks_holding_ck CHECK (
+      holding_quantity_before BETWEEN 1 AND 1000000000
+      AND holding_quantity_after = holding_quantity_before - quantity
+      AND holding_quantity_after BETWEEN 0 AND 1000000000
+      AND holding_cost_basis_before BETWEEN 1 AND 1000000000
+      AND holding_cost_basis_after
+        = holding_cost_basis_before - cost_basis_removed
+      AND holding_cost_basis_after BETWEEN 0 AND 1000000000
+      AND ((holding_quantity_after = 0 AND holding_cost_basis_after = 0)
+        OR (holding_quantity_after > 0 AND holding_cost_basis_after > 0))
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_liquidation_chunks_operation_index_uq
+    ON finance_stock_liquidation_chunks(operation_id, chunk_index)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_liquidation_chunks_trade_uq
+    ON finance_stock_liquidation_chunks(trade_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_liquidation_chunks_class_created_idx
+    ON finance_stock_liquidation_chunks(class_id, created_at)`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_markets_insert_guard
     BEFORE INSERT ON finance_stock_markets
     BEGIN
@@ -2390,7 +2584,11 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     BEFORE DELETE ON finance_stock_news
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_IMMUTABLE'); END`,
   `DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard`,
-  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
+  `DROP TRIGGER IF EXISTS finance_stock_trades_initial_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_live_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_economics_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_metadata_guard`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_initial_guard
     BEFORE INSERT ON finance_stock_trades
     BEGIN
       SELECT CASE WHEN NEW.status <> 'pending'
@@ -2404,6 +2602,38 @@ export const FINANCE_SCHEMA_STATEMENTS = [
           AND NEW.holding_quantity_after
             > CAST(1000000000 / stock.current_price AS INTEGER)
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT') END;
+      SELECT CASE WHEN COALESCE((
+          SELECT holding.quantity FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_quantity_before
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN COALESCE((
+          SELECT holding.cost_basis FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_cost_basis_before
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN COALESCE((
+          SELECT holding.revision FROM finance_stock_holdings holding
+          WHERE holding.class_id = NEW.class_id
+            AND holding.stock_id = NEW.stock_id
+            AND holding.student_id = NEW.student_id
+        ), 0) <> NEW.holding_revision_before
+        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN NOT EXISTS (
+      SELECT 1 FROM finance_stock_liquidation_operations operation
+      WHERE operation.class_id = NEW.class_id
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND operation.status = 'running'
+    )
+    BEGIN
       SELECT CASE WHEN NOT EXISTS (
         SELECT 1
         FROM finance_stocks stock
@@ -2480,25 +2710,136 @@ export const FINANCE_SCHEMA_STATEMENTS = [
             )
           )
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-      SELECT CASE WHEN COALESCE((
-          SELECT holding.quantity FROM finance_stock_holdings holding
-          WHERE holding.class_id = NEW.class_id
-            AND holding.stock_id = NEW.stock_id
-            AND holding.student_id = NEW.student_id
-        ), 0) <> NEW.holding_quantity_before
-        OR COALESCE((
-          SELECT holding.cost_basis FROM finance_stock_holdings holding
-          WHERE holding.class_id = NEW.class_id
-            AND holding.stock_id = NEW.stock_id
-            AND holding.student_id = NEW.student_id
-        ), 0) <> NEW.holding_cost_basis_before
-        OR COALESCE((
-          SELECT holding.revision FROM finance_stock_holdings holding
-          WHERE holding.class_id = NEW.class_id
-            AND holding.stock_id = NEW.stock_id
-            AND holding.student_id = NEW.student_id
-        ), 0) <> NEW.holding_revision_before
-        THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_live_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN EXISTS (
+      SELECT 1 FROM finance_stock_liquidation_operations operation
+      WHERE operation.class_id = NEW.class_id
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND operation.status = 'running'
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stocks stock ON stock.id = operation.stock_id
+          AND stock.class_id = operation.class_id
+        JOIN finance_stock_markets market ON market.class_id = operation.class_id
+        JOIN finance_settings setting ON setting.class_id = operation.class_id
+        JOIN students student ON student.id = operation.student_id
+          AND student.class_id = operation.class_id
+        JOIN finance_stock_holdings holding
+          ON holding.class_id = operation.class_id
+          AND holding.stock_id = operation.stock_id
+          AND holding.student_id = operation.student_id
+        JOIN finance_accounts wallet ON wallet.id = holding.wallet_account_id
+          AND wallet.class_id = operation.class_id
+          AND wallet.student_id = operation.student_id
+          AND wallet.account_type = 'student_wallet' AND wallet.status = 'active'
+        WHERE operation.class_id = NEW.class_id
+          AND operation.stock_id = NEW.stock_id
+          AND operation.student_id = NEW.student_id
+          AND operation.status = 'running' AND NEW.side = 'sell'
+          AND stock.inventory_revision = NEW.inventory_revision_before
+          AND stock.available_shares = NEW.available_shares_before
+          AND wallet.revision = NEW.wallet_revision_before
+          AND NEW.stock_revision = stock.revision
+          AND NEW.market_revision = market.revision
+          AND NEW.finance_settings_revision = setting.revision
+          AND student.status IN ('active', 'locked', 'reset_required', 'pending')
+          AND stock.status IN ('active', 'sell_only', 'halted')
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_economics_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN EXISTS (
+      SELECT 1 FROM finance_stock_liquidation_operations operation
+      WHERE operation.class_id = NEW.class_id
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND operation.status = 'running'
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stocks stock ON stock.id = operation.stock_id
+          AND stock.class_id = operation.class_id
+        WHERE operation.class_id = NEW.class_id
+          AND operation.stock_id = NEW.stock_id
+          AND operation.student_id = NEW.student_id
+          AND operation.status = 'running'
+          AND NEW.reference_price = operation.snapshot_reference_price
+          AND NEW.spread_snapshot = operation.snapshot_spread
+          AND NEW.unit_price = operation.snapshot_unit_price
+          AND NEW.fee_bps_snapshot = operation.snapshot_fee_bps
+          AND NEW.fee_amount = CAST(
+            CAST((NEW.gross_amount * NEW.fee_bps_snapshot) / 10000 AS INTEGER)
+              / operation.snapshot_denomination_step AS INTEGER
+          ) * operation.snapshot_denomination_step
+          AND NEW.quantity = CASE
+            WHEN operation.remaining_quantity * operation.snapshot_unit_price
+              <= 1000000000 THEN operation.remaining_quantity
+            ELSE CAST(1000000000 / operation.snapshot_unit_price AS INTEGER)
+          END
+          AND NEW.available_shares_after BETWEEN 0 AND stock.total_shares
+          AND NEW.holding_quantity_before = operation.remaining_quantity
+          AND NEW.holding_cost_basis_before = operation.remaining_cost_basis
+          AND NEW.holding_revision_before
+            = operation.snapshot_holding_revision + operation.completed_chunk_count
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_metadata_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN EXISTS (
+      SELECT 1 FROM finance_stock_liquidation_operations operation
+      WHERE operation.class_id = NEW.class_id
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND operation.status = 'running'
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_transactions transaction_row
+          ON transaction_row.class_id = operation.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND transaction_row.status = 'pending'
+        WHERE operation.class_id = NEW.class_id
+          AND operation.stock_id = NEW.stock_id
+          AND operation.student_id = NEW.student_id
+          AND operation.status = 'running'
+          AND transaction_row.actor_type = 'teacher'
+          AND transaction_row.actor_teacher_id = operation.teacher_id
+          AND transaction_row.actor_student_id IS NULL
+          AND transaction_row.actor_job_period_id IS NULL
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND json_extract(transaction_row.metadata_json, '$.operationId')
+            = operation.id
+          AND json_extract(transaction_row.metadata_json, '$.rootIdempotencyKey')
+            = operation.root_idempotency_key
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.chunkIndex'
+          ) AS INTEGER) = operation.next_chunk_index
+          AND json_extract(transaction_row.metadata_json, '$.liquidationPolicy')
+            = 'frozen_quote_resumable'
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenStockRevision'
+          ) AS INTEGER) = operation.snapshot_stock_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenMarketRevision'
+          ) AS INTEGER) = operation.snapshot_market_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenFinanceSettingsRevision'
+          ) AS INTEGER) = operation.snapshot_finance_settings_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenDenominationStep'
+          ) AS INTEGER) = operation.snapshot_denomination_step
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
     END`,
   `DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
@@ -2510,6 +2851,27 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         AND transaction_row.source_id = NEW.id
         AND transaction_row.status = 'pending'
         AND transaction_row.actor_type = 'teacher'
+    ) AND NOT EXISTS (
+      SELECT 1
+      FROM finance_transactions transaction_row
+      JOIN finance_stock_liquidation_operations operation
+        ON operation.class_id = transaction_row.class_id
+        AND operation.id = json_extract(
+          transaction_row.metadata_json, '$.operationId'
+        )
+      WHERE transaction_row.class_id = NEW.class_id
+        AND transaction_row.source_type = 'stock_trade'
+        AND transaction_row.source_id = NEW.id
+        AND transaction_row.status = 'pending'
+        AND transaction_row.actor_type = 'teacher'
+        AND operation.status = 'running'
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND json_extract(transaction_row.metadata_json, '$.rootIdempotencyKey')
+          = operation.root_idempotency_key
+        AND CAST(json_extract(
+          transaction_row.metadata_json, '$.chunkIndex'
+        ) AS INTEGER) = operation.next_chunk_index
     )
     BEGIN
       SELECT CASE WHEN NOT EXISTS (
@@ -2739,8 +3101,34 @@ export const FINANCE_SCHEMA_STATEMENTS = [
               AND transaction_row.actor_job_period_id IS NULL
               AND json_valid(transaction_row.metadata_json) = 1
               AND json_extract(transaction_row.metadata_json, '$.isEmergency') = 1
-              AND json_extract(transaction_row.metadata_json, '$.liquidationPolicy')
-                = 'current_market_terms_at_liquidation'
+              AND (
+                json_extract(transaction_row.metadata_json, '$.liquidationPolicy')
+                  = 'current_market_terms_at_liquidation'
+                OR (
+                  json_extract(
+                    transaction_row.metadata_json, '$.liquidationPolicy'
+                  ) = 'frozen_quote_resumable'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM finance_stock_liquidation_operations operation
+                    WHERE operation.class_id = NEW.class_id
+                      AND operation.stock_id = NEW.stock_id
+                      AND operation.student_id = NEW.student_id
+                      AND operation.teacher_id
+                        = transaction_row.actor_teacher_id
+                      AND operation.status = 'running'
+                      AND json_extract(
+                        transaction_row.metadata_json, '$.operationId'
+                      ) = operation.id
+                      AND json_extract(
+                        transaction_row.metadata_json, '$.rootIdempotencyKey'
+                      ) = operation.root_idempotency_key
+                      AND CAST(json_extract(
+                        transaction_row.metadata_json, '$.chunkIndex'
+                      ) AS INTEGER) = operation.next_chunk_index
+                  )
+                )
+              )
               AND json_type(transaction_row.metadata_json, '$.interventionReason') = 'text'
               AND LENGTH(TRIM(CAST(json_extract(
                 transaction_row.metadata_json, '$.interventionReason'
@@ -2803,6 +3191,493 @@ export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_delete_guard
     BEFORE DELETE ON finance_stock_trades
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TRADE_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_insert_guard
+    BEFORE INSERT ON finance_stock_liquidation_operations
+    BEGIN
+      SELECT CASE WHEN NEW.status <> 'running'
+        OR NEW.remaining_quantity <> NEW.initial_quantity
+        OR NEW.sold_quantity <> 0
+        OR NEW.remaining_cost_basis <> NEW.initial_cost_basis
+        OR NEW.completed_chunk_count <> 0
+        OR NEW.total_gross_amount <> 0 OR NEW.total_fee_amount <> 0
+        OR NEW.total_wallet_delta <> 0 OR NEW.total_cost_basis_removed <> 0
+        OR NEW.total_realized_gain <> 0 OR NEW.next_chunk_index <> 0
+        OR NEW.last_trade_id IS NOT NULL OR NEW.revision <> 0
+        OR NEW.updated_at <> NEW.created_at OR NEW.completed_at IS NOT NULL
+        OR NEW.cancelled_at IS NOT NULL OR NEW.cancellation_reason IS NOT NULL
+        OR NEW.cancellation_idempotency_key IS NOT NULL
+        OR NEW.cancellation_payload_hash IS NOT NULL
+        THEN RAISE(ABORT,
+          'FINANCE_STOCK_LIQUIDATION_OPERATION_INVALID_INITIAL_STATE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM classes classroom
+        JOIN students student ON student.id = NEW.student_id
+          AND student.class_id = classroom.id
+        JOIN finance_stocks stock ON stock.id = NEW.stock_id
+          AND stock.class_id = classroom.id
+        JOIN finance_stock_markets market ON market.class_id = classroom.id
+        JOIN finance_settings setting ON setting.class_id = classroom.id
+        JOIN finance_stock_holdings holding
+          ON holding.class_id = classroom.id AND holding.stock_id = stock.id
+          AND holding.student_id = student.id
+        JOIN finance_accounts wallet ON wallet.id = holding.wallet_account_id
+          AND wallet.class_id = classroom.id AND wallet.student_id = student.id
+          AND wallet.account_type = 'student_wallet' AND wallet.status = 'active'
+        JOIN finance_accounts issuance ON issuance.class_id = classroom.id
+          AND issuance.student_id IS NULL
+          AND issuance.account_type = 'class_issuance'
+          AND issuance.status = 'active'
+        WHERE classroom.id = NEW.class_id
+          AND classroom.teacher_id = NEW.teacher_id
+          AND classroom.status = 'active'
+          AND student.status = NEW.snapshot_student_status
+          AND student.status IN ('active', 'locked', 'reset_required', 'pending')
+          AND stock.status = NEW.snapshot_stock_status
+          AND stock.status IN ('active', 'sell_only', 'halted')
+          AND market.is_open = NEW.snapshot_market_was_open
+          AND stock.current_price = NEW.snapshot_reference_price
+          AND market.sell_spread = NEW.snapshot_spread
+          AND NEW.snapshot_unit_price = stock.current_price - market.sell_spread
+          AND market.sell_fee_bps = NEW.snapshot_fee_bps
+          AND stock.revision = NEW.snapshot_stock_revision
+          AND market.revision = NEW.snapshot_market_revision
+          AND setting.revision = NEW.snapshot_finance_settings_revision
+          AND NEW.snapshot_denomination_step = (
+            SELECT MIN(CAST(value AS INTEGER))
+            FROM json_each(setting.denominations_json)
+          )
+          AND holding.revision = NEW.snapshot_holding_revision
+          AND holding.quantity = NEW.initial_quantity
+          AND holding.cost_basis = NEW.initial_cost_basis
+          AND wallet.revision = NEW.snapshot_wallet_revision
+          AND wallet.balance = NEW.snapshot_wallet_balance
+          AND NEW.snapshot_wallet_balance + NEW.expected_wallet_delta
+            <= 1000000000
+          AND issuance.balance - NEW.expected_wallet_delta >= -1000000000
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+    END`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_operations_update_guard`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_update_guard
+    BEFORE UPDATE ON finance_stock_liquidation_operations
+    BEGIN
+      SELECT CASE WHEN OLD.status IN ('completed', 'cancelled')
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE') END;
+      SELECT CASE WHEN NEW.status NOT IN ('running', 'completed', 'cancelled')
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.id <> OLD.id OR NEW.class_id <> OLD.class_id
+        OR NEW.stock_id <> OLD.stock_id OR NEW.student_id <> OLD.student_id
+        OR NEW.teacher_id <> OLD.teacher_id
+        OR NEW.root_idempotency_key <> OLD.root_idempotency_key
+        OR NEW.payload_hash <> OLD.payload_hash OR NEW.origin <> OLD.origin
+        OR NEW.intervention_reason <> OLD.intervention_reason
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE') END;
+      SELECT CASE WHEN
+        NEW.snapshot_reference_price <> OLD.snapshot_reference_price
+        OR NEW.snapshot_spread <> OLD.snapshot_spread
+        OR NEW.snapshot_unit_price <> OLD.snapshot_unit_price
+        OR NEW.snapshot_fee_bps <> OLD.snapshot_fee_bps
+        OR NEW.snapshot_denomination_step <> OLD.snapshot_denomination_step
+        OR NEW.snapshot_stock_revision <> OLD.snapshot_stock_revision
+        OR NEW.snapshot_market_revision <> OLD.snapshot_market_revision
+        OR NEW.snapshot_finance_settings_revision
+          <> OLD.snapshot_finance_settings_revision
+        OR NEW.snapshot_holding_revision <> OLD.snapshot_holding_revision
+        OR NEW.snapshot_wallet_revision <> OLD.snapshot_wallet_revision
+        OR NEW.snapshot_wallet_balance <> OLD.snapshot_wallet_balance
+        OR NEW.snapshot_student_status <> OLD.snapshot_student_status
+        OR NEW.snapshot_stock_status <> OLD.snapshot_stock_status
+        OR NEW.snapshot_market_was_open <> OLD.snapshot_market_was_open
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE') END;
+      SELECT CASE WHEN
+        NEW.initial_quantity <> OLD.initial_quantity
+        OR NEW.initial_cost_basis <> OLD.initial_cost_basis
+        OR NEW.expected_gross_amount <> OLD.expected_gross_amount
+        OR NEW.expected_fee_amount <> OLD.expected_fee_amount
+        OR NEW.expected_wallet_delta <> OLD.expected_wallet_delta
+        OR NEW.created_at <> OLD.created_at OR NEW.updated_at < OLD.updated_at
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE') END;
+      SELECT CASE WHEN NEW.status IN ('running', 'completed') AND (
+        NEW.revision <> OLD.revision + 1
+        OR NEW.cancelled_at IS NOT NULL OR NEW.cancellation_reason IS NOT NULL
+        OR NEW.cancellation_idempotency_key IS NOT NULL
+        OR NEW.cancellation_payload_hash IS NOT NULL
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status IN ('running', 'completed') AND NOT EXISTS (
+        SELECT 1 FROM finance_stock_liquidation_chunks chunk
+        WHERE chunk.operation_id = OLD.id AND chunk.class_id = OLD.class_id
+          AND chunk.chunk_index = OLD.next_chunk_index
+          AND chunk.trade_id = NEW.last_trade_id
+          AND chunk.holding_quantity_before = OLD.remaining_quantity
+          AND chunk.holding_quantity_after = NEW.remaining_quantity
+          AND chunk.holding_cost_basis_before = OLD.remaining_cost_basis
+          AND chunk.holding_cost_basis_after = NEW.remaining_cost_basis
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status IN ('running', 'completed') AND NOT EXISTS (
+        SELECT 1 FROM finance_stock_liquidation_chunks chunk
+        WHERE chunk.operation_id = OLD.id AND chunk.class_id = OLD.class_id
+          AND chunk.chunk_index = OLD.next_chunk_index
+          AND NEW.sold_quantity = OLD.sold_quantity + chunk.quantity
+          AND NEW.completed_chunk_count = OLD.completed_chunk_count + 1
+          AND NEW.next_chunk_index = OLD.next_chunk_index + 1
+          AND NEW.status = CASE WHEN chunk.holding_quantity_after = 0
+            THEN 'completed' ELSE 'running' END
+          AND NEW.completed_at IS CASE
+            WHEN chunk.holding_quantity_after = 0 THEN chunk.created_at
+            ELSE NULL END
+          AND NEW.updated_at = chunk.created_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status IN ('running', 'completed') AND NOT EXISTS (
+        SELECT 1 FROM finance_stock_liquidation_chunks chunk
+        WHERE chunk.operation_id = OLD.id AND chunk.class_id = OLD.class_id
+          AND chunk.chunk_index = OLD.next_chunk_index
+          AND NEW.total_gross_amount = OLD.total_gross_amount + chunk.gross_amount
+          AND NEW.total_fee_amount = OLD.total_fee_amount + chunk.fee_amount
+          AND NEW.total_wallet_delta = OLD.total_wallet_delta + chunk.wallet_delta
+          AND NEW.total_cost_basis_removed
+            = OLD.total_cost_basis_removed + chunk.cost_basis_removed
+          AND NEW.total_realized_gain
+            = OLD.total_realized_gain + chunk.realized_gain
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status = 'cancelled' AND (
+        NEW.revision <> OLD.revision + 1
+        OR NEW.remaining_quantity <> OLD.remaining_quantity
+        OR NEW.sold_quantity <> OLD.sold_quantity
+        OR NEW.remaining_cost_basis <> OLD.remaining_cost_basis
+        OR NEW.completed_chunk_count <> OLD.completed_chunk_count
+        OR NEW.next_chunk_index <> OLD.next_chunk_index
+        OR NEW.last_trade_id IS NOT OLD.last_trade_id
+        OR NEW.completed_at IS NOT NULL OR NEW.cancelled_at <> NEW.updated_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status = 'cancelled' AND (
+        NEW.total_gross_amount <> OLD.total_gross_amount
+        OR NEW.total_fee_amount <> OLD.total_fee_amount
+        OR NEW.total_wallet_delta <> OLD.total_wallet_delta
+        OR NEW.total_cost_basis_removed <> OLD.total_cost_basis_removed
+        OR NEW.total_realized_gain <> OLD.total_realized_gain
+        OR LENGTH(TRIM(COALESCE(NEW.cancellation_reason, '')))
+          NOT BETWEEN 2 AND 300
+        OR LENGTH(TRIM(COALESCE(NEW.cancellation_idempotency_key, '')))
+          NOT BETWEEN 8 AND 200
+        OR LENGTH(TRIM(COALESCE(NEW.cancellation_payload_hash, '')))
+          NOT BETWEEN 8 AND 500
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+      SELECT CASE WHEN NEW.status = 'cancelled' AND NOT EXISTS (
+        SELECT 1 FROM classes classroom
+        WHERE classroom.id = OLD.class_id
+          AND classroom.teacher_id = OLD.teacher_id
+          AND classroom.status = 'active'
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_delete_guard
+    BEFORE DELETE ON finance_stock_liquidation_operations
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_target_trade_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN EXISTS (
+      SELECT 1 FROM finance_stock_liquidation_operations operation
+      WHERE operation.class_id = NEW.class_id
+        AND operation.stock_id = NEW.stock_id
+        AND operation.student_id = NEW.student_id
+        AND operation.status = 'running'
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_transactions transaction_row
+          ON transaction_row.class_id = operation.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND transaction_row.status = 'pending'
+          AND transaction_row.actor_type = 'teacher'
+          AND transaction_row.actor_teacher_id = operation.teacher_id
+        WHERE operation.class_id = NEW.class_id
+          AND operation.stock_id = NEW.stock_id
+          AND operation.student_id = NEW.student_id
+          AND operation.status = 'running'
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND json_extract(transaction_row.metadata_json, '$.operationId')
+            = operation.id
+          AND json_extract(transaction_row.metadata_json, '$.rootIdempotencyKey')
+            = operation.root_idempotency_key
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.chunkIndex'
+          ) AS INTEGER) = operation.next_chunk_index
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_IN_PROGRESS') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_wallet_guard
+    BEFORE INSERT ON finance_ledger_entries
+    WHEN EXISTS (
+      SELECT 1
+      FROM finance_stock_liquidation_operations operation
+      JOIN finance_accounts wallet ON wallet.class_id = operation.class_id
+        AND wallet.student_id = operation.student_id
+        AND wallet.account_type = 'student_wallet'
+      WHERE operation.class_id = NEW.class_id
+        AND operation.status = 'running' AND wallet.id = NEW.account_id
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_accounts wallet ON wallet.class_id = operation.class_id
+          AND wallet.student_id = operation.student_id
+          AND wallet.account_type = 'student_wallet'
+        JOIN finance_transactions transaction_row
+          ON transaction_row.id = NEW.transaction_id
+          AND transaction_row.class_id = operation.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.status = 'pending'
+          AND transaction_row.actor_type = 'teacher'
+          AND transaction_row.actor_teacher_id = operation.teacher_id
+        WHERE operation.class_id = NEW.class_id
+          AND operation.status = 'running' AND wallet.id = NEW.account_id
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND json_extract(transaction_row.metadata_json, '$.operationId')
+            = operation.id
+          AND json_extract(transaction_row.metadata_json, '$.rootIdempotencyKey')
+            = operation.root_idempotency_key
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.chunkIndex'
+          ) AS INTEGER) = operation.next_chunk_index
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_IN_PROGRESS') END;
+    END`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_insert_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_trade_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_transaction_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_metadata_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_projection_guard`,
+  `DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_totals_guard`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_insert_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stock_trades trade ON trade.id = NEW.trade_id
+          AND trade.class_id = operation.class_id
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND NEW.chunk_index = operation.next_chunk_index
+          AND NEW.chunk_index = operation.completed_chunk_count
+          AND NEW.quantity = CASE
+            WHEN operation.remaining_quantity * operation.snapshot_unit_price
+              <= 1000000000 THEN operation.remaining_quantity
+            ELSE CAST(1000000000 / operation.snapshot_unit_price AS INTEGER)
+          END
+          AND NEW.holding_quantity_before = operation.remaining_quantity
+          AND NEW.holding_cost_basis_before = operation.remaining_cost_basis
+          AND trade.status = 'posted' AND trade.side = 'sell'
+          AND trade.stock_id = operation.stock_id
+          AND trade.student_id = operation.student_id
+          AND trade.quantity = NEW.quantity
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_trade_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stock_trades trade ON trade.id = NEW.trade_id
+          AND trade.class_id = operation.class_id
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND trade.reference_price = operation.snapshot_reference_price
+          AND trade.spread_snapshot = operation.snapshot_spread
+          AND trade.unit_price = operation.snapshot_unit_price
+          AND trade.fee_bps_snapshot = operation.snapshot_fee_bps
+          AND trade.gross_amount = NEW.gross_amount
+          AND trade.fee_amount = NEW.fee_amount
+          AND trade.wallet_delta = NEW.wallet_delta
+          AND trade.cost_basis_removed = NEW.cost_basis_removed
+          AND trade.realized_gain = NEW.realized_gain
+          AND trade.holding_quantity_before = NEW.holding_quantity_before
+          AND trade.holding_quantity_after = NEW.holding_quantity_after
+          AND trade.holding_cost_basis_before = NEW.holding_cost_basis_before
+          AND trade.holding_cost_basis_after = NEW.holding_cost_basis_after
+          AND trade.holding_revision_before
+            = operation.snapshot_holding_revision + operation.completed_chunk_count
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_transaction_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stock_trades trade ON trade.id = NEW.trade_id
+          AND trade.class_id = operation.class_id
+        JOIN finance_transactions transaction_row
+          ON transaction_row.id = trade.posted_transaction_id
+          AND transaction_row.class_id = operation.class_id
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND transaction_row.status = 'posted'
+          AND transaction_row.actor_type = 'teacher'
+          AND transaction_row.actor_teacher_id = operation.teacher_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = trade.id
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND json_extract(transaction_row.metadata_json, '$.operationId')
+            = operation.id
+          AND json_extract(transaction_row.metadata_json, '$.rootIdempotencyKey')
+            = operation.root_idempotency_key
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.chunkIndex'
+          ) AS INTEGER) = NEW.chunk_index
+          AND json_extract(transaction_row.metadata_json, '$.origin')
+            = operation.origin
+          AND json_extract(transaction_row.metadata_json, '$.interventionReason')
+            = operation.intervention_reason
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_metadata_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stock_trades trade ON trade.id = NEW.trade_id
+          AND trade.class_id = operation.class_id
+        JOIN finance_transactions transaction_row
+          ON transaction_row.id = trade.posted_transaction_id
+          AND transaction_row.class_id = operation.class_id
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.referencePrice'
+          ) AS INTEGER) = operation.snapshot_reference_price
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.spreadSnapshot'
+          ) AS INTEGER) = operation.snapshot_spread
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.unitPrice'
+          ) AS INTEGER) = operation.snapshot_unit_price
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.feeBpsSnapshot'
+          ) AS INTEGER) = operation.snapshot_fee_bps
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenStockRevision'
+          ) AS INTEGER) = operation.snapshot_stock_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenMarketRevision'
+          ) AS INTEGER) = operation.snapshot_market_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenFinanceSettingsRevision'
+          ) AS INTEGER) = operation.snapshot_finance_settings_revision
+          AND CAST(json_extract(
+            transaction_row.metadata_json, '$.frozenDenominationStep'
+          ) AS INTEGER) = operation.snapshot_denomination_step
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_projection_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        JOIN finance_stock_trades trade ON trade.id = NEW.trade_id
+          AND trade.class_id = operation.class_id
+        JOIN finance_stock_holdings holding
+          ON holding.class_id = operation.class_id
+          AND holding.stock_id = operation.stock_id
+          AND holding.student_id = operation.student_id
+        JOIN finance_stocks stock ON stock.id = operation.stock_id
+          AND stock.class_id = operation.class_id
+        JOIN finance_accounts wallet ON wallet.id = trade.wallet_account_id
+          AND wallet.class_id = operation.class_id
+          AND wallet.student_id = operation.student_id
+          AND wallet.account_type = 'student_wallet' AND wallet.status = 'active'
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND holding.quantity = NEW.holding_quantity_after
+          AND holding.cost_basis = NEW.holding_cost_basis_after
+          AND holding.revision = trade.holding_revision_after
+          AND holding.last_trade_id = trade.id
+          AND stock.available_shares = trade.available_shares_after
+          AND stock.inventory_revision = trade.inventory_revision_after
+          AND stock.last_trade_id = trade.id
+          AND wallet.revision = trade.wallet_revision_after
+          AND wallet.balance = operation.snapshot_wallet_balance
+            + operation.total_wallet_delta + NEW.wallet_delta
+          AND NEW.created_at = trade.posted_at
+          AND NEW.created_at >= operation.updated_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_totals_guard
+    BEFORE INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stock_liquidation_operations operation
+        WHERE operation.id = NEW.operation_id
+          AND operation.class_id = NEW.class_id
+          AND operation.status = 'running'
+          AND operation.total_gross_amount + NEW.gross_amount
+            <= operation.expected_gross_amount
+          AND operation.total_fee_amount + NEW.fee_amount
+            <= operation.expected_fee_amount
+          AND operation.total_wallet_delta + NEW.wallet_delta
+            <= operation.expected_wallet_delta
+          AND operation.total_cost_basis_removed + NEW.cost_basis_removed
+            <= operation.initial_cost_basis
+          AND (
+            NEW.holding_quantity_after > 0
+            OR (
+              operation.total_gross_amount + NEW.gross_amount
+                = operation.expected_gross_amount
+              AND operation.total_fee_amount + NEW.fee_amount
+                = operation.expected_fee_amount
+              AND operation.total_wallet_delta + NEW.wallet_delta
+                = operation.expected_wallet_delta
+              AND operation.total_cost_basis_removed + NEW.cost_basis_removed
+                = operation.initial_cost_basis
+            )
+          )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_progress
+    AFTER INSERT ON finance_stock_liquidation_chunks
+    BEGIN
+      UPDATE finance_stock_liquidation_operations
+      SET remaining_quantity = NEW.holding_quantity_after,
+          sold_quantity = sold_quantity + NEW.quantity,
+          remaining_cost_basis = NEW.holding_cost_basis_after,
+          completed_chunk_count = completed_chunk_count + 1,
+          total_gross_amount = total_gross_amount + NEW.gross_amount,
+          total_fee_amount = total_fee_amount + NEW.fee_amount,
+          total_wallet_delta = total_wallet_delta + NEW.wallet_delta,
+          total_cost_basis_removed
+            = total_cost_basis_removed + NEW.cost_basis_removed,
+          total_realized_gain = total_realized_gain + NEW.realized_gain,
+          next_chunk_index = next_chunk_index + 1,
+          last_trade_id = NEW.trade_id, revision = revision + 1,
+          status = CASE WHEN NEW.holding_quantity_after = 0
+            THEN 'completed' ELSE 'running' END,
+          completed_at = CASE WHEN NEW.holding_quantity_after = 0
+            THEN NEW.created_at ELSE NULL END,
+          updated_at = NEW.created_at
+      WHERE id = NEW.operation_id AND class_id = NEW.class_id
+        AND status = 'running' AND next_chunk_index = NEW.chunk_index;
+      SELECT CASE WHEN changes() <> 1
+        THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_update_guard
+    BEFORE UPDATE ON finance_stock_liquidation_chunks
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_delete_guard
+    BEFORE DELETE ON finance_stock_liquidation_chunks
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_transactions_reversal_guard
     BEFORE INSERT ON finance_transactions
     WHEN NEW.transaction_type = 'reversal' AND EXISTS (

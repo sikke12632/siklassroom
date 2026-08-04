@@ -542,6 +542,7 @@ function transactionStatements(
 function mapDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const mappings: Array<[string, number, string, string]> = [
+    ["FINANCE_ISSUANCE_BALANCE_LIMIT", 409, "학급 발행계정의 안전 한도가 부족해 예금 거래를 반영하지 않았습니다. 최신 금융 기록을 확인해 주세요.", "FINANCE_ISSUANCE_BALANCE_LIMIT"],
     ["FINANCE_DEPOSIT_PRODUCT_STALE", 409, "다른 화면에서 상품 상태를 먼저 바꿨어요. 최신 정보를 다시 불러와 주세요.", "FINANCE_DEPOSIT_PRODUCT_STALE"],
     ["FINANCE_DEPOSIT_PRODUCT_EVENT_INVALID", 409, "다른 화면에서 상품 상태를 먼저 바꿨어요. 최신 정보를 다시 불러와 주세요.", "FINANCE_DEPOSIT_PRODUCT_STALE"],
     ["FINANCE_DEPOSIT_PRODUCT_ACCESS_DENIED", 403, "이 학급의 예금상품을 관리할 수 없습니다.", "FINANCE_DEPOSIT_PRODUCT_ACCESS_DENIED"],

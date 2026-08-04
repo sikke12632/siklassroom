@@ -260,6 +260,12 @@ function mapDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const mappings: Array<[string, number, string, string]> = [
     [
+      "FINANCE_ISSUANCE_BALANCE_LIMIT",
+      409,
+      "학급 발행계정의 안전 한도가 부족해 신청을 반영하지 않았습니다. 최신 금융 기록을 확인해 주세요.",
+      "FINANCE_ISSUANCE_BALANCE_LIMIT",
+    ],
+    [
       "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE",
       409,
       "다른 출금 신청으로 보관 중인 금액을 빼면 사용할 수 있는 잔액이 부족합니다.",
