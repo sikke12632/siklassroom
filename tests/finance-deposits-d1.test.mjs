@@ -267,8 +267,6 @@ test("deposit products and contracts keep terms, timing, and ledger data safe in
     executeSql(
       persistPath,
       `
-        DELETE FROM finance_transactions
-        WHERE id = 'tx-open-reserved-probe' AND status = 'pending';
         INSERT INTO finance_request_resolutions (
           id, request_id, class_id, decision, idempotency_key, payload_hash,
           expected_request_revision, actor_type, actor_student_id,

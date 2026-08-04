@@ -509,8 +509,6 @@ test("입출금 신청은 은행원 처리·교사 개입·정정을 불변 원�
     executeSql(
       persistPath,
       `
-        DELETE FROM finance_transactions
-        WHERE id = 'transaction-reserved-reversal' AND status = 'pending';
         INSERT INTO finance_request_resolutions (
           id, request_id, class_id, decision, idempotency_key, payload_hash,
           expected_request_revision, actor_type, actor_student_id,

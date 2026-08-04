@@ -859,9 +859,9 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         THEN RAISE(ABORT, 'FINANCE_INSUFFICIENT_AVAILABLE_BALANCE')
       END;
     END`,
+  `DROP TRIGGER IF EXISTS finance_transactions_posted_delete_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_transactions_posted_delete_guard
     BEFORE DELETE ON finance_transactions
-    WHEN OLD.status = 'posted'
     BEGIN
       SELECT RAISE(ABORT, 'FINANCE_TRANSACTION_IMMUTABLE');
     END`,

@@ -512,8 +512,6 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
     executeSql(
       persistPath,
       `
-        DELETE FROM finance_transactions
-        WHERE id = 'transaction:trade-reserved-probe' AND status = 'pending';
         INSERT INTO finance_request_resolutions (
           id, request_id, class_id, decision, idempotency_key, payload_hash,
           expected_request_revision, actor_type, actor_student_id,
@@ -1112,10 +1110,6 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
       { expectSuccess: false },
     );
     assert.match(shortReasonResult.output, /FINANCE_STOCK_TRADE_STALE/);
-    executeSql(
-      persistPath,
-      "DELETE FROM finance_transactions WHERE id = 'transaction:trade-teacher-short-reason';",
-    );
 
     const wrongOwnerLiquidation = {
       ...teacherLiquidation,
@@ -1162,11 +1156,6 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
         { expectSuccess: false },
       );
       assert.match(rejectedResult.output, /FINANCE_STOCK_TRADE_STALE/);
-      executeSql(
-        persistPath,
-        `DELETE FROM finance_transactions
-         WHERE id = 'transaction:${rejectedLiquidation.id}';`,
-      );
     }
 
     insertTeacherLiquidationHeader(persistPath, teacherLiquidation);

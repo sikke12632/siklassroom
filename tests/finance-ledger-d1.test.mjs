@@ -260,6 +260,30 @@ test("D1은 확정된 금융 원장만 잔액에 반영하고 보존 상태를 �
     );
     assert.match(duplicateIssuance.output, /UNIQUE constraint failed/);
 
+    executeSql(
+      persistPath,
+      `INSERT INTO finance_transactions (
+         id, class_id, status, transaction_type, description,
+         idempotency_key, payload_hash, actor_type, actor_teacher_id,
+         actor_label, created_at
+       ) VALUES (
+         'tx-empty-pending', 'class-test', 'pending', 'manual_credit',
+         'Interrupted posting attempt', 'idem-empty-pending',
+         'hash-empty-pending', 'teacher', 'teacher-test', 'Teacher', 70
+       );`,
+    );
+    const pendingDelete = executeSql(
+      persistPath,
+      `DELETE FROM finance_transactions WHERE id = 'tx-empty-pending';`,
+      { expectSuccess: false },
+    );
+    assert.match(pendingDelete.output, /FINANCE_TRANSACTION_IMMUTABLE/);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT status FROM finance_transactions
+       WHERE id = 'tx-empty-pending';`,
+    )), [{ status: "pending" }]);
+
     const foreignKeys = executeSql(
       persistPath,
       "PRAGMA foreign_key_check;",
