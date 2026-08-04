@@ -31,6 +31,12 @@ let databaseWrapped = false;
 let injectionHook: InjectionHook | null = null;
 let archiveAfterClassReadHook: { matched: boolean } | null = null;
 let activateAfterClassReadHook: { matched: boolean } | null = null;
+let excludeAfterStudentReadHook: { matched: boolean } | null = null;
+let activateAfterStudentReadHook: { matched: boolean } | null = null;
+let studentFieldAfterReadHook: {
+  field: "number" | "name";
+  matched: boolean;
+} | null = null;
 
 function isUnresolvedCashRequestCount(query: string) {
   return query.includes("finance_cash_requests") && query.includes("COUNT");
@@ -38,6 +44,11 @@ function isUnresolvedCashRequestCount(query: string) {
 
 function isOwnedClassRead(query: string) {
   return query.includes("FROM classes WHERE id = ? AND teacher_id = ?");
+}
+
+function isOwnedStudentRead(query: string) {
+  return query.includes("FROM students s JOIN classes c ON c.id = s.class_id")
+    && query.includes("WHERE s.id = ? AND c.teacher_id = ?");
 }
 
 async function archiveClassAfterRead() {
@@ -75,6 +86,56 @@ async function activateClassAfterRead() {
        )`,
     ).bind(now, now),
   ]);
+}
+
+async function excludeStudentAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const now = Date.now();
+  await rawDatabase.batch([
+    rawDatabase.prepare(
+      `UPDATE students SET status = 'excluded', updated_at = ?
+       WHERE id = 'student-cash-exclude' AND status = 'active'`,
+    ).bind(now),
+    rawDatabase.prepare(
+      `DELETE FROM sessions WHERE student_id = 'student-cash-exclude'`,
+    ),
+  ]);
+}
+
+async function activateStudentAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const now = Date.now();
+  await rawDatabase.batch([
+    rawDatabase.prepare(
+      `UPDATE students SET status = 'active', updated_at = ?
+       WHERE id = 'student-cash-exclude' AND status = 'excluded'`,
+    ).bind(now),
+    rawDatabase.prepare(
+      `INSERT INTO sessions (
+         id, token_hash, actor_type, teacher_id, student_id,
+         expires_at, created_at, last_seen_at
+       ) VALUES (
+         'session-student-reactivated-race',
+         'hash:session:student:reactivated-race',
+         'student', NULL, 'student-cash-exclude', 4102444800000, ?, ?
+       )`,
+    ).bind(now, now),
+  ]);
+}
+
+async function updateStudentFieldAfterRead(field: "number" | "name") {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const now = Date.now();
+  const statement = field === "number"
+    ? rawDatabase.prepare(
+        `UPDATE students SET student_number = 9, updated_at = ?
+         WHERE id = 'student-cash-exclude'`,
+      )
+    : rawDatabase.prepare(
+        `UPDATE students SET official_name = 'Concurrent student name', updated_at = ?
+         WHERE id = 'student-cash-exclude'`,
+      );
+  await statement.bind(now).run();
 }
 
 async function injectPendingCashRequest(scope: InjectionScope) {
@@ -156,6 +217,33 @@ function wrapPreparedStatement(
           ) {
             activateHook.matched = true;
             await activateClassAfterRead();
+          }
+          const excludeStudentHook = excludeAfterStudentReadHook;
+          if (
+            excludeStudentHook
+            && !excludeStudentHook.matched
+            && isOwnedStudentRead(query)
+          ) {
+            excludeStudentHook.matched = true;
+            await excludeStudentAfterRead();
+          }
+          const activateStudentHook = activateAfterStudentReadHook;
+          if (
+            activateStudentHook
+            && !activateStudentHook.matched
+            && isOwnedStudentRead(query)
+          ) {
+            activateStudentHook.matched = true;
+            await activateStudentAfterRead();
+          }
+          const studentFieldHook = studentFieldAfterReadHook;
+          if (
+            studentFieldHook
+            && !studentFieldHook.matched
+            && isOwnedStudentRead(query)
+          ) {
+            studentFieldHook.matched = true;
+            await updateStudentFieldAfterRead(studentFieldHook.field);
           }
           const hook = injectionHook;
           if (
@@ -248,6 +336,15 @@ const financeCashLifecycleWorker = {
     const activateAfterClassRead = request.headers.get(
       "x-test-activate-after-class-read",
     );
+    const excludeAfterStudentRead = request.headers.get(
+      "x-test-exclude-after-student-read",
+    );
+    const activateAfterStudentRead = request.headers.get(
+      "x-test-activate-after-student-read",
+    );
+    const studentFieldAfterRead = request.headers.get(
+      "x-test-student-field-after-read",
+    );
     if (
       requestedScope !== null
       && requestedScope !== "class"
@@ -261,7 +358,27 @@ const financeCashLifecycleWorker = {
     if (activateAfterClassRead !== null && activateAfterClassRead !== "1") {
       return Response.json({ error: "Unknown activate race hook." }, { status: 400 });
     }
-    if (injectionHook || archiveAfterClassReadHook || activateAfterClassReadHook) {
+    if (excludeAfterStudentRead !== null && excludeAfterStudentRead !== "1") {
+      return Response.json({ error: "Unknown student exclude race hook." }, { status: 400 });
+    }
+    if (activateAfterStudentRead !== null && activateAfterStudentRead !== "1") {
+      return Response.json({ error: "Unknown student activate race hook." }, { status: 400 });
+    }
+    if (
+      studentFieldAfterRead !== null
+      && studentFieldAfterRead !== "number"
+      && studentFieldAfterRead !== "name"
+    ) {
+      return Response.json({ error: "Unknown student field race hook." }, { status: 400 });
+    }
+    if (
+      injectionHook
+      || archiveAfterClassReadHook
+      || activateAfterClassReadHook
+      || excludeAfterStudentReadHook
+      || activateAfterStudentReadHook
+      || studentFieldAfterReadHook
+    ) {
       return Response.json(
         { error: "A lifecycle injection hook is already active." },
         { status: 409 },
@@ -275,6 +392,15 @@ const financeCashLifecycleWorker = {
     }
     if (activateAfterClassRead === "1") {
       activateAfterClassReadHook = { matched: false };
+    }
+    if (excludeAfterStudentRead === "1") {
+      excludeAfterStudentReadHook = { matched: false };
+    }
+    if (activateAfterStudentRead === "1") {
+      activateAfterStudentReadHook = { matched: false };
+    }
+    if (studentFieldAfterRead === "number" || studentFieldAfterRead === "name") {
+      studentFieldAfterReadHook = { field: studentFieldAfterRead, matched: false };
     }
 
     try {
@@ -294,12 +420,18 @@ const financeCashLifecycleWorker = {
         response,
         (injectionHook?.matched ?? false)
           || (archiveAfterClassReadHook?.matched ?? false)
-          || (activateAfterClassReadHook?.matched ?? false),
+          || (activateAfterClassReadHook?.matched ?? false)
+          || (excludeAfterStudentReadHook?.matched ?? false)
+          || (activateAfterStudentReadHook?.matched ?? false)
+          || (studentFieldAfterReadHook?.matched ?? false),
       );
     } finally {
       injectionHook = null;
       archiveAfterClassReadHook = null;
       activateAfterClassReadHook = null;
+      excludeAfterStudentReadHook = null;
+      activateAfterStudentReadHook = null;
+      studentFieldAfterReadHook = null;
     }
   },
 };

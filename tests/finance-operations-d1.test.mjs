@@ -1015,6 +1015,333 @@ test("unresolved cash requests atomically block class archive and student exclus
       request_count: 1,
       resolution_count: 1,
     }]);
+
+    const invalidStudentStatus = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "paused" }),
+      },
+    );
+    const invalidStudentStatusBody = await invalidStudentStatus.json();
+    assert.equal(invalidStudentStatus.status, 400, JSON.stringify(invalidStudentStatusBody));
+    assert.equal(invalidStudentStatusBody.code, "INVALID_STUDENT_STATUS");
+
+    const excludedMetadataUpdate = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ name: "Excluded metadata student" }),
+      },
+    );
+    const excludedMetadataBody = await excludedMetadataUpdate.text();
+    assert.equal(excludedMetadataUpdate.status, 200, excludedMetadataBody);
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "excluded",
+      wallet_status: "frozen",
+      student_session_count: 0,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS matching_count
+       FROM audit_logs
+       WHERE student_id = 'student-cash-exclude'
+         AND action = 'student_updated'
+         AND json_extract(detail, '$.officialName') = 'Excluded metadata student'
+         AND json_type(detail, '$.status') IS NULL;`,
+    )), [{ matching_count: 1 }]);
+
+    const reactivateStudentBeforeRace = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "active" }),
+      },
+    );
+    const reactivateStudentBeforeRaceBody = await reactivateStudentBeforeRace.text();
+    assert.equal(
+      reactivateStudentBeforeRace.status,
+      200,
+      reactivateStudentBeforeRaceBody,
+    );
+    executeSql(
+      persistPath,
+      `INSERT INTO sessions (
+         id, token_hash, actor_type, teacher_id, student_id,
+         expires_at, created_at, last_seen_at
+       ) VALUES (
+         'session-student-before-exclude-race',
+         'hash:session:student:before-exclude-race',
+         'student', NULL, 'student-cash-exclude', 4102444800000, 2000, 2000
+       );`,
+    );
+
+    const excludedMetadataRace = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-exclude-after-student-read": "1",
+        },
+        body: JSON.stringify({ name: "Student after exclude race" }),
+      },
+    );
+    const excludedMetadataRaceBody = await excludedMetadataRace.text();
+    assert.equal(
+      excludedMetadataRace.headers.get("x-test-injection-matched"),
+      "1",
+      excludedMetadataRaceBody,
+    );
+    assert.equal(excludedMetadataRace.status, 200, excludedMetadataRaceBody);
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "excluded",
+      wallet_status: "frozen",
+      student_session_count: 0,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+
+    const activatedStudentMetadataRace = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-activate-after-student-read": "1",
+        },
+        body: JSON.stringify({ name: "Student after activate race" }),
+      },
+    );
+    const activatedStudentMetadataRaceBody = await activatedStudentMetadataRace.text();
+    assert.equal(
+      activatedStudentMetadataRace.headers.get("x-test-injection-matched"),
+      "1",
+      activatedStudentMetadataRaceBody,
+    );
+    assert.equal(
+      activatedStudentMetadataRace.status,
+      200,
+      activatedStudentMetadataRaceBody,
+    );
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS matching_count
+       FROM audit_logs
+       WHERE student_id = 'student-cash-exclude'
+         AND action = 'student_updated'
+         AND json_extract(detail, '$.officialName') = 'Student after activate race'
+         AND json_type(detail, '$.status') IS NULL;`,
+    )), [{ matching_count: 1 }]);
+
+    const pendingStudent = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "pending" }),
+      },
+    );
+    const pendingStudentBody = await pendingStudent.text();
+    assert.equal(pendingStudent.status, 200, pendingStudentBody);
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "pending",
+      wallet_status: "active",
+      student_session_count: 0,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+
+    const activateAfterPending = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "active" }),
+      },
+    );
+    const activateAfterPendingBody = await activateAfterPending.text();
+    assert.equal(activateAfterPending.status, 200, activateAfterPendingBody);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS session_count FROM sessions
+       WHERE student_id = 'student-cash-exclude';`,
+    ))[0]?.session_count, 0);
+
+    const nameAfterNumberRace = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-student-field-after-read": "number",
+        },
+        body: JSON.stringify({ name: "Name after number race" }),
+      },
+    );
+    const nameAfterNumberRaceBody = await nameAfterNumberRace.text();
+    assert.equal(
+      nameAfterNumberRace.headers.get("x-test-injection-matched"),
+      "1",
+      nameAfterNumberRaceBody,
+    );
+    assert.equal(nameAfterNumberRace.status, 200, nameAfterNumberRaceBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT student_number, official_name
+       FROM students WHERE id = 'student-cash-exclude';`,
+    )), [{
+      student_number: 9,
+      official_name: "Name after number race",
+    }]);
+
+    const numberAfterNameRace = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-student-field-after-read": "name",
+        },
+        body: JSON.stringify({ number: 8 }),
+      },
+    );
+    const numberAfterNameRaceBody = await numberAfterNameRace.text();
+    assert.equal(
+      numberAfterNameRace.headers.get("x-test-injection-matched"),
+      "1",
+      numberAfterNameRaceBody,
+    );
+    assert.equal(numberAfterNameRace.status, 200, numberAfterNameRaceBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT student_number, official_name
+       FROM students WHERE id = 'student-cash-exclude';`,
+    )), [{
+      student_number: 8,
+      official_name: "Concurrent student name",
+    }]);
+
+    executeSql(
+      persistPath,
+      `INSERT INTO sessions (
+         id, token_hash, actor_type, teacher_id, student_id,
+         expires_at, created_at, last_seen_at
+       ) VALUES (
+         'session-student-atomic-failure',
+         'hash:session:student:atomic-failure',
+         'student', NULL, 'student-cash-exclude', 4102444800000, 2100, 2100
+       );
+       CREATE TRIGGER test_sessions_delete_failure
+       BEFORE DELETE ON sessions
+       WHEN OLD.id = 'session-student-atomic-failure'
+       BEGIN
+         SELECT RAISE(ABORT, 'TEST_SESSION_DELETE_FAILURE');
+       END;`,
+    );
+    const lockedFailure = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "locked" }),
+      },
+    );
+    const lockedFailureBody = await lockedFailure.text();
+    assert.equal(lockedFailure.status, 500, lockedFailureBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT student.status, wallet.status AS wallet_status,
+              (SELECT COUNT(*) FROM sessions
+               WHERE student_id = student.id) AS session_count
+       FROM students student
+       JOIN finance_accounts wallet
+         ON wallet.student_id = student.id
+        AND wallet.account_type = 'student_wallet'
+       WHERE student.id = 'student-cash-exclude';`,
+    )), [{
+      status: "active",
+      wallet_status: "active",
+      session_count: 1,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_sessions_delete_failure;");
+
+    const lockedStudent = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "locked" }),
+      },
+    );
+    const lockedStudentBody = await lockedStudent.text();
+    assert.equal(lockedStudent.status, 200, lockedStudentBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT student.status, wallet.status AS wallet_status,
+              (SELECT COUNT(*) FROM sessions
+               WHERE student_id = student.id) AS session_count
+       FROM students student
+       JOIN finance_accounts wallet
+         ON wallet.student_id = student.id
+        AND wallet.account_type = 'student_wallet'
+       WHERE student.id = 'student-cash-exclude';`,
+    )), [{
+      status: "locked",
+      wallet_status: "active",
+      session_count: 0,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS matching_count
+       FROM audit_logs
+       WHERE student_id = 'student-cash-exclude'
+         AND action = 'student_updated'
+         AND json_extract(detail, '$.status') = 'locked'
+         AND json_type(detail, '$.studentNumber') IS NULL
+         AND json_type(detail, '$.officialName') IS NULL;`,
+    )), [{ matching_count: 1 }]);
+
+    const activateAfterLocked = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "active" }),
+      },
+    );
+    const activateAfterLockedBody = await activateAfterLocked.text();
+    assert.equal(activateAfterLocked.status, 200, activateAfterLockedBody);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS session_count FROM sessions
+       WHERE student_id = 'student-cash-exclude';`,
+    ))[0]?.session_count, 0);
+
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       "PRAGMA foreign_key_check;",

@@ -529,10 +529,9 @@ test("unresolved cash requests block roster lifecycle changes without auto-cance
     /assertStudentCanBeExcluded\(String\(current\.class_id\), studentId\)/,
   );
   assert.match(studentRoute, /mapFinanceDepositLifecycleError\(error\)/);
-  assert.match(
-    studentRoute,
-    /UPDATE students[\s\S]*revokeActorSessions\("student", studentId\)/,
-  );
+  assert.match(studentRoute, /DELETE FROM sessions WHERE student_id = \?/);
+  assert.match(studentRoute, /await database\(\)\.batch\(statements\)/);
+  assert.doesNotMatch(studentRoute, /revokeActorSessions/);
   assert.match(
     overview,
     /const canApprove = pending[\s\S]*row\.wallet_status === "active"/,
