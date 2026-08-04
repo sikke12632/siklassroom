@@ -1,6 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit, database } from "@/lib/database";
+import { database } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import {
   assertClassCanBeArchived,
@@ -43,6 +43,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
     if (status === "archived" && current.status !== "archived") {
       await assertClassCanBeArchived(classId);
     }
+    const now = Date.now();
+    const auditDetail = {
+      schoolYear,
+      grade,
+      classNumber,
+      displayName,
+      ...(body.status === undefined ? {} : { status }),
+    };
     try {
       const classUpdate = body.status === undefined
         ? database().prepare(
@@ -57,7 +65,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
             grade,
             classNumber,
             displayName,
-            Date.now(),
+            now,
             classId,
           )
         : database().prepare(
@@ -74,7 +82,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
             classNumber,
             displayName,
             status,
-            Date.now(),
+            now,
             classId,
           );
       const statements: D1PreparedStatement[] = [
@@ -89,22 +97,21 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
            WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
         ).bind(classId));
       }
+      statements.push(database().prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'class_updated', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        teacherId,
+        classId,
+        JSON.stringify(auditDetail),
+        now,
+      ));
       await database().batch(statements);
     } catch (error) {
       mapFinanceDepositLifecycleError(error);
     }
-    await audit({
-      action: "class_updated",
-      teacherId,
-      classId,
-      detail: {
-        schoolYear,
-        grade,
-        classNumber,
-        displayName,
-        ...(body.status === undefined ? {} : { status }),
-      },
-    });
     return json({ ok: true });
   } catch (error) {
     return apiFailure(error);

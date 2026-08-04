@@ -1,6 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedStudent } from "@/lib/authorization";
-import { audit, database } from "@/lib/database";
+import { database } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import {
   assertStudentCanBeExcluded,
@@ -47,6 +47,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
     if (status === "excluded" && current.status !== "excluded") {
       await assertStudentCanBeExcluded(String(current.class_id), studentId);
     }
+    const now = Date.now();
+    const auditDetail = {
+      ...(numberProvided ? { studentNumber } : {}),
+      ...(nameProvided ? { officialName } : {}),
+      ...(statusProvided ? { status } : {}),
+    };
     try {
       const assignments: string[] = [];
       const bindings: Array<string | number> = [];
@@ -63,7 +69,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
         bindings.push(status);
       }
       assignments.push("updated_at = ?");
-      bindings.push(Date.now());
+      bindings.push(now);
       const statements: D1PreparedStatement[] = [
         database().prepare(
           `UPDATE students SET ${assignments.join(", ")} WHERE id = ?`,
@@ -74,21 +80,22 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
           `DELETE FROM sessions WHERE student_id = ?`,
         ).bind(studentId));
       }
+      statements.push(database().prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, ?, 'student_updated', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        teacherId,
+        String(current.class_id),
+        studentId,
+        JSON.stringify(auditDetail),
+        now,
+      ));
       await database().batch(statements);
     } catch (error) {
       mapFinanceDepositLifecycleError(error);
     }
-    await audit({
-      action: "student_updated",
-      teacherId,
-      classId: String(current.class_id),
-      studentId,
-      detail: {
-        ...(numberProvided ? { studentNumber } : {}),
-        ...(nameProvided ? { officialName } : {}),
-        ...(statusProvided ? { status } : {}),
-      },
-    });
     return json({ ok: true });
   } catch (error) {
     return apiFailure(error);

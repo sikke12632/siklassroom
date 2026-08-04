@@ -769,6 +769,76 @@ test("unresolved cash requests atomically block class archive and student exclus
       },
     });
 
+    executeSql(persistPath, `
+      CREATE TRIGGER test_class_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'class_updated'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_CLASS_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const classAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ displayName: "Class audit rollback sentinel" }),
+      },
+    );
+    const classAuditFailureBody = await classAuditFailure.text();
+    assert.equal(classAuditFailure.status, 500, classAuditFailureBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT display_name, status FROM classes
+       WHERE id = 'class-cash-archive';`,
+    )), [{ display_name: null, status: "active" }]);
+    assert.deepEqual(classState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 1,
+      request_count: 0,
+      resolution_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_class_audit_insert_failure;");
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_student_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'student_updated'
+        AND NEW.student_id = 'student-cash-exclude'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_STUDENT_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const studentAuditFailure = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ name: "Student audit rollback sentinel" }),
+      },
+    );
+    const studentAuditFailureBody = await studentAuditFailure.text();
+    assert.equal(studentAuditFailure.status, 500, studentAuditFailureBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT official_name, status FROM students
+       WHERE id = 'student-cash-exclude';`,
+    )), [{ official_name: "Exclude Request Student", status: "active" }]);
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 1,
+      request_count: 0,
+      resolution_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_student_audit_insert_failure;");
+
     const archiveResponse = await worker.fetch(
       "http://test.local/classes/class-cash-archive",
       {
