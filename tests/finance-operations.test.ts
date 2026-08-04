@@ -400,3 +400,31 @@ test("교사 비상 예금 정산은 약정 금액·소유권·사유·재확인
   assert.match(css, /finance-action-notice\.warning/);
   assert.match(css, /student-finance-guidance-row td::before \{ content: none; display: none; \}/);
 });
+
+test("교사 주식 비상 청산은 확인한 시세에 묶이고 처리 사유를 감사 기록에 보여 준다", async () => {
+  const [migration, runtime, service, panel, audit] = await Promise.all([
+    readFile(new URL("../drizzle/0018_stock-emergency-liquidation.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/finance/FinanceStocksPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_stock_trades_teacher_insert_guard/);
+    assert.match(source, /classroom\.teacher_id = transaction_row\.actor_teacher_id/);
+    assert.match(source, /current_market_terms_at_liquidation/);
+    assert.match(source, /financeSettingsRevision/);
+    assert.match(source, /BETWEEN 2 AND 300/);
+  }
+  assert.match(service, /expectedFinanceSettingsRevision/);
+  assert.match(service, /FINANCE_STOCK_IDEMPOTENCY_CONFLICT/);
+  assert.match(service, /studentStatusSnapshot/);
+  assert.match(service, /담임교사 비상 청산/);
+  assert.doesNotMatch(service, /담임교사 비상 청산 ·/);
+  assert.match(panel, /confirmedSnapshot === snapshot/);
+  assert.match(panel, /event\.target\.checked \? snapshot : null/);
+  assert.match(panel, /expectedFinanceSettingsRevision: data\.settingsRevision/);
+  assert.match(audit, /'deposit_settlement', 'stock_trade'/);
+  assert.match(audit, /\$\.interventionReason/);
+});

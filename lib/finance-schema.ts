@@ -2384,6 +2384,7 @@ export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TRIGGER IF NOT EXISTS finance_stock_news_delete_guard
     BEFORE DELETE ON finance_stock_news
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_IMMUTABLE'); END`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
     BEFORE INSERT ON finance_stock_trades
     BEGIN
@@ -2398,16 +2399,13 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         JOIN finance_stock_markets market ON market.class_id = stock.class_id
         JOIN finance_settings setting ON setting.class_id = stock.class_id
         JOIN students student ON student.id = NEW.student_id
-          AND student.class_id = stock.class_id AND student.status = 'active'
+          AND student.class_id = stock.class_id
         JOIN finance_accounts wallet ON wallet.id = NEW.wallet_account_id
           AND wallet.class_id = stock.class_id
           AND wallet.student_id = student.id
           AND wallet.account_type = 'student_wallet'
           AND wallet.status = 'active'
         WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
-          AND market.is_open = 1
-          AND stock.status IN ('active', 'sell_only')
-          AND (NEW.side = 'sell' OR stock.status = 'active')
           AND stock.revision = NEW.stock_revision
           AND stock.inventory_revision = NEW.inventory_revision_before
           AND stock.available_shares = NEW.available_shares_before
@@ -2441,6 +2439,35 @@ export const FINANCE_SCHEMA_STATEMENTS = [
           )
           AND NEW.available_shares_after BETWEEN 0 AND stock.total_shares
           AND NEW.holding_quantity_after <= stock.max_shares_per_student
+          AND (
+            (
+              student.status = 'active'
+              AND market.is_open = 1
+              AND stock.status IN ('active', 'sell_only')
+              AND (NEW.side = 'sell' OR stock.status = 'active')
+            )
+            OR (
+              NEW.side = 'sell'
+              AND student.status IN ('active', 'locked', 'reset_required', 'pending')
+              AND stock.status IN ('active', 'sell_only', 'halted')
+              AND EXISTS (
+                SELECT 1
+                FROM finance_transactions transaction_row
+                JOIN classes classroom ON classroom.id = transaction_row.class_id
+                WHERE transaction_row.class_id = NEW.class_id
+                  AND transaction_row.status = 'pending'
+                  AND transaction_row.transaction_type = 'stock_sell'
+                  AND transaction_row.source_type = 'stock_trade'
+                  AND transaction_row.source_id = NEW.id
+                  AND transaction_row.idempotency_key = 'stock-trade:' || NEW.id || ':ledger'
+                  AND transaction_row.actor_type = 'teacher'
+                  AND transaction_row.actor_teacher_id = classroom.teacher_id
+                  AND transaction_row.actor_student_id IS NULL
+                  AND transaction_row.actor_job_period_id IS NULL
+                  AND classroom.status = 'active'
+              )
+            )
+          )
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
       SELECT CASE WHEN COALESCE((
           SELECT holding.quantity FROM finance_stock_holdings holding
@@ -2461,6 +2488,104 @@ export const FINANCE_SCHEMA_STATEMENTS = [
             AND holding.student_id = NEW.student_id
         ), 0) <> NEW.holding_revision_before
         THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+    END`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
+    BEFORE INSERT ON finance_stock_trades
+    WHEN EXISTS (
+      SELECT 1 FROM finance_transactions transaction_row
+      WHERE transaction_row.class_id = NEW.class_id
+        AND transaction_row.source_type = 'stock_trade'
+        AND transaction_row.source_id = NEW.id
+        AND transaction_row.status = 'pending'
+        AND transaction_row.actor_type = 'teacher'
+    )
+    BEGIN
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_transactions transaction_row
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND json_valid(transaction_row.metadata_json) = 1
+          AND json_extract(transaction_row.metadata_json, '$.isEmergency') = 1
+          AND json_extract(transaction_row.metadata_json, '$.liquidationPolicy')
+            = 'current_market_terms_at_liquidation'
+          AND json_extract(transaction_row.metadata_json, '$.origin') IN (
+            'finance_center', 'student_exclusion', 'class_archive', 'account_recovery'
+          )
+          AND json_type(transaction_row.metadata_json, '$.operationId') = 'text'
+          AND LENGTH(TRIM(CAST(json_extract(
+            transaction_row.metadata_json, '$.operationId'
+          ) AS TEXT))) BETWEEN 8 AND 160
+          AND json_type(transaction_row.metadata_json, '$.interventionReason') = 'text'
+          AND LENGTH(TRIM(CAST(json_extract(
+            transaction_row.metadata_json, '$.interventionReason'
+          ) AS TEXT))) BETWEEN 2 AND 300
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_transactions transaction_row
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND json_extract(transaction_row.metadata_json, '$.studentId') = NEW.student_id
+          AND json_extract(transaction_row.metadata_json, '$.stockId') = NEW.stock_id
+          AND json_extract(transaction_row.metadata_json, '$.side') = NEW.side
+          AND CAST(json_extract(transaction_row.metadata_json, '$.quantity') AS INTEGER) = NEW.quantity
+          AND CAST(json_extract(transaction_row.metadata_json, '$.referencePrice') AS INTEGER) = NEW.reference_price
+          AND CAST(json_extract(transaction_row.metadata_json, '$.spreadSnapshot') AS INTEGER) = NEW.spread_snapshot
+          AND CAST(json_extract(transaction_row.metadata_json, '$.unitPrice') AS INTEGER) = NEW.unit_price
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_transactions transaction_row
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND CAST(json_extract(transaction_row.metadata_json, '$.grossAmount') AS INTEGER) = NEW.gross_amount
+          AND CAST(json_extract(transaction_row.metadata_json, '$.feeBpsSnapshot') AS INTEGER) = NEW.fee_bps_snapshot
+          AND CAST(json_extract(transaction_row.metadata_json, '$.feeAmount') AS INTEGER) = NEW.fee_amount
+          AND CAST(json_extract(transaction_row.metadata_json, '$.walletDelta') AS INTEGER) = NEW.wallet_delta
+          AND CAST(json_extract(transaction_row.metadata_json, '$.costBasisRemoved') AS INTEGER) = NEW.cost_basis_removed
+          AND CAST(json_extract(transaction_row.metadata_json, '$.realizedGain') AS INTEGER) = NEW.realized_gain
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_transactions transaction_row
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND CAST(json_extract(transaction_row.metadata_json, '$.stockRevision') AS INTEGER) = NEW.stock_revision
+          AND CAST(json_extract(transaction_row.metadata_json, '$.inventoryRevisionBefore') AS INTEGER) = NEW.inventory_revision_before
+          AND CAST(json_extract(transaction_row.metadata_json, '$.marketRevision') AS INTEGER) = NEW.market_revision
+          AND CAST(json_extract(transaction_row.metadata_json, '$.financeSettingsRevision') AS INTEGER) = NEW.finance_settings_revision
+          AND CAST(json_extract(transaction_row.metadata_json, '$.walletRevisionBefore') AS INTEGER) = NEW.wallet_revision_before
+          AND CAST(json_extract(transaction_row.metadata_json, '$.holdingRevisionBefore') AS INTEGER) = NEW.holding_revision_before
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_transactions transaction_row
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND CAST(json_extract(transaction_row.metadata_json, '$.availableSharesBefore') AS INTEGER) = NEW.available_shares_before
+          AND CAST(json_extract(transaction_row.metadata_json, '$.availableSharesAfter') AS INTEGER) = NEW.available_shares_after
+          AND CAST(json_extract(transaction_row.metadata_json, '$.holdingQuantityBefore') AS INTEGER) = NEW.holding_quantity_before
+          AND CAST(json_extract(transaction_row.metadata_json, '$.holdingQuantityAfter') AS INTEGER) = NEW.holding_quantity_after
+          AND CAST(json_extract(transaction_row.metadata_json, '$.holdingCostBasisBefore') AS INTEGER) = NEW.holding_cost_basis_before
+          AND CAST(json_extract(transaction_row.metadata_json, '$.holdingCostBasisAfter') AS INTEGER) = NEW.holding_cost_basis_after
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_transactions transaction_row
+        JOIN students student ON student.id = NEW.student_id
+          AND student.class_id = NEW.class_id
+        JOIN finance_stocks stock ON stock.id = NEW.stock_id
+          AND stock.class_id = NEW.class_id
+        JOIN finance_stock_markets market ON market.class_id = NEW.class_id
+        WHERE transaction_row.class_id = NEW.class_id
+          AND transaction_row.source_type = 'stock_trade'
+          AND transaction_row.source_id = NEW.id
+          AND json_extract(transaction_row.metadata_json, '$.studentStatusSnapshot') = student.status
+          AND CAST(json_extract(transaction_row.metadata_json, '$.marketWasOpen') AS INTEGER) = market.is_open
+          AND json_extract(transaction_row.metadata_json, '$.stockStatusSnapshot') = stock.status
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
     END`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_holdings_insert_guard
     BEFORE INSERT ON finance_stock_holdings
@@ -2567,6 +2692,7 @@ export const FINANCE_SCHEMA_STATEMENTS = [
       payload_hash, created_at
     ON finance_stock_trades
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TRADE_IMMUTABLE'); END`,
+  `DROP TRIGGER IF EXISTS finance_stock_trades_finalize_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_trades_finalize_guard
     BEFORE UPDATE OF status, posted_transaction_id,
       transaction_payload_hash, posted_at ON finance_stock_trades
@@ -2589,15 +2715,27 @@ export const FINANCE_SCHEMA_STATEMENTS = [
           AND transaction_row.source_type = 'stock_trade'
           AND transaction_row.source_id = NEW.id
           AND (
-            transaction_row.actor_type = 'system'
+            (
+              transaction_row.actor_type = 'system'
+              AND COALESCE(json_extract(
+                transaction_row.metadata_json, '$.isEmergency'
+              ), 0) <> 1
+            )
             OR (
               NEW.side = 'sell'
               AND transaction_row.actor_type = 'teacher'
-              AND LENGTH(TRIM(COALESCE(
-                json_extract(transaction_row.metadata_json, '$.interventionReason'),
-                ''
-              ))) BETWEEN 1 AND 300
+              AND transaction_row.actor_student_id IS NULL
+              AND transaction_row.actor_job_period_id IS NULL
+              AND json_valid(transaction_row.metadata_json) = 1
+              AND json_extract(transaction_row.metadata_json, '$.isEmergency') = 1
+              AND json_extract(transaction_row.metadata_json, '$.liquidationPolicy')
+                = 'current_market_terms_at_liquidation'
+              AND json_type(transaction_row.metadata_json, '$.interventionReason') = 'text'
+              AND LENGTH(TRIM(CAST(json_extract(
+                transaction_row.metadata_json, '$.interventionReason'
+              ) AS TEXT))) BETWEEN 2 AND 300
               AND json_extract(transaction_row.metadata_json, '$.studentId') = NEW.student_id
+              AND json_extract(transaction_row.metadata_json, '$.stockId') = NEW.stock_id
               AND EXISTS (
                 SELECT 1 FROM classes classroom
                 WHERE classroom.id = NEW.class_id

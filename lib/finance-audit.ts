@@ -259,8 +259,10 @@ export async function financeAuditForRequest(request: Request) {
            ELSE '금융 거래'
          END AS title,
          CASE
-           WHEN transaction_row.source_type = 'deposit_settlement'
+           WHEN transaction_row.source_type IN ('deposit_settlement', 'stock_trade')
              AND transaction_row.actor_type = 'teacher'
+             AND json_valid(transaction_row.metadata_json) = 1
+             AND json_extract(transaction_row.metadata_json, '$.isEmergency') = 1
            THEN transaction_row.description || ' · 사유: ' || COALESCE(
              json_extract(transaction_row.metadata_json, '$.interventionReason'),
              '기록 확인 필요'

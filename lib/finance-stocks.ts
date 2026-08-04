@@ -29,9 +29,26 @@ import { ApiError } from "./responses";
 
 const STOCK_STATUSES = new Set(["active", "sell_only", "halted", "archived"]);
 const MAX_FINANCE_AMOUNT = 1_000_000_000;
+const TEACHER_LIQUIDATION_STUDENT_STATUSES = new Set([
+  "active",
+  "locked",
+  "reset_required",
+  "pending",
+]);
+const TEACHER_LIQUIDATION_ORIGINS = new Set([
+  "finance_center",
+  "student_exclusion",
+  "class_archive",
+  "account_recovery",
+]);
 
 type StockMood = "surge" | "bull" | "mixed" | "bear" | "crash";
 type StockStatus = "active" | "sell_only" | "halted" | "archived";
+type TeacherLiquidationOrigin =
+  | "finance_center"
+  | "student_exclusion"
+  | "class_archive"
+  | "account_recovery";
 
 type MarketRow = {
   class_id: string;
@@ -92,6 +109,11 @@ type AccountRow = {
   account_type: string;
   balance: number;
   revision: number;
+  status: string;
+};
+
+type StudentStatusRow = {
+  id: string;
   status: string;
 };
 
@@ -235,6 +257,18 @@ function normalizedText(value: unknown, label: string, maximum: number, required
     throw new ApiError(400, `${label}은(는) ${maximum}자 이내로 입력해 주세요.`, "FINANCE_STOCK_INPUT_TOO_LONG");
   }
   return text;
+}
+
+function teacherLiquidationOrigin(value: unknown): TeacherLiquidationOrigin {
+  const normalized = typeof value === "string" ? value.trim() : "finance_center";
+  if (!TEACHER_LIQUIDATION_ORIGINS.has(normalized)) {
+    throw new ApiError(
+      400,
+      "비상 청산을 시작한 화면을 다시 확인해 주세요.",
+      "FINANCE_STOCK_INVALID_LIQUIDATION_ORIGIN",
+    );
+  }
+  return normalized as TeacherLiquidationOrigin;
 }
 
 function assertTeacher(context: FinanceContext) {
@@ -1376,6 +1410,8 @@ export async function tradeFinanceStock(
     teacherLiquidation?: {
       studentId: string;
       reason: string;
+      origin: TeacherLiquidationOrigin;
+      operationId: string;
     };
   } = {},
 ) {
@@ -1397,7 +1433,19 @@ export async function tradeFinanceStock(
     side: order.side,
     quantity: order.quantity,
     initiatedBy: options.teacherLiquidation
-      ? { type: "teacher", teacherId: context.actor.id, reason: options.teacherLiquidation.reason }
+      ? {
+          type: "teacher",
+          teacherId: context.actor.id,
+          reason: options.teacherLiquidation.reason,
+          origin: options.teacherLiquidation.origin,
+          operationId: options.teacherLiquidation.operationId,
+          confirmedSnapshot: {
+            stockRevision: order.expectedStockRevision,
+            marketRevision: order.expectedMarketRevision,
+            financeSettingsRevision: order.expectedFinanceSettingsRevision,
+            holdingRevision: order.expectedHoldingRevision,
+          },
+        }
       : { type: "student", studentId: context.actor.id },
   }));
   const db = database();
@@ -1414,24 +1462,54 @@ export async function tradeFinanceStock(
     return { trade: serializeTrade(duplicate), deduplicated: true };
   }
 
-  const [market, stock, settings, holding, accounts] = await Promise.all([
+  const [market, stock, settings, holding, accounts, targetStudent] = await Promise.all([
     marketForClass(db, context.classroom.id),
     stockById(db, context.classroom.id, stockId),
     financeSettingsForClass(context.classroom.id),
     holdingForStudent(db, context.classroom.id, stockId, tradingStudentId),
     accountRows(db, context.classroom.id, tradingStudentId),
+    options.teacherLiquidation
+      ? db.prepare(
+          `SELECT id, status FROM students
+           WHERE id = ? AND class_id = ? LIMIT 1`,
+        ).bind(tradingStudentId, context.classroom.id).first<StudentStatusRow>()
+      : Promise.resolve(null),
   ]);
   if (!market || !stock) {
     throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
   }
-  if (!market.is_open) {
-    throw new ApiError(409, "지금은 주식시장이 쉬는 시간입니다.", "FINANCE_STOCK_MARKET_CLOSED");
-  }
-  if (stock.status === "halted" || stock.status === "archived") {
-    throw new ApiError(409, "지금은 이 주식의 거래가 잠시 멈췄습니다.", "FINANCE_STOCK_TRADE_HALTED");
-  }
-  if (order.side === "buy" && stock.status !== "active") {
-    throw new ApiError(409, "지금은 이 주식을 새로 살 수 없습니다.", "FINANCE_STOCK_BUY_CLOSED");
+  if (options.teacherLiquidation) {
+    if (order.side !== "sell") {
+      throw new ApiError(
+        403,
+        "교사 비상 처리는 학생이 보유한 주식의 전량 청산에만 사용할 수 있습니다.",
+        "FINANCE_STOCK_LIQUIDATION_SELL_ONLY",
+      );
+    }
+    if (stock.status === "archived") {
+      throw new ApiError(
+        409,
+        "보관된 종목은 비상 청산할 수 없습니다.",
+        "FINANCE_STOCK_IMMUTABLE",
+      );
+    }
+    if (!targetStudent || !TEACHER_LIQUIDATION_STUDENT_STATUSES.has(targetStudent.status)) {
+      throw new ApiError(
+        409,
+        "이미 명단에서 제외되었거나 이 학급에 없는 학생은 비상 청산할 수 없습니다.",
+        "FINANCE_STOCK_LIQUIDATION_STUDENT_UNAVAILABLE",
+      );
+    }
+  } else {
+    if (!market.is_open) {
+      throw new ApiError(409, "지금은 주식시장이 쉬는 시간입니다.", "FINANCE_STOCK_MARKET_CLOSED");
+    }
+    if (stock.status === "halted" || stock.status === "archived") {
+      throw new ApiError(409, "지금은 이 주식의 거래가 잠시 멈췄습니다.", "FINANCE_STOCK_TRADE_HALTED");
+    }
+    if (order.side === "buy" && stock.status !== "active") {
+      throw new ApiError(409, "지금은 이 주식을 새로 살 수 없습니다.", "FINANCE_STOCK_BUY_CLOSED");
+    }
   }
   if (Number(stock.revision) !== order.expectedStockRevision) {
     throw new ApiError(409, "주가가 바뀌었습니다. 최신 시세를 다시 확인해 주세요.", "FINANCE_STOCK_STALE");
@@ -1520,7 +1598,7 @@ export async function tradeFinanceStock(
     idempotencyKey: `stock-trade:${tradeId}:ledger`,
     transactionType: order.side === "buy" ? "stock_buy" : "stock_sell",
     description: options.teacherLiquidation
-      ? `${stock.name} ${order.quantity.toLocaleString("ko-KR")}주 교사 비상 청산 · ${options.teacherLiquidation.reason}`.slice(0, 200)
+      ? `${stock.name} ${order.quantity.toLocaleString("ko-KR")}주 담임교사 비상 청산`.slice(0, 200)
       : `${stock.name} ${order.quantity.toLocaleString("ko-KR")}주 ${order.side === "buy" ? "매수" : "매도"}`,
     actor: options.teacherLiquidation
       ? {
@@ -1550,10 +1628,38 @@ export async function tradeFinanceStock(
       studentId: tradingStudentId,
       side: order.side,
       quantity: order.quantity,
+      referencePrice: Number(stock.current_price),
+      spreadSnapshot: spread,
       unitPrice,
+      grossAmount: position.quote.grossAmount,
+      feeBpsSnapshot: feeBps,
       feeAmount: position.quote.feeAmount,
+      walletDelta: position.quote.walletChange,
+      stockRevision: Number(stock.revision),
+      inventoryRevisionBefore: Number(stock.inventory_revision),
+      marketRevision: Number(market.revision),
+      financeSettingsRevision: settings.revision,
+      walletRevisionBefore: Number(accounts.wallet.revision),
+      holdingRevisionBefore: holdingRevision,
+      availableSharesBefore: Number(stock.available_shares),
+      availableSharesAfter: availableAfter,
+      holdingQuantityBefore: position.quantityBefore,
+      holdingQuantityAfter: position.quantityAfter,
+      holdingCostBasisBefore: position.totalCostBefore,
+      holdingCostBasisAfter: position.totalCostAfter,
+      costBasisRemoved: position.costBasisRemoved,
+      realizedGain: position.realizedProfit,
       ...(options.teacherLiquidation
-        ? { interventionReason: options.teacherLiquidation.reason }
+        ? {
+            isEmergency: true,
+            operationId: options.teacherLiquidation.operationId,
+            origin: options.teacherLiquidation.origin,
+            interventionReason: options.teacherLiquidation.reason,
+            studentStatusSnapshot: targetStudent?.status,
+            marketWasOpen: Boolean(market.is_open),
+            stockStatusSnapshot: stock.status,
+            liquidationPolicy: "current_market_terms_at_liquidation",
+          }
         : {}),
     },
   });
@@ -1562,8 +1668,7 @@ export async function tradeFinanceStock(
     [accounts.wallet.id, accounts.wallet],
     [accounts.issuance.id, accounts.issuance],
   ]);
-  const statements: D1PreparedStatement[] = [
-    db.prepare(
+  const tradeInsertStatement = db.prepare(
       `INSERT INTO finance_stock_trades (
          id, class_id, stock_id, stock_revision,
          inventory_revision_before, inventory_revision_after,
@@ -1616,15 +1721,21 @@ export async function tradeFinanceStock(
       order.idempotencyKey,
       payloadHash,
       now,
-    ),
-    ...transactionStatements(db, {
-      transactionId,
-      transaction,
-      transactionPayloadHash,
-      accounts: accountsById,
-      now,
-    }),
-  ];
+    );
+  const ledgerStatements = transactionStatements(db, {
+    transactionId,
+    transaction,
+    transactionPayloadHash,
+    accounts: accountsById,
+    now,
+  });
+  const transactionHeader = ledgerStatements[0];
+  if (!transactionHeader) {
+    throw new ApiError(500, "주식 원장 기록을 준비하지 못했습니다.", "FINANCE_STOCK_LEDGER_UNAVAILABLE");
+  }
+  const statements: D1PreparedStatement[] = options.teacherLiquidation
+    ? [transactionHeader, tradeInsertStatement, ...ledgerStatements.slice(1)]
+    : [tradeInsertStatement, ...ledgerStatements];
   if (holding) {
     statements.push(
       db.prepare(
@@ -1729,9 +1840,28 @@ export async function liquidateFinanceStockHolding(
   const studentId = requiredId(input.studentId, "학생 ID");
   const key = idempotencyKey(input.idempotencyKey);
   const reason = normalizedText(input.reason, "비상 청산 이유", 300);
+  if (reason.length < 2) {
+    throw new ApiError(
+      400,
+      "비상 청산 이유를 2자 이상 적어 주세요.",
+      "FINANCE_STOCK_LIQUIDATION_REASON_REQUIRED",
+    );
+  }
+  const origin = teacherLiquidationOrigin(input.origin);
   const expectedStock = expectedRevision(input.expectedStockRevision, "주식");
   const expectedMarket = expectedRevision(input.expectedMarketRevision, "주식시장");
+  const expectedSettings = expectedRevision(
+    input.expectedFinanceSettingsRevision,
+    "학급화폐 설정",
+  );
   const expectedHolding = expectedRevision(input.expectedHoldingRevision, "학생 보유 주식");
+  const operationId = `stock-liquidation:${(await sha256(stableFinanceJson({
+    classId: context.classroom.id,
+    studentId,
+    stockId,
+    teacherId: context.actor.id,
+    idempotencyKey: key,
+  }))).slice(0, 48)}`;
   const db = database();
 
   const duplicate = await tradeByIdempotency(
@@ -1744,14 +1874,14 @@ export async function liquidateFinanceStockHolding(
     return tradeFinanceStock(request, stockId, {
       side: "sell",
       quantity: Number(duplicate.quantity),
-      expectedStockRevision: Number(duplicate.stock_revision),
-      expectedMarketRevision: Number(duplicate.market_revision),
-      expectedFinanceSettingsRevision: Number(duplicate.finance_settings_revision),
-      expectedHoldingRevision: Number(duplicate.holding_revision_before),
+      expectedStockRevision: expectedStock,
+      expectedMarketRevision: expectedMarket,
+      expectedFinanceSettingsRevision: expectedSettings,
+      expectedHoldingRevision: expectedHolding,
       expectedWalletRevision: Number(duplicate.wallet_revision_before),
       idempotencyKey: key,
     }, {
-      teacherLiquidation: { studentId, reason },
+      teacherLiquidation: { studentId, reason, origin, operationId },
     });
   }
 
@@ -1779,11 +1909,12 @@ export async function liquidateFinanceStockHolding(
   if (
     Number(stock.revision) !== expectedStock
     || Number(market.revision) !== expectedMarket
+    || settings.revision !== expectedSettings
     || Number(holding.revision) !== expectedHolding
   ) {
     throw new ApiError(
       409,
-      "시세나 학생 보유량이 먼저 바뀌었습니다. 최신 정보를 다시 확인해 주세요.",
+      "시세·수수료·학급화폐 설정 또는 학생 보유량이 바뀌었습니다. 최신 지급 예정액을 다시 확인해 주세요.",
       "FINANCE_STOCK_TRADE_STALE",
     );
   }
@@ -1798,7 +1929,7 @@ export async function liquidateFinanceStockHolding(
     expectedWalletRevision: Number(wallet.revision),
     idempotencyKey: key,
   }, {
-    teacherLiquidation: { studentId, reason },
+    teacherLiquidation: { studentId, reason, origin, operationId },
   });
 }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +18,8 @@ const wranglerPath = path.join(
   "bin",
   "wrangler.js",
 );
+const stockLiquidationWorkerPath = "tests/fixtures/stock-liquidation-worker.ts";
+const stockLiquidationConfigPath = "tests/fixtures/wrangler.stock-liquidation.jsonc";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
   const result = spawnSync(process.execPath, [wranglerPath, ...args], {
@@ -149,6 +152,69 @@ function insertPendingTrade(persistPath, trade, options) {
   );
 }
 
+function teacherLiquidationMetadata(trade) {
+  return JSON.stringify({
+    tradeId: trade.id,
+    stockId: "stock-class",
+    symbol: "CLASS",
+    studentId: trade.studentId,
+    side: trade.side,
+    quantity: trade.quantity,
+    referencePrice: trade.referencePrice ?? 1000,
+    spreadSnapshot: trade.spread ?? 100,
+    unitPrice: trade.unitPrice,
+    grossAmount: trade.grossAmount,
+    feeBpsSnapshot: trade.feeBps ?? 500,
+    feeAmount: trade.feeAmount,
+    walletDelta: trade.walletDelta,
+    stockRevision: trade.stockRevision ?? 0,
+    inventoryRevisionBefore: trade.inventoryRevisionBefore,
+    marketRevision: trade.marketRevision ?? 1,
+    financeSettingsRevision: trade.financeSettingsRevision ?? 0,
+    walletRevisionBefore: trade.walletRevisionBefore,
+    holdingRevisionBefore: trade.holdingRevisionBefore,
+    availableSharesBefore: trade.availableBefore,
+    availableSharesAfter: trade.availableAfter,
+    holdingQuantityBefore: trade.holdingQuantityBefore,
+    holdingQuantityAfter: trade.holdingQuantityAfter,
+    holdingCostBasisBefore: trade.holdingCostBefore,
+    holdingCostBasisAfter: trade.holdingCostAfter,
+    costBasisRemoved: trade.costBasisRemoved ?? 0,
+    realizedGain: trade.realizedGain ?? 0,
+    isEmergency: true,
+    operationId: `stock-liquidation:test:${trade.id}`,
+    origin: trade.origin ?? "finance_center",
+    interventionReason: trade.interventionReason ?? "Test emergency liquidation",
+    studentStatusSnapshot: trade.studentStatus ?? "active",
+    marketWasOpen: trade.marketWasOpen ?? true,
+    stockStatusSnapshot: trade.stockStatus ?? "active",
+    liquidationPolicy: "current_market_terms_at_liquidation",
+    ...(trade.metadataOverrides ?? {}),
+  });
+}
+
+function insertTeacherLiquidationHeader(persistPath, trade, options) {
+  const transactionId = `transaction:${trade.id}`;
+  const metadataJson = teacherLiquidationMetadata(trade).replaceAll("'", "''");
+  return executeSql(
+    persistPath,
+    `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_teacher_id, actor_label, metadata_json, created_at
+      ) VALUES (
+        '${transactionId}', 'class-stocks', 'pending', 'stock_sell',
+        'Teacher emergency liquidation', 'stock-trade:${trade.id}:ledger',
+        'tx-hash:${trade.id}', 'stock_trade', '${trade.id}',
+        'teacher', '${trade.actorTeacherId ?? "teacher-stocks"}',
+        'Teacher emergency liquidation', '${metadataJson}', ${trade.createdAt}
+      );
+    `,
+    options,
+  );
+}
+
 function projectAndPostTrade(persistPath, trade) {
   if (trade.holdingRevisionBefore === 0) {
     executeSql(
@@ -196,29 +262,27 @@ function projectAndPostTrade(persistPath, trade) {
   const transactionId = `transaction:${trade.id}`;
   const walletId = `finance:student:${trade.studentId}:wallet`;
   const teacherLiquidation = Boolean(trade.teacherLiquidation);
-  const actorType = teacherLiquidation ? "teacher" : "system";
-  const actorTeacherId = teacherLiquidation ? "'teacher-stocks'" : "NULL";
-  const actorLabel = teacherLiquidation ? "Teacher emergency liquidation" : "Stock system";
-  const metadataJson = teacherLiquidation
-    ? `'${JSON.stringify({
-        interventionReason: "Test emergency liquidation",
-        studentId: trade.studentId,
-      })}'`
-    : "NULL";
+  if (!teacherLiquidation) {
+    executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_transactions (
+          id, class_id, status, transaction_type, description,
+          idempotency_key, payload_hash, source_type, source_id,
+          actor_type, actor_label, created_at
+        ) VALUES (
+          '${transactionId}', 'class-stocks', 'pending',
+          '${trade.side === "buy" ? "stock_buy" : "stock_sell"}',
+          'Post a stock trade', 'stock-trade:${trade.id}:ledger',
+          'tx-hash:${trade.id}', 'stock_trade', '${trade.id}',
+          'system', 'Stock system', ${trade.createdAt}
+        );
+      `,
+    );
+  }
   executeSql(
     persistPath,
     `
-      INSERT INTO finance_transactions (
-        id, class_id, status, transaction_type, description,
-        idempotency_key, payload_hash, source_type, source_id,
-        actor_type, actor_teacher_id, actor_label, metadata_json, created_at
-      ) VALUES (
-        '${transactionId}', 'class-stocks', 'pending',
-        '${trade.side === "buy" ? "stock_buy" : "stock_sell"}',
-        'Post a stock trade', 'idem:${transactionId}', 'tx-hash:${trade.id}',
-        'stock_trade', '${trade.id}', '${actorType}', ${actorTeacherId},
-        '${actorLabel}', ${metadataJson}, ${trade.createdAt}
-      );
       INSERT INTO finance_ledger_entries (
         id, transaction_id, class_id, account_id, amount,
         balance_after, account_revision_after, created_at
@@ -273,10 +337,15 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
       `
         INSERT INTO teachers (
           id, email, password_hash, status, created_at, updated_at
-        ) VALUES (
-          'teacher-stocks', 'teacher-stocks@test.local', 'hash',
-          'active', 1, 1
-        );
+        ) VALUES
+          (
+            'teacher-stocks', 'teacher-stocks@test.local', 'hash',
+            'active', 1, 1
+          ),
+          (
+            'teacher-other', 'teacher-other@test.local', 'hash',
+            'active', 1, 1
+          );
         INSERT INTO classes (
           id, teacher_id, school_name, school_normalized,
           school_year, grade, class_number, status, created_at, updated_at
@@ -861,12 +930,127 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
     );
     assert.match(ledgerMismatch.output, /FINANCE_STOCK_LEDGER_MISMATCH/);
 
+    executeSql(
+      persistPath,
+      `
+        UPDATE finance_stock_markets
+        SET is_open = 0, revision = 2,
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 450
+        WHERE class_id = 'class-stocks';
+      `,
+    );
+
+    const blockedStudentSell = {
+      id: "trade-student-closed-market",
+      idempotencyKey: "stock-student-closed-market-1",
+      studentId: "student-trader",
+      side: "sell",
+      quantity: 1,
+      stockRevision: 0,
+      marketRevision: 2,
+      inventoryRevisionBefore: 2,
+      walletRevisionBefore: 3,
+      unitPrice: 900,
+      grossAmount: 900,
+      feeAmount: 0,
+      walletDelta: 900,
+      availableBefore: 14,
+      availableAfter: 15,
+      holdingQuantityBefore: 6,
+      holdingQuantityAfter: 5,
+      holdingCostBefore: 6900,
+      holdingCostAfter: 5750,
+      holdingRevisionBefore: 2,
+      costBasisRemoved: 1150,
+      realizedGain: -250,
+      createdAt: 460,
+    };
+    const blockedStudentSellResult = insertPendingTrade(
+      persistPath,
+      blockedStudentSell,
+      { expectSuccess: false },
+    );
+    assert.match(blockedStudentSellResult.output, /FINANCE_STOCK_TRADE_STALE/);
+
+    executeSql(
+      persistPath,
+      `
+        UPDATE finance_stock_markets
+        SET is_open = 1, revision = 3,
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 451
+        WHERE class_id = 'class-stocks';
+        UPDATE finance_stocks
+        SET status = 'halted', revision = 1,
+            updated_by_actor_type = 'teacher',
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 451
+        WHERE id = 'stock-class' AND class_id = 'class-stocks';
+      `,
+    );
+    const haltedStockStudentSell = {
+      ...blockedStudentSell,
+      id: "trade-student-halted-stock",
+      idempotencyKey: "stock-student-halted-stock-1",
+      stockRevision: 1,
+      marketRevision: 3,
+      createdAt: 461,
+    };
+    const haltedStockStudentSellResult = insertPendingTrade(
+      persistPath,
+      haltedStockStudentSell,
+      { expectSuccess: false },
+    );
+    assert.match(haltedStockStudentSellResult.output, /FINANCE_STOCK_TRADE_STALE/);
+
+    executeSql(
+      persistPath,
+      `
+        UPDATE finance_stocks
+        SET status = 'active', revision = 2,
+            updated_by_actor_type = 'teacher',
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 452
+        WHERE id = 'stock-class' AND class_id = 'class-stocks';
+        UPDATE students SET status = 'locked', updated_at = 452
+        WHERE id = 'student-trader' AND class_id = 'class-stocks';
+      `,
+    );
+    const lockedStudentSell = {
+      ...blockedStudentSell,
+      id: "trade-locked-student-open-market",
+      idempotencyKey: "stock-locked-student-open-market-1",
+      stockRevision: 2,
+      marketRevision: 3,
+      createdAt: 462,
+    };
+    const lockedStudentSellResult = insertPendingTrade(
+      persistPath,
+      lockedStudentSell,
+      { expectSuccess: false },
+    );
+    assert.match(lockedStudentSellResult.output, /FINANCE_STOCK_TRADE_STALE/);
+
+    executeSql(
+      persistPath,
+      `
+        UPDATE finance_stock_markets
+        SET is_open = 0, revision = 4,
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 453
+        WHERE class_id = 'class-stocks';
+        UPDATE finance_stocks
+        SET status = 'halted', revision = 3,
+            updated_by_actor_type = 'teacher',
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 453
+        WHERE id = 'stock-class' AND class_id = 'class-stocks';
+      `,
+    );
+
     const teacherLiquidation = {
       id: "trade-teacher-liquidation",
       idempotencyKey: "stock-teacher-liquidation-1",
       studentId: "student-trader",
       side: "sell",
       quantity: 6,
+      stockRevision: 3,
+      marketRevision: 4,
       inventoryRevisionBefore: 2,
       walletRevisionBefore: 3,
       unitPrice: 900,
@@ -883,8 +1067,84 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
       costBasisRemoved: 6900,
       realizedGain: -1700,
       teacherLiquidation: true,
+      studentStatus: "locked",
+      marketWasOpen: false,
+      stockStatus: "halted",
       createdAt: 500,
     };
+
+    const shortReasonLiquidation = {
+      ...teacherLiquidation,
+      id: "trade-teacher-short-reason",
+      idempotencyKey: "stock-teacher-short-reason-1",
+      interventionReason: "x",
+      createdAt: 490,
+    };
+    insertTeacherLiquidationHeader(persistPath, shortReasonLiquidation);
+    const shortReasonResult = insertPendingTrade(
+      persistPath,
+      shortReasonLiquidation,
+      { expectSuccess: false },
+    );
+    assert.match(shortReasonResult.output, /FINANCE_STOCK_TRADE_STALE/);
+    executeSql(
+      persistPath,
+      "DELETE FROM finance_transactions WHERE id = 'transaction:trade-teacher-short-reason';",
+    );
+
+    const wrongOwnerLiquidation = {
+      ...teacherLiquidation,
+      id: "trade-teacher-wrong-owner",
+      idempotencyKey: "stock-teacher-wrong-owner-1",
+      actorTeacherId: "teacher-other",
+      createdAt: 491,
+    };
+    const wrongOwnerResult = insertTeacherLiquidationHeader(
+      persistPath,
+      wrongOwnerLiquidation,
+      { expectSuccess: false },
+    );
+    assert.match(wrongOwnerResult.output, /FINANCE_CLASS_ACCESS_DENIED/);
+
+    const rejectedTeacherLiquidations = [
+      {
+        ...teacherLiquidation,
+        id: "trade-teacher-price-tamper",
+        idempotencyKey: "stock-teacher-price-tamper-1",
+        metadataOverrides: { unitPrice: 800 },
+        createdAt: 492,
+      },
+      {
+        ...teacherLiquidation,
+        id: "trade-teacher-fee-tamper",
+        idempotencyKey: "stock-teacher-fee-tamper-1",
+        metadataOverrides: { feeAmount: 100 },
+        createdAt: 493,
+      },
+      {
+        ...teacherLiquidation,
+        id: "trade-teacher-revision-tamper",
+        idempotencyKey: "stock-teacher-revision-tamper-1",
+        metadataOverrides: { financeSettingsRevision: 99 },
+        createdAt: 494,
+      },
+    ];
+    for (const rejectedLiquidation of rejectedTeacherLiquidations) {
+      insertTeacherLiquidationHeader(persistPath, rejectedLiquidation);
+      const rejectedResult = insertPendingTrade(
+        persistPath,
+        rejectedLiquidation,
+        { expectSuccess: false },
+      );
+      assert.match(rejectedResult.output, /FINANCE_STOCK_TRADE_STALE/);
+      executeSql(
+        persistPath,
+        `DELETE FROM finance_transactions
+         WHERE id = 'transaction:${rejectedLiquidation.id}';`,
+      );
+    }
+
+    insertTeacherLiquidationHeader(persistPath, teacherLiquidation);
     insertPendingTrade(persistPath, teacherLiquidation);
     projectAndPostTrade(persistPath, teacherLiquidation);
     assert.deepEqual(lastResults(executeSql(
@@ -934,11 +1194,337 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
          );`,
     ));
     assert.deepEqual(reconciliation, []);
+    executeSql(
+      persistPath,
+      `
+        UPDATE students SET status = 'excluded', updated_at = 600
+        WHERE id = 'student-trader' AND class_id = 'class-stocks';
+        UPDATE classes SET status = 'archived', updated_at = 610
+        WHERE id = 'class-stocks';
+      `,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT classroom.status AS class_status, student.status AS student_status
+       FROM classes classroom
+       JOIN students student ON student.class_id = classroom.id
+       WHERE classroom.id = 'class-stocks' AND student.id = 'student-trader';`,
+    )), [{ class_status: "archived", student_status: "excluded" }]);
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       "PRAGMA foreign_key_check;",
     )), []);
   } finally {
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("teacher liquidation keeps the confirmed quote and retries only once in the service", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-liquidation-service-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    const rawSessionToken = "teacher-stock-liquidation-session";
+    const sessionTokenHash = createHash("sha256")
+      .update(rawSessionToken)
+      .digest("base64url");
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
+      ) VALUES (
+        'teacher-stocks', 'teacher-stocks@test.local', 'hash', 'active', 1,
+        'invite_verified', 1, 'school-test', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized, school_id,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stocks', 'teacher-stocks', 'Test School', 'test school',
+        'school-test', 2099, 6, 7, 'active', 1, 1
+      );
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status,
+        created_at, updated_at
+      ) VALUES (
+        'student-trader', 'class-stocks', 1, 'Trader Student', 'active', 1, 1
+      );
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES (
+        'session-stock-liquidation', '${sessionTokenHash}', 'teacher',
+        'teacher-stocks', NULL, 4102444800000, 1, 1
+      );
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        'stock-class', 'class-stocks', 'Classroom Company', 'CLASS',
+        'A single classroom stock', 1000, 1000, 1000,
+        20, 20, 10, 'active', 0, 0, NULL,
+        'teacher-stocks', 'teacher', 'teacher-stocks', 10, 10
+      );
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, stock_snapshot_json,
+        actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-event-service-issued', 'class-stocks', 'stock-class', 0,
+        'issued', 'Initial classroom issue', 'stock:event:service:issued',
+        'hash:stock:event:service:issued', '{"price":1000}',
+        'teacher', 'teacher-stocks', 10
+      );
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 500, sell_fee_bps = 500,
+          buy_spread = 100, sell_spread = 100,
+          next_tick_at = 1000, revision = 1,
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 20
+      WHERE class_id = 'class-stocks';
+    `);
+
+    fundWallet(persistPath, {
+      transactionId: "fund-service-trader",
+      studentId: "student-trader",
+      amount: 20_000,
+      createdAt: 30,
+    });
+    const buy = {
+      id: "trade-service-buy",
+      idempotencyKey: "stock-service-buy-1",
+      studentId: "student-trader",
+      side: "buy",
+      quantity: 2,
+      inventoryRevisionBefore: 0,
+      walletRevisionBefore: 1,
+      unitPrice: 1100,
+      grossAmount: 2200,
+      feeAmount: 100,
+      walletDelta: -2300,
+      availableBefore: 20,
+      availableAfter: 18,
+      holdingQuantityBefore: 0,
+      holdingQuantityAfter: 2,
+      holdingCostBefore: 0,
+      holdingCostAfter: 2300,
+      holdingRevisionBefore: 0,
+      createdAt: 40,
+    };
+    insertPendingTrade(persistPath, buy);
+    projectAndPostTrade(persistPath, buy);
+    executeSql(persistPath, `
+      UPDATE finance_stock_markets
+      SET is_open = 0, revision = 2,
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 50
+      WHERE class_id = 'class-stocks';
+      UPDATE finance_stocks
+      SET status = 'halted', revision = 1,
+          updated_by_actor_type = 'teacher',
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 50
+      WHERE id = 'stock-class' AND class_id = 'class-stocks';
+      UPDATE students SET status = 'locked', updated_at = 50
+      WHERE id = 'student-trader' AND class_id = 'class-stocks';
+    `);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockLiquidationWorkerPath,
+      {
+        config: stockLiquidationConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    const requestBody = {
+      studentId: "student-trader",
+      reason: "Account recovery liquidation",
+      origin: "account_recovery",
+      expectedStockRevision: 1,
+      expectedMarketRevision: 2,
+      expectedFinanceSettingsRevision: 0,
+      expectedHoldingRevision: 1,
+      idempotencyKey: "stock-service-liquidation-1",
+    };
+    const cookie = `job_classroom_session=${rawSessionToken}`;
+
+    const liquidationState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT balance FROM finance_accounts
+          WHERE id = 'finance:student:student-trader:wallet') AS wallet_balance,
+         (SELECT revision FROM finance_accounts
+          WHERE id = 'finance:student:student-trader:wallet') AS wallet_revision,
+         (SELECT balance FROM finance_accounts
+          WHERE id = 'finance:class:class-stocks:issuance') AS issuance_balance,
+         (SELECT revision FROM finance_accounts
+          WHERE id = 'finance:class:class-stocks:issuance') AS issuance_revision,
+         (SELECT quantity FROM finance_stock_holdings
+          WHERE student_id = 'student-trader') AS holding_quantity,
+         (SELECT cost_basis FROM finance_stock_holdings
+          WHERE student_id = 'student-trader') AS holding_cost_basis,
+         (SELECT revision FROM finance_stock_holdings
+          WHERE student_id = 'student-trader') AS holding_revision,
+         (SELECT last_trade_id FROM finance_stock_holdings
+          WHERE student_id = 'student-trader') AS holding_last_trade_id,
+         (SELECT available_shares FROM finance_stocks
+          WHERE id = 'stock-class') AS available_shares,
+         (SELECT inventory_revision FROM finance_stocks
+          WHERE id = 'stock-class') AS inventory_revision,
+         (SELECT last_trade_id FROM finance_stocks
+          WHERE id = 'stock-class') AS stock_last_trade_id,
+         (SELECT COUNT(*) FROM finance_stock_trades) AS trade_count,
+         (SELECT COUNT(*) FROM finance_transactions) AS transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries) AS entry_count;`,
+    ));
+    const before = liquidationState();
+    const rollbackResponse = await worker.fetch(
+      "http://test.local/liquidate?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ forceLateFailure: true }),
+      },
+    );
+    assert.equal(rollbackResponse.status, 409);
+    const rollbackResult = await rollbackResponse.json();
+    assert.equal(rollbackResult.code, "FORCED_LATE_FAILURE");
+    assert.match(
+      rollbackResult.error,
+      /FINANCE_STOCK_LEDGER_MISMATCH/,
+    );
+    assert.deepEqual(liquidationState(), before);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_transactions
+          WHERE id = 'transaction:trade-service-forced-rollback') AS transaction_count,
+         (SELECT COUNT(*) FROM finance_stock_trades
+          WHERE id = 'trade-service-forced-rollback') AS trade_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries
+          WHERE transaction_id = 'transaction:trade-service-forced-rollback') AS entry_count;`,
+    )), [{ transaction_count: 0, trade_count: 0, entry_count: 0 }]);
+
+    const staleResponse = await worker.fetch(
+      "http://test.local/liquidate?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...requestBody,
+          expectedFinanceSettingsRevision: 99,
+          idempotencyKey: "stock-service-liquidation-stale",
+        }),
+      },
+    );
+    assert.equal(staleResponse.status, 409);
+    assert.equal((await staleResponse.json()).code, "FINANCE_STOCK_TRADE_STALE");
+    assert.deepEqual(liquidationState(), before);
+
+    const response = await worker.fetch(
+      "http://test.local/liquidate?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    assert.equal(response.status, 201);
+    const result = await response.json();
+    assert.equal(result.deduplicated, false);
+    assert.equal(result.trade.quantity, 2);
+    assert.equal(result.trade.netAmount, 1800);
+
+    const conflictingRetryResponse = await worker.fetch(
+      "http://test.local/liquidate?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...requestBody,
+          expectedFinanceSettingsRevision: 99,
+        }),
+      },
+    );
+    assert.equal(conflictingRetryResponse.status, 409);
+    assert.equal(
+      (await conflictingRetryResponse.json()).code,
+      "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
+    );
+
+    const retryResponse = await worker.fetch(
+      "http://test.local/liquidate?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    assert.equal(retryResponse.status, 201);
+    assert.equal((await retryResponse.json()).deduplicated, true);
+
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         wallet.balance AS wallet_balance,
+         wallet.revision AS wallet_revision,
+         holding.quantity AS holding_quantity,
+         stock.available_shares,
+         (SELECT COUNT(*) FROM finance_stock_trades) AS trade_count,
+         (SELECT COUNT(*) FROM finance_transactions) AS transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries) AS entry_count,
+         transaction_row.description,
+         json_extract(transaction_row.metadata_json, '$.interventionReason') AS reason
+       FROM finance_accounts wallet
+       JOIN finance_stock_holdings holding
+         ON holding.wallet_account_id = wallet.id
+       JOIN finance_stocks stock ON stock.id = holding.stock_id
+       JOIN finance_stock_trades trade ON trade.id = holding.last_trade_id
+       JOIN finance_transactions transaction_row
+         ON transaction_row.id = trade.posted_transaction_id
+       WHERE wallet.id = 'finance:student:student-trader:wallet';`,
+    )), [{
+      wallet_balance: 19500,
+      wallet_revision: 3,
+      holding_quantity: 0,
+      available_shares: 20,
+      trade_count: 2,
+      transaction_count: 3,
+      entry_count: 6,
+      description: "Classroom Company 2주 담임교사 비상 청산",
+      reason: "Account recovery liquidation",
+    }]);
+    assert.equal(
+      lastResults(executeSql(
+        persistPath,
+        `SELECT COUNT(*) AS count FROM finance_transactions
+         WHERE description LIKE '%Account recovery liquidation%';`,
+      ))[0].count,
+      0,
+    );
+  } finally {
+    await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });
   }
 });

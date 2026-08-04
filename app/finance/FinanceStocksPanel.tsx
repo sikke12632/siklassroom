@@ -1049,6 +1049,7 @@ function TeacherHoldingCard({
   holder,
   stock,
   market,
+  settingsRevision,
   unit,
   denominationStep,
   disabled,
@@ -1058,6 +1059,7 @@ function TeacherHoldingCard({
   holder: FinanceStockHolder;
   stock: FinanceStockAsset;
   market: FinanceStockMarket;
+  settingsRevision: number;
   unit: string;
   denominationStep: number;
   disabled: boolean;
@@ -1065,18 +1067,31 @@ function TeacherHoldingCard({
   onLiquidate: (holder: FinanceStockHolder, reason: string) => Promise<boolean>;
 }) {
   const [reason, setReason] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
+  const [confirmedSnapshot, setConfirmedSnapshot] = useState<string | null>(null);
+  const [snapshotChanged, setSnapshotChanged] = useState(false);
+  const snapshot = `${holder.revision}:${holder.shares}:${stock.revision}:${stock.currentPrice}:${market.revision}:${market.sellSpread}:${market.sellFeeBps}:${settingsRevision}:${denominationStep}`;
+  const confirmed = confirmedSnapshot === snapshot;
+  const previousSnapshot = useRef(snapshot);
   const slot = `stock-liquidate:${holder.student.id}`;
   const sellPrice = Math.max(0, stock.currentPrice - market.sellSpread);
   const gross = sellPrice * holder.shares;
   const fee = tradeFee(gross, market.sellFeeBps, denominationStep);
   const payout = Math.max(0, gross - fee);
-  const canLiquidate = market.isOpen && ["active", "sell_only"].includes(stock.status);
+  const canLiquidate = stock.status !== "archived";
+
+  useEffect(() => {
+    if (previousSnapshot.current === snapshot) return;
+    previousSnapshot.current = snapshot;
+    setReason("");
+    setConfirmedSnapshot(null);
+    setSnapshotChanged(true);
+  }, [snapshot]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!reason.trim() || !confirmed) return;
-    await onLiquidate(holder, reason.trim());
+    if (reason.trim().length < 2 || !confirmed) return;
+    const completed = await onLiquidate(holder, reason.trim());
+    if (completed) setSnapshotChanged(false);
   }
 
   return (
@@ -1090,6 +1105,7 @@ function TeacherHoldingCard({
       <div style={styles.preview}>
         <div style={styles.previewRow}><span>평균 매수가</span><strong>{moneyText(holder.averagePrice, unit)}</strong></div>
         <div style={styles.previewRow}><span>현재 평가액</span><strong>{moneyText(holder.marketValue, unit)}</strong></div>
+        <div style={styles.previewRow}><span>예상 수수료</span><strong>{moneyText(fee, unit)}</strong></div>
         <div style={styles.previewRow}><span>전량 매도 예상 지급</span><strong>{moneyText(payout, unit)}</strong></div>
       </div>
       <details>
@@ -1099,20 +1115,36 @@ function TeacherHoldingCard({
             처리 이유
             <input
               value={reason}
+              minLength={2}
               maxLength={300}
-              onChange={(event) => setReason(event.target.value)}
+              onChange={(event) => {
+                setReason(event.target.value);
+                setSnapshotChanged(false);
+              }}
               disabled={disabled || !canLiquidate}
               required
             />
           </label>
+          {snapshotChanged && (
+            <small className="finance-inline-alert" role="alert">
+              보유량이나 지급 기준이 바뀌었어요. 최신 수량과 금액을 다시 확인해 주세요.
+            </small>
+          )}
           {!canLiquidate && (
-            <small style={styles.fieldHelp}>비상 청산은 장을 열고 종목을 거래 허용 또는 매도만 허용으로 둔 뒤 할 수 있어요.</small>
+            <small style={styles.fieldHelp}>보관된 종목은 비상 청산할 수 없어요.</small>
+          )}
+          {canLiquidate && (!market.isOpen || stock.status === "halted") && (
+            <small style={styles.fieldHelp}>
+              학생 거래는 멈춰 있지만, 담임교사 비상 청산은 현재 표시된 매도가와 수수료로 안전하게 처리돼요.
+            </small>
           )}
           <label className="finance-confirm-check">
             <input
               type="checkbox"
               checked={confirmed}
-              onChange={(event) => setConfirmed(event.target.checked)}
+              onChange={(event) => setConfirmedSnapshot(
+                event.target.checked ? snapshot : null,
+              )}
               disabled={disabled || !canLiquidate}
             />
             <span>{holder.student.name} 학생의 {holder.shares.toLocaleString("ko-KR")}주를 전량 매도하고 약 {moneyText(payout, unit)}을 지갑에 지급하는 것을 확인했어요.</span>
@@ -1120,7 +1152,7 @@ function TeacherHoldingCard({
           <button
             className="button finance-danger-button"
             type="submit"
-            disabled={disabled || !canLiquidate || !reason.trim() || !confirmed}
+            disabled={disabled || !canLiquidate || reason.trim().length < 2 || !confirmed}
           >
             {busyId === slot
               ? <LoaderCircle className="spin" aria-hidden="true" />
@@ -1508,15 +1540,17 @@ export function FinanceStocksPanel({
     const input = {
       studentId: holder.student.id,
       reason,
+      origin: "finance_center",
       expectedStockRevision: data.stock.revision,
       expectedMarketRevision: data.market.revision,
+      expectedFinanceSettingsRevision: data.settingsRevision,
       expectedHoldingRevision: holder.revision,
     };
     const slot = `stock-liquidate:${holder.student.id}`;
     const idempotencyKey = getStableActionKey(
       actionKeys,
       slot,
-      JSON.stringify({ stockId: data.stock.id, studentId: holder.student.id, reason }),
+      JSON.stringify({ stockId: data.stock.id, ...input }),
     );
     setBusyId(slot);
     setNotice(null);
@@ -2102,6 +2136,7 @@ function TeacherStocks({
                 holder={holder}
                 stock={stock}
                 market={data.market}
+                settingsRevision={data.settingsRevision}
                 unit={unit}
                 denominationStep={data.denominationStep}
                 disabled={disabled}
