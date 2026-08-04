@@ -2217,6 +2217,7 @@ export const FINANCE_SCHEMA_STATEMENTS = [
           ) = 0
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_OR_DENOMINATION_DENIED') END;
     END`,
+  `DROP TRIGGER IF EXISTS finance_stocks_management_update_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_stocks_management_update_guard
     BEFORE UPDATE ON finance_stocks
     WHEN NEW.last_trade_id IS OLD.last_trade_id
@@ -2232,7 +2233,6 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         OR NEW.created_by_teacher_id <> OLD.created_by_teacher_id
         OR NEW.created_at <> OLD.created_at OR NEW.updated_at < OLD.updated_at
         OR NEW.revision <> OLD.revision + 1
-        OR (NEW.current_price = OLD.current_price AND NEW.status = OLD.status)
         OR NEW.previous_price <> CASE
           WHEN NEW.current_price <> OLD.current_price THEN OLD.current_price
           ELSE OLD.previous_price END
@@ -2245,7 +2245,6 @@ export const FINANCE_SCHEMA_STATEMENTS = [
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_DENIED') END;
       SELECT CASE WHEN NEW.updated_by_actor_type = 'system' AND (
         NEW.updated_by_teacher_id IS NOT NULL
-        OR NEW.current_price = OLD.current_price
         OR NEW.status <> OLD.status
         OR OLD.status NOT IN ('active', 'sell_only')
         OR NOT EXISTS (
@@ -2258,6 +2257,12 @@ export const FINANCE_SCHEMA_STATEMENTS = [
       SELECT CASE WHEN NEW.status = 'archived'
         AND NEW.available_shares <> NEW.total_shares
         THEN RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_HOLDINGS') END;
+      SELECT CASE WHEN NEW.current_price > OLD.current_price AND EXISTS (
+        SELECT 1 FROM finance_stock_holdings holding
+        WHERE holding.class_id = NEW.class_id
+          AND holding.stock_id = NEW.id
+          AND holding.quantity > CAST(1000000000 / NEW.current_price AS INTEGER)
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT') END;
       SELECT CASE WHEN NOT EXISTS (
         SELECT 1
         FROM finance_stock_markets market
@@ -2393,6 +2398,12 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         OR NEW.transaction_payload_hash IS NOT NULL
         OR NEW.posted_at IS NOT NULL
         THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_INVALID_INITIAL_STATE') END;
+      SELECT CASE WHEN NEW.side = 'buy' AND EXISTS (
+        SELECT 1 FROM finance_stocks stock
+        WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
+          AND NEW.holding_quantity_after
+            > CAST(1000000000 / stock.current_price AS INTEGER)
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT') END;
       SELECT CASE WHEN NOT EXISTS (
         SELECT 1
         FROM finance_stocks stock

@@ -44,6 +44,7 @@ export type FinanceStockRuleErrorCode =
   | "FINANCE_STOCK_INVALID_POSITION"
   | "FINANCE_STOCK_INVALID_MAX_SHARES"
   | "FINANCE_STOCK_POSITION_LIMIT"
+  | "FINANCE_STOCK_POSITION_VALUE_LIMIT"
   | "FINANCE_STOCK_INSUFFICIENT_HOLDINGS";
 
 export class FinanceStockRuleError extends Error {
@@ -284,6 +285,58 @@ export function normalizeFinanceStockQuantity(value: unknown) {
     );
   }
   return Number(value);
+}
+
+function nonnegativeFinanceStockQuantity(value: unknown) {
+  if (
+    !Number.isSafeInteger(value)
+    || Number(value) < 0
+    || Number(value) > FINANCE_STOCK_MAX_QUANTITY
+  ) {
+    throw new FinanceStockRuleError(
+      "현재 주식 보유 수량을 안전하게 계산할 수 없습니다.",
+      "FINANCE_STOCK_INVALID_POSITION",
+    );
+  }
+  return Number(value);
+}
+
+export function assertFinanceStockPositionMarketValue(input: {
+  quantity: unknown;
+  currentPrice: unknown;
+}) {
+  const quantity = nonnegativeFinanceStockQuantity(input.quantity);
+  const currentPrice = normalizeFinanceStockPrice(input.currentPrice, 1);
+  const marketValue = BigInt(quantity) * BigInt(currentPrice);
+  if (marketValue > MAX_FINANCE_AMOUNT_BIGINT) {
+    throw new FinanceStockRuleError(
+      `학생 한 명의 주식 평가액은 ${FINANCE_MAX_ABSOLUTE_AMOUNT.toLocaleString("ko-KR")}을 넘을 수 없습니다.`,
+      "FINANCE_STOCK_POSITION_VALUE_LIMIT",
+    );
+  }
+  return Number(marketValue);
+}
+
+export function limitFinanceStockPriceIncrease(input: {
+  currentPrice: unknown;
+  candidatePrice: unknown;
+  maximumHoldingQuantity: unknown;
+  denominationStep: unknown;
+}) {
+  const step = normalizeFinanceStockDenominationStep(input.denominationStep);
+  const currentPrice = normalizeFinanceStockPrice(input.currentPrice, step);
+  const candidatePrice = normalizeFinanceStockPrice(input.candidatePrice, step);
+  const maximumHoldingQuantity = nonnegativeFinanceStockQuantity(
+    input.maximumHoldingQuantity,
+  );
+  if (candidatePrice <= currentPrice || maximumHoldingQuantity === 0) {
+    return candidatePrice;
+  }
+  const rawMaximum = MAX_FINANCE_AMOUNT_BIGINT / BigInt(maximumHoldingQuantity);
+  const maximumPrice = Number(
+    (rawMaximum / BigInt(step)) * BigInt(step),
+  );
+  return Math.max(currentPrice, Math.min(candidatePrice, maximumPrice));
 }
 
 export function normalizeFinanceStockFeeBps(value: unknown) {

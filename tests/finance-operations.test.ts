@@ -428,3 +428,30 @@ test("교사 주식 비상 청산은 확인한 시세에 묶이고 처리 사유
   assert.match(audit, /'deposit_settlement', 'stock_trade'/);
   assert.match(audit, /\$\.interventionReason/);
 });
+
+test("매수와 가격 상승은 학생별 평가액 10억 안전선을 함께 지킨다", async () => {
+  const [migration, runtime, rules, service] = await Promise.all([
+    readFile(new URL("../drizzle/0019_stock-position-value-limit.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stock-rules.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [migration, runtime]) {
+    assert.match(source, /DROP TRIGGER IF EXISTS finance_stocks_management_update_guard/);
+    assert.match(source, /DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard/);
+    assert.match(source, /holding\.quantity > CAST\(1000000000 \/ NEW\.current_price AS INTEGER\)/);
+    assert.match(source, /NEW\.side = 'buy'[\s\S]*NEW\.holding_quantity_after[\s\S]*1000000000 \/ stock\.current_price[\s\S]*RAISE\(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT'\)/);
+    assert.match(source, /FINANCE_STOCK_POSITION_VALUE_LIMIT/);
+  }
+  assert.match(rules, /BigInt\(quantity\) \* BigInt\(currentPrice\)/);
+  assert.match(rules, /limitFinanceStockPriceIncrease/);
+  assert.match(service, /maximumHoldingQuantity/);
+  assert.match(service, /assertFinanceStockPositionMarketValue/);
+  assert.match(service, /limitFinanceStockPriceIncrease/);
+  assert.match(service, /const skipped = effectivePrice === Number\(input\.stock\.current_price\)/);
+  assert.match(service, /effectivePrice,\s*nextStock\.previous_price,/);
+  assert.match(service, /skipped: stockTickEventWasSkipped\(duplicate\)/);
+  assert.match(service, /skipped: stockTickEventWasSkipped\(concurrent\)/);
+  assert.match(service, /return \{ stock: nextStock, deduplicated: false, skipped \}/);
+});

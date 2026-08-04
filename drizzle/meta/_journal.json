@@ -134,6 +134,13 @@
       "when": 1785821362868,
       "tag": "0018_stock-emergency-liquidation",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1785824344906,
+      "tag": "0019_stock-position-value-limit",
+      "breakpoints": true
     }
   ]
 }

@@ -4,9 +4,11 @@ import {
   FINANCE_STOCK_MAX_FEE_BPS,
   FINANCE_STOCK_MAX_QUANTITY,
   FinanceStockRuleError,
+  assertFinanceStockPositionMarketValue,
   calculateFinanceStockExecutionPrice,
   calculateFinanceStockPositionAfterTrade,
   calculateFinanceStockTradeQuote,
+  limitFinanceStockPriceIncrease,
   normalizeFinanceStockDefinition,
   normalizeFinanceStockMarketSettings,
   normalizeFinanceStockTradeRequest,
@@ -559,6 +561,50 @@ test("종목별 학생 보유 한도는 전체 발행량을 넘지 않는다", (
   });
   assert.equal(aliases.initialPrice, 2_000);
   assert.equal(aliases.maxSharesPerStudent, 10);
+});
+
+test("학생별 평가액은 10억 경계까지 허용하고 그 이상은 막는다", () => {
+  assert.equal(
+    assertFinanceStockPositionMarketValue({
+      quantity: 1_000_000,
+      currentPrice: 1_000,
+    }),
+    1_000_000_000,
+  );
+  assert.throws(
+    () => assertFinanceStockPositionMarketValue({
+      quantity: 1_000_000,
+      currentPrice: 1_001,
+    }),
+    stockError("FINANCE_STOCK_POSITION_VALUE_LIMIT"),
+  );
+});
+
+test("자동 시세는 안전 상한에서 멈추고 기존 초과 상태의 가격 인하는 허용한다", () => {
+  assert.equal(limitFinanceStockPriceIncrease({
+    currentPrice: 1_000,
+    candidatePrice: 1_200,
+    maximumHoldingQuantity: 1_000_000,
+    denominationStep: 100,
+  }), 1_000);
+  assert.equal(limitFinanceStockPriceIncrease({
+    currentPrice: 1_000,
+    candidatePrice: 1_200,
+    maximumHoldingQuantity: 500_000,
+    denominationStep: 100,
+  }), 1_200);
+  assert.equal(limitFinanceStockPriceIncrease({
+    currentPrice: 2_000,
+    candidatePrice: 2_200,
+    maximumHoldingQuantity: 1_000_000,
+    denominationStep: 100,
+  }), 2_000);
+  assert.equal(limitFinanceStockPriceIncrease({
+    currentPrice: 2_000,
+    candidatePrice: 1_900,
+    maximumHoldingQuantity: 1_000_000,
+    denominationStep: 100,
+  }), 1_900);
 });
 
 test("보유 기록과 지갑 revision도 오래된 거래 요청을 막을 수 있게 검증한다", () => {

@@ -17,8 +17,10 @@ import {
 } from "./finance-ledger-rules";
 import {
   FinanceStockRuleError,
+  assertFinanceStockPositionMarketValue,
   calculateFinanceStockExecutionPrice,
   calculateFinanceStockPositionAfterTrade,
+  limitFinanceStockPriceIncrease,
   normalizeFinanceStockDefinition,
   normalizeFinanceStockMarketSettings,
   normalizeFinanceStockPrice,
@@ -168,10 +170,28 @@ type StockEventRow = {
   reason: string;
   idempotency_key: string;
   payload_hash: string;
+  previous_snapshot_json: string | null;
   stock_snapshot_json: string;
   actor_type: string;
   created_at: number;
 };
+
+function stockTickEventWasSkipped(event: StockEventRow) {
+  if (!event.previous_snapshot_json) return false;
+  try {
+    const previous = JSON.parse(event.previous_snapshot_json) as {
+      currentPrice?: unknown;
+    };
+    const current = JSON.parse(event.stock_snapshot_json) as {
+      currentPrice?: unknown;
+    };
+    return typeof previous.currentPrice === "number"
+      && Number.isSafeInteger(previous.currentPrice)
+      && previous.currentPrice === current.currentPrice;
+  } catch {
+    return false;
+  }
+}
 
 type MarketEventRow = {
   class_id: string;
@@ -488,6 +508,19 @@ async function holdingForStudent(
   ).bind(classId, stockId, studentId).first<HoldingRow>();
 }
 
+async function maximumHoldingQuantity(
+  db: D1Database,
+  classId: string,
+  stockId: string,
+) {
+  const row = await db.prepare(
+    `SELECT COALESCE(MAX(quantity), 0) AS maximum_quantity
+     FROM finance_stock_holdings
+     WHERE class_id = ? AND stock_id = ? AND quantity > 0`,
+  ).bind(classId, stockId).first<{ maximum_quantity: number }>();
+  return Number(row?.maximum_quantity ?? 0);
+}
+
 async function accountRows(db: D1Database, classId: string, studentId: string) {
   const walletId = studentWalletAccountId(studentId);
   const issuanceId = classIssuanceAccountId(classId);
@@ -610,6 +643,7 @@ function mapDatabaseError(error: unknown): never {
     ["FINANCE_STOCK_INSUFFICIENT_INVENTORY", 409, "시장에 남은 주식이 부족합니다.", "FINANCE_STOCK_INSUFFICIENT_INVENTORY"],
     ["FINANCE_STOCK_INSUFFICIENT_HOLDINGS", 409, "보유한 주식보다 많이 팔 수 없습니다.", "FINANCE_STOCK_INSUFFICIENT_HOLDINGS"],
     ["FINANCE_STOCK_HOLDING_LIMIT", 409, "한 학생이 보유할 수 있는 최대 수량을 넘습니다.", "FINANCE_STOCK_HOLDING_LIMIT"],
+    ["FINANCE_STOCK_POSITION_VALUE_LIMIT", 409, "이 거래나 가격 인상을 반영하면 한 학생의 주식 평가액이 10억을 넘습니다.", "FINANCE_STOCK_POSITION_VALUE_LIMIT"],
     ["FINANCE_STOCK_LEDGER_MISMATCH", 409, "주식과 지갑 기록이 맞지 않아 거래를 멈췄습니다.", "FINANCE_STOCK_LEDGER_MISMATCH"],
     ["FINANCE_STOCK_PROJECTION_MISMATCH", 409, "주식 보유 기록이 달라져 거래를 멈췄습니다.", "FINANCE_STOCK_PROJECTION_MISMATCH"],
     ["FINANCE_INSUFFICIENT_AVAILABLE_BALANCE", 409, "출금 신청 금액을 빼면 주식을 살 수 있는 금액이 부족합니다.", "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE"],
@@ -667,7 +701,8 @@ async function stockEventByIdempotency(
 ) {
   return db.prepare(
     `SELECT id, class_id, stock_id, revision, action, reason,
-            idempotency_key, payload_hash, stock_snapshot_json,
+            idempotency_key, payload_hash, previous_snapshot_json,
+            stock_snapshot_json,
             actor_type, created_at
      FROM finance_stock_events
      WHERE class_id = ? AND idempotency_key = ? LIMIT 1`,
@@ -1263,10 +1298,11 @@ export async function updateFinanceStock(
   const revision = expectedRevision(input.expectedRevision, "주식");
   const key = idempotencyKey(input.idempotencyKey);
   const db = database();
-  const [current, market, settings] = await Promise.all([
+  const [current, market, settings, maximumQuantity] = await Promise.all([
     stockById(db, context.classroom.id, stockId),
     marketForClass(db, context.classroom.id),
     financeSettingsForClass(context.classroom.id),
+    maximumHoldingQuantity(db, context.classroom.id, stockId),
   ]);
   if (!current || !market) throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
   const statusInput = input.status === "paused" ? "halted" : input.status ?? current.status;
@@ -1292,6 +1328,12 @@ export async function updateFinanceStock(
       sellSpread: market.sell_spread,
       denominationStep: step,
     });
+    if (current && currentPrice > Number(current.current_price)) {
+      assertFinanceStockPositionMarketValue({
+        quantity: maximumQuantity,
+        currentPrice,
+      });
+    }
   } catch (error) {
     ruleError(error);
   }
@@ -1551,6 +1593,12 @@ export async function tradeFinanceStock(
       quantityBefore: holding?.quantity ?? 0,
       totalCostBefore: holding?.cost_basis ?? 0,
     });
+    if (order.side === "buy") {
+      assertFinanceStockPositionMarketValue({
+        quantity: position.quantityAfter,
+        currentPrice: stock.current_price,
+      });
+    }
   } catch (error) {
     ruleError(error);
   }
@@ -2216,10 +2264,14 @@ async function tickStockWithDb(
     }
     const saved = await stockById(db, input.stock.class_id, input.stock.id);
     if (!saved) throw new ApiError(500, "갱신한 주가를 찾지 못했습니다.", "FINANCE_STOCK_UNAVAILABLE");
-    return { stock: saved, deduplicated: true };
+    return {
+      stock: saved,
+      deduplicated: true,
+      skipped: stockTickEventWasSkipped(duplicate),
+    };
   }
   const step = await denominationStepForClass(db, input.stock.class_id);
-  const [newsImpact, recentFlow] = await Promise.all([
+  const [newsImpact, recentFlow, maximumHolding] = await Promise.all([
     db.prepare(
       `SELECT COALESCE(SUM(impact_bps), 0) AS impact, COUNT(*) AS news_count
        FROM finance_stock_news
@@ -2252,6 +2304,14 @@ async function tickStockWithDb(
       input.stock.id,
       input.now - (Number(input.market.tick_interval_minutes) * 60_000),
     ).first<{ flow: number; volume: number }>(),
+    db.prepare(
+      `SELECT COALESCE(MAX(quantity), 0) AS maximum_quantity
+       FROM finance_stock_holdings
+       WHERE class_id = ? AND stock_id = ? AND quantity > 0`,
+    ).bind(
+      input.stock.class_id,
+      input.stock.id,
+    ).first<{ maximum_quantity: number }>(),
   ]);
   const volume = Number(recentFlow?.volume ?? 0);
   const flowBps = volume > 0
@@ -2273,22 +2333,17 @@ async function tickStockWithDb(
     Number(input.market.sell_spread),
     Number(input.market.buy_spread),
   );
-  const effectivePrice = nextPrice;
+  const effectivePrice = limitFinanceStockPriceIncrease({
+    currentPrice: input.stock.current_price,
+    candidatePrice: nextPrice,
+    maximumHoldingQuantity: Number(maximumHolding?.maximum_quantity ?? 0),
+    denominationStep: step,
+  });
   const nextTickAt = Math.max(
     input.now,
     Number(input.market.next_tick_at ?? input.now),
   ) + (Number(input.market.tick_interval_minutes) * 60_000);
-  if (effectivePrice === Number(input.stock.current_price)) {
-    if (input.market.is_open) {
-      await db.prepare(
-        `UPDATE finance_stock_markets
-         SET next_tick_at = ?, updated_at = ?
-         WHERE class_id = ? AND revision = ? AND is_open = 1`,
-      ).bind(nextTickAt, input.now, input.market.class_id, input.market.revision).run();
-      return { stock: input.stock, deduplicated: false, skipped: true };
-    }
-    throw new ApiError(409, "현재 가격 범위에서는 더 움직일 수 없습니다.", "FINANCE_STOCK_PRICE_LIMIT");
-  }
+  const skipped = effectivePrice === Number(input.stock.current_price);
   const appliedChangeBps = Math.round(
     ((effectivePrice - Number(input.stock.current_price)) * 10_000)
       / Number(input.stock.current_price),
@@ -2299,7 +2354,9 @@ async function tickStockWithDb(
     : input.action;
   const nextStock: StockRow = {
     ...input.stock,
-    previous_price: Number(input.stock.current_price),
+    previous_price: skipped
+      ? Number(input.stock.previous_price)
+      : Number(input.stock.current_price),
     current_price: effectivePrice,
     revision: Number(input.stock.revision) + 1,
     updated_at: input.now,
@@ -2312,7 +2369,7 @@ async function tickStockWithDb(
        WHERE id = ? AND class_id = ? AND revision = ?`,
     ).bind(
       effectivePrice,
-      input.stock.current_price,
+      nextStock.previous_price,
       input.actorType,
       input.actorTeacherId,
       input.now,
@@ -2367,11 +2424,17 @@ async function tickStockWithDb(
       && (concurrent.action === input.action || concurrent.action === "news_tick")
     ) {
       const saved = await stockById(db, input.stock.class_id, input.stock.id);
-      if (saved) return { stock: saved, deduplicated: true };
+      if (saved) {
+        return {
+          stock: saved,
+          deduplicated: true,
+          skipped: stockTickEventWasSkipped(concurrent),
+        };
+      }
     }
     mapDatabaseError(error);
   }
-  return { stock: nextStock, deduplicated: false };
+  return { stock: nextStock, deduplicated: false, skipped };
 }
 
 export async function tickFinanceStockForRequest(
@@ -2412,7 +2475,11 @@ export async function tickFinanceStockForRequest(
         "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
       );
     }
-    return { stock: serializeStock(stock), deduplicated: true };
+    return {
+      stock: serializeStock(stock),
+      deduplicated: true,
+      skipped: stockTickEventWasSkipped(duplicate),
+    };
   }
   if (!market.is_open) throw new ApiError(409, "장을 연 뒤 시세를 갱신해 주세요.", "FINANCE_STOCK_MARKET_CLOSED");
   if (Number(market.revision) !== expectedMarket || Number(stock.revision) !== expectedStock) {

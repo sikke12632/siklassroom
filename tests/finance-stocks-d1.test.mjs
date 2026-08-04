@@ -20,6 +20,8 @@ const wranglerPath = path.join(
 );
 const stockLiquidationWorkerPath = "tests/fixtures/stock-liquidation-worker.ts";
 const stockLiquidationConfigPath = "tests/fixtures/wrangler.stock-liquidation.jsonc";
+const stockPositionLimitWorkerPath = "tests/fixtures/stock-position-limit-worker.ts";
+const stockPositionLimitConfigPath = "tests/fixtures/wrangler.stock-position-limit.jsonc";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
   const result = spawnSync(process.execPath, [wranglerPath, ...args], {
@@ -930,6 +932,27 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
     );
     assert.match(ledgerMismatch.output, /FINANCE_STOCK_LEDGER_MISMATCH/);
 
+    const excessivePriceIncrease = executeSql(
+      persistPath,
+      `UPDATE finance_stocks
+       SET current_price = 166666667, previous_price = 1000,
+           revision = revision + 1,
+           updated_by_actor_type = 'teacher',
+           updated_by_teacher_id = 'teacher-stocks', updated_at = 449
+       WHERE id = 'stock-class' AND class_id = 'class-stocks'
+         AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      excessivePriceIncrease.output,
+      /FINANCE_STOCK_POSITION_VALUE_LIMIT/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT current_price, previous_price, revision
+       FROM finance_stocks WHERE id = 'stock-class';`,
+    )), [{ current_price: 1000, previous_price: 1000, revision: 0 }]);
+
     executeSql(
       persistPath,
       `
@@ -1523,6 +1546,458 @@ test("teacher liquidation keeps the confirmed quote and retries only once in the
       ))[0].count,
       0,
     );
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("position value limits protect teacher prices, real buys, and idempotent capped ticks", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-position-limit-service-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    const rawTeacherToken = "teacher-stock-position-limit-session";
+    const rawStudentToken = "student-stock-position-limit-session";
+    const teacherTokenHash = createHash("sha256")
+      .update(rawTeacherToken)
+      .digest("base64url");
+    const studentTokenHash = createHash("sha256")
+      .update(rawStudentToken)
+      .digest("base64url");
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
+      ) VALUES (
+        'teacher-stocks', 'teacher-position-limit@test.local', 'hash',
+        'active', 1, 'invite_verified', 1, 'school-test', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized, school_id,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stocks', 'teacher-stocks', 'Test School', 'test school',
+        'school-test', 2099, 6, 8, 'active', 1, 1
+      );
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status,
+        created_at, updated_at
+      ) VALUES (
+        'student-limit', 'class-stocks', 1, 'Limit Student', 'active', 1, 1
+      );
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES
+        ('session-position-limit-teacher', '${teacherTokenHash}', 'teacher',
+         'teacher-stocks', NULL, 4102444800000, 1, 1),
+        ('session-position-limit-student', '${studentTokenHash}', 'student',
+         NULL, 'student-limit', 4102444800000, 1, 1);
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        'stock-class', 'class-stocks', 'Limit Company', 'LIMIT',
+        'Position-value boundary stock', 1000, 1000, 1000,
+        1000000, 1000000, 1000000, 'active', 0, 0, NULL,
+        'teacher-stocks', 'teacher', 'teacher-stocks', 10, 10
+      );
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, stock_snapshot_json,
+        actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-event-position-limit-issued', 'class-stocks', 'stock-class', 0,
+        'issued', 'Initial boundary issue', 'stock:event:position-limit:issued',
+        'hash:stock:event:position-limit:issued',
+        '{"currentPrice":1000,"revision":0}',
+        'teacher', 'teacher-stocks', 10
+      );
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 0, sell_fee_bps = 0,
+          buy_spread = 0, sell_spread = 0, market_mood = 'surge',
+          tick_interval_minutes = 15, next_tick_at = 1000, revision = 1,
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 20
+      WHERE class_id = 'class-stocks';
+    `);
+
+    fundWallet(persistPath, {
+      transactionId: "fund-position-limit",
+      studentId: "student-limit",
+      amount: 1_000_000_000,
+      createdAt: 30,
+    });
+    const boundaryBuy = {
+      id: "trade-position-limit-initial-buy",
+      idempotencyKey: "stock-position-limit-initial-buy-1",
+      studentId: "student-limit",
+      side: "buy",
+      quantity: 1_000_000,
+      spread: 0,
+      feeBps: 0,
+      inventoryRevisionBefore: 0,
+      walletRevisionBefore: 1,
+      unitPrice: 1000,
+      grossAmount: 1_000_000_000,
+      feeAmount: 0,
+      walletDelta: -1_000_000_000,
+      availableBefore: 1_000_000,
+      availableAfter: 0,
+      holdingQuantityBefore: 0,
+      holdingQuantityAfter: 1_000_000,
+      holdingCostBefore: 0,
+      holdingCostAfter: 1_000_000_000,
+      holdingRevisionBefore: 0,
+      createdAt: 40,
+    };
+    insertPendingTrade(persistPath, boundaryBuy);
+    projectAndPostTrade(persistPath, boundaryBuy);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockPositionLimitWorkerPath,
+      {
+        config: stockPositionLimitConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    const teacherCookie = `job_classroom_session=${rawTeacherToken}`;
+    const studentCookie = `job_classroom_session=${rawStudentToken}`;
+
+    const beforeBlockedIncrease = lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.previous_price, stock.revision,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stocks stock WHERE stock.id = 'stock-class';`,
+    ));
+    const blockedIncreaseResponse = await worker.fetch(
+      "http://test.local/update?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify({
+          action: "update",
+          currentPrice: 1100,
+          expectedRevision: 0,
+          reason: "Attempt unsafe price increase",
+          idempotencyKey: "stock-position-limit-price-blocked-1",
+        }),
+      },
+    );
+    assert.equal(blockedIncreaseResponse.status, 400);
+    assert.equal(
+      (await blockedIncreaseResponse.json()).code,
+      "FINANCE_STOCK_POSITION_VALUE_LIMIT",
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.previous_price, stock.revision,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stocks stock WHERE stock.id = 'stock-class';`,
+    )), beforeBlockedIncrease);
+
+    const halfSale = {
+      id: "trade-position-limit-half-sale",
+      idempotencyKey: "stock-position-limit-half-sale-1",
+      studentId: "student-limit",
+      side: "sell",
+      quantity: 500_000,
+      spread: 0,
+      feeBps: 0,
+      inventoryRevisionBefore: 1,
+      walletRevisionBefore: 2,
+      unitPrice: 1000,
+      grossAmount: 500_000_000,
+      feeAmount: 0,
+      walletDelta: 500_000_000,
+      availableBefore: 0,
+      availableAfter: 500_000,
+      holdingQuantityBefore: 1_000_000,
+      holdingQuantityAfter: 500_000,
+      holdingCostBefore: 1_000_000_000,
+      holdingCostAfter: 500_000_000,
+      holdingRevisionBefore: 1,
+      costBasisRemoved: 500_000_000,
+      realizedGain: 0,
+      createdAt: 50,
+    };
+    insertPendingTrade(persistPath, halfSale);
+    projectAndPostTrade(persistPath, halfSale);
+
+    const safeIncreaseResponse = await worker.fetch(
+      "http://test.local/update?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify({
+          action: "update",
+          currentPrice: 2000,
+          expectedRevision: 0,
+          reason: "Move exactly to the safe valuation boundary",
+          idempotencyKey: "stock-position-limit-price-safe-1",
+        }),
+      },
+    );
+    assert.equal(safeIncreaseResponse.status, 200);
+    const safeIncrease = await safeIncreaseResponse.json();
+    assert.equal(safeIncrease.stock.currentPrice, 2000);
+    assert.equal(safeIncrease.stock.revision, 1);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.revision, holding.quantity,
+              stock.current_price * holding.quantity AS market_value,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stocks stock
+       JOIN finance_stock_holdings holding ON holding.stock_id = stock.id
+       WHERE stock.id = 'stock-class' AND holding.student_id = 'student-limit';`,
+    )), [{
+      current_price: 2000,
+      revision: 1,
+      quantity: 500_000,
+      market_value: 1_000_000_000,
+      event_count: 2,
+    }]);
+
+    const oneShareSale = {
+      id: "trade-position-limit-one-share-sale",
+      idempotencyKey: "stock-position-limit-one-share-sale-1",
+      studentId: "student-limit",
+      side: "sell",
+      quantity: 1,
+      stockRevision: 1,
+      spread: 0,
+      feeBps: 0,
+      inventoryRevisionBefore: 2,
+      walletRevisionBefore: 3,
+      unitPrice: 2000,
+      referencePrice: 2000,
+      grossAmount: 2000,
+      feeAmount: 0,
+      walletDelta: 2000,
+      availableBefore: 500_000,
+      availableAfter: 500_001,
+      holdingQuantityBefore: 500_000,
+      holdingQuantityAfter: 499_999,
+      holdingCostBefore: 500_000_000,
+      holdingCostAfter: 499_999_000,
+      holdingRevisionBefore: 2,
+      costBasisRemoved: 1000,
+      realizedGain: 1000,
+      createdAt: 70,
+    };
+    insertPendingTrade(persistPath, oneShareSale);
+    projectAndPostTrade(persistPath, oneShareSale);
+
+    const allowedBuyInput = {
+      action: "trade",
+      side: "buy",
+      quantity: 1,
+      expectedStockRevision: 1,
+      expectedMarketRevision: 1,
+      expectedFinanceSettingsRevision: 0,
+      expectedHoldingRevision: 3,
+      expectedWalletRevision: 4,
+      idempotencyKey: "stock-position-limit-boundary-buy-1",
+    };
+    const allowedBuyResponse = await worker.fetch(
+      "http://test.local/trade?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: studentCookie },
+        body: JSON.stringify(allowedBuyInput),
+      },
+    );
+    assert.equal(allowedBuyResponse.status, 201);
+    const allowedBuy = await allowedBuyResponse.json();
+    assert.equal(allowedBuy.deduplicated, false);
+    assert.equal(allowedBuy.trade.holdingQuantityAfter, 500_000);
+
+    const beforeBlockedBuy = lastResults(executeSql(
+      persistPath,
+      `SELECT holding.quantity, holding.cost_basis, holding.revision,
+              wallet.balance AS wallet_balance, wallet.revision AS wallet_revision,
+              stock.current_price, stock.revision AS stock_revision,
+              stock.available_shares, stock.inventory_revision, stock.last_trade_id,
+              (SELECT COUNT(*) FROM finance_stock_trades) AS trade_count,
+              (SELECT COUNT(*) FROM finance_transactions) AS transaction_count,
+              (SELECT COUNT(*) FROM finance_ledger_entries) AS entry_count,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stock_holdings holding
+       JOIN finance_accounts wallet ON wallet.id = holding.wallet_account_id
+       JOIN finance_stocks stock ON stock.id = holding.stock_id
+       WHERE holding.student_id = 'student-limit';`,
+    ));
+    const blockedBuyResponse = await worker.fetch(
+      "http://test.local/trade?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: studentCookie },
+        body: JSON.stringify({
+          ...allowedBuyInput,
+          expectedHoldingRevision: 4,
+          expectedWalletRevision: 5,
+          idempotencyKey: "stock-position-limit-boundary-buy-blocked-1",
+        }),
+      },
+    );
+    assert.equal(blockedBuyResponse.status, 400);
+    assert.equal(
+      (await blockedBuyResponse.json()).code,
+      "FINANCE_STOCK_POSITION_VALUE_LIMIT",
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT holding.quantity, holding.cost_basis, holding.revision,
+              wallet.balance AS wallet_balance, wallet.revision AS wallet_revision,
+              stock.current_price, stock.revision AS stock_revision,
+              stock.available_shares, stock.inventory_revision, stock.last_trade_id,
+              (SELECT COUNT(*) FROM finance_stock_trades) AS trade_count,
+              (SELECT COUNT(*) FROM finance_transactions) AS transaction_count,
+              (SELECT COUNT(*) FROM finance_ledger_entries) AS entry_count,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stock_holdings holding
+       JOIN finance_accounts wallet ON wallet.id = holding.wallet_account_id
+       JOIN finance_stocks stock ON stock.id = holding.stock_id
+       WHERE holding.student_id = 'student-limit';`,
+    )), beforeBlockedBuy);
+
+    const maliciousPendingBuy = insertPendingTrade(persistPath, {
+      id: "trade-position-limit-malicious-pending-buy",
+      idempotencyKey: "stock-position-limit-malicious-pending-buy-1",
+      studentId: "student-limit",
+      side: "buy",
+      quantity: 1,
+      stockRevision: 1,
+      marketRevision: 1,
+      financeSettingsRevision: 0,
+      spread: 0,
+      feeBps: 0,
+      inventoryRevisionBefore: 4,
+      walletRevisionBefore: 5,
+      unitPrice: 2000,
+      referencePrice: 2000,
+      grossAmount: 2000,
+      feeAmount: 0,
+      walletDelta: -2000,
+      availableBefore: 500_000,
+      availableAfter: 499_999,
+      holdingQuantityBefore: 500_000,
+      holdingQuantityAfter: 500_001,
+      holdingCostBefore: 500_001_000,
+      holdingCostAfter: 500_003_000,
+      holdingRevisionBefore: 4,
+      createdAt: 80,
+    }, { expectSuccess: false });
+    assert.match(
+      maliciousPendingBuy.output,
+      /FINANCE_STOCK_POSITION_VALUE_LIMIT/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT holding.quantity, holding.cost_basis, holding.revision,
+              wallet.balance AS wallet_balance, wallet.revision AS wallet_revision,
+              stock.current_price, stock.revision AS stock_revision,
+              stock.available_shares, stock.inventory_revision, stock.last_trade_id,
+              (SELECT COUNT(*) FROM finance_stock_trades) AS trade_count,
+              (SELECT COUNT(*) FROM finance_transactions) AS transaction_count,
+              (SELECT COUNT(*) FROM finance_ledger_entries) AS entry_count,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count
+       FROM finance_stock_holdings holding
+       JOIN finance_accounts wallet ON wallet.id = holding.wallet_account_id
+       JOIN finance_stocks stock ON stock.id = holding.stock_id
+       WHERE holding.student_id = 'student-limit';`,
+    )), beforeBlockedBuy);
+
+    const tickInput = {
+      action: "tick",
+      expectedStockRevision: 1,
+      expectedMarketRevision: 1,
+      idempotencyKey: "stock-position-limit-capped-tick-1",
+    };
+    const firstTickResponse = await worker.fetch(
+      "http://test.local/tick?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify(tickInput),
+      },
+    );
+    assert.equal(firstTickResponse.status, 200);
+    const firstTick = await firstTickResponse.json();
+    assert.equal(firstTick.deduplicated, false);
+    assert.equal(firstTick.skipped, true);
+    assert.equal(firstTick.stock.currentPrice, 2000);
+    assert.equal(firstTick.stock.revision, 2);
+
+    const afterFirstTick = lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.revision, market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count,
+              (SELECT COUNT(*) FROM finance_stock_events
+               WHERE idempotency_key = 'stock-position-limit-capped-tick-1') AS tick_event_count,
+              (SELECT MAX(revision) FROM finance_stock_events
+               WHERE idempotency_key = 'stock-position-limit-capped-tick-1') AS tick_event_revision
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id = 'stock-class';`,
+    ));
+    assert.equal(afterFirstTick[0].current_price, 2000);
+    assert.equal(afterFirstTick[0].revision, 2);
+    assert.ok(afterFirstTick[0].next_tick_at > 1000);
+    assert.equal(afterFirstTick[0].event_count, 3);
+    assert.equal(afterFirstTick[0].tick_event_count, 1);
+    assert.equal(afterFirstTick[0].tick_event_revision, 2);
+
+    const retryTickResponse = await worker.fetch(
+      "http://test.local/tick?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify(tickInput),
+      },
+    );
+    assert.equal(retryTickResponse.status, 200);
+    const retryTick = await retryTickResponse.json();
+    assert.equal(retryTick.deduplicated, true);
+    assert.equal(retryTick.skipped, true);
+    assert.equal(retryTick.stock.currentPrice, firstTick.stock.currentPrice);
+    assert.equal(retryTick.stock.revision, firstTick.stock.revision);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.current_price, stock.revision, market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events) AS event_count,
+              (SELECT COUNT(*) FROM finance_stock_events
+               WHERE idempotency_key = 'stock-position-limit-capped-tick-1') AS tick_event_count,
+              (SELECT MAX(revision) FROM finance_stock_events
+               WHERE idempotency_key = 'stock-position-limit-capped-tick-1') AS tick_event_revision
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id = 'stock-class';`,
+    )), afterFirstTick);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });
