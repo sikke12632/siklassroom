@@ -35,7 +35,7 @@ export async function GET(request: Request) {
         `SELECT s.id, s.official_name, s.student_number, c.id AS class_id, c.school_name, c.school_year,
                 c.grade, c.class_number, c.display_name
          FROM students s JOIN classes c ON c.id = s.class_id
-         WHERE s.id = ? AND s.status = 'active'`,
+         WHERE s.id = ? AND s.status = 'active' AND c.status = 'active'`,
       ).bind(session.studentId).first();
       return json({ actor: student ? { type: "student", ...student } : null });
     }

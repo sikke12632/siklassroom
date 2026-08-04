@@ -32,6 +32,7 @@ async function request(path, { cookie = "", method = "GET", body, expected = 200
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
+      "x-forwarded-for": `integration-${runId}`,
       ...(cookie ? { cookie } : {}),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...headers,
@@ -772,13 +773,15 @@ const previousYearLogin = await request("/api/student/login", {
   method: "POST",
   body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
 });
-const previousYearMe = await request("/api/student/me", { cookie: cookieFrom(previousYearLogin.response) });
+const previousYearCookie = cookieFrom(previousYearLogin.response);
+const previousYearMe = await request("/api/student/me", { cookie: previousYearCookie });
 assert.equal(previousYearMe.data.student.id, previousYearStudent.id);
 const currentYearLogin = await request("/api/student/login", {
   method: "POST",
   body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
 });
-const currentYearMe = await request("/api/student/me", { cookie: cookieFrom(currentYearLogin.response) });
+const currentYearCookie = cookieFrom(currentYearLogin.response);
+const currentYearMe = await request("/api/student/me", { cookie: currentYearCookie });
 assert.equal(currentYearMe.data.student.id, student.id);
 assert.notEqual(previousYearMe.data.student.id, currentYearMe.data.student.id);
 
@@ -883,10 +886,11 @@ await request("/api/registration/complete", {
   body: { password: "8642" },
   expected: 410,
 });
-await request("/api/student/login", {
+const unaffectedStudentLogin = await request("/api/student/login", {
   method: "POST",
   body: { schoolName, schoolYear: 2099, grade: 5, classNumber: 9, studentNumber: 1, password: "9753" },
 });
+const unaffectedStudentCookie = cookieFrom(unaffectedStudentLogin.response);
 
 const recovery = await request("/api/teacher/password/request", {
   method: "POST",
@@ -968,5 +972,57 @@ const reapprovedCookie = cookieFrom(reapprovedLogin.response);
 const restoredRoster = await request(`/api/classes/${classId}/students`, { cookie: reapprovedCookie });
 assert.equal(restoredRoster.data.class.display_name, finalRoster.data.class.display_name);
 assert.equal(restoredRoster.data.students.some((row) => row.student_number === 99), false);
+
+const [, racingArchivedLogin] = await Promise.all([
+  request(`/api/classes/${previousYearClass.data.class.id}`, {
+    cookie: reapprovedCookie,
+    method: "PATCH",
+    body: { status: "archived" },
+  }),
+  fetch(`${baseUrl}/api/student/login`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `archive-race-${runId}`,
+    },
+    body: JSON.stringify({
+      schoolName,
+      schoolYear: 2098,
+      grade: 5,
+      classNumber: 9,
+      studentNumber: 1,
+      password: "2468",
+    }),
+  }),
+]);
+assert.ok([200, 401].includes(racingArchivedLogin.status));
+const racingArchivedCookie = cookieFrom(racingArchivedLogin);
+await request("/api/student/me", { cookie: previousYearCookie, expected: 401 });
+if (racingArchivedCookie) {
+  await request("/api/student/me", { cookie: racingArchivedCookie, expected: 401 });
+}
+const archivedActor = await request("/api/session", { cookie: previousYearCookie });
+assert.equal(archivedActor.data.actor, null);
+await request("/api/announcements", { cookie: previousYearCookie, expected: 401 });
+await request("/api/student/me", { cookie: unaffectedStudentCookie });
+await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+  expected: 401,
+});
+await request(`/api/classes/${previousYearClass.data.class.id}`, {
+  cookie: reapprovedCookie,
+  method: "PATCH",
+  body: { status: "active" },
+});
+await request("/api/student/me", { cookie: previousYearCookie, expected: 401 });
+if (racingArchivedCookie) {
+  await request("/api/student/me", { cookie: racingArchivedCookie, expected: 401 });
+}
+const reactivatedStudentLogin = await request("/api/student/login", {
+  method: "POST",
+  body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "2468" },
+});
+await request("/api/student/me", { cookie: cookieFrom(reactivatedStudentLogin.response) });
 
 console.log("통합 흐름 검증 완료: 이메일·초대코드·학교·학급·학생·직업·첫 배정·권한·기존 흐름");

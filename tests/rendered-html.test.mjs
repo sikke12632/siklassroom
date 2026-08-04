@@ -200,6 +200,23 @@ test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설�
   assert.match(migration, /credential_revision/);
 });
 
+test("보관된 학급은 학생 세션을 끊고 다시 활성화해도 예전 세션을 되살리지 않는다", async () => {
+  const [auth, classRoute, sessionRoute, announcements] = await Promise.all([
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/session/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/announcements/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /JOIN classes c ON c\.id = s\.class_id/);
+  assert.match(auth, /student\.class_status !== "active"/);
+  assert.match(classRoute, /database\(\)\.batch\(statements\)/);
+  assert.match(classRoute, /status === "archived" \|\| current\.status !== status/);
+  assert.match(classRoute, /DELETE FROM sessions/);
+  assert.match(classRoute, /SELECT id FROM students WHERE class_id = \?/);
+  assert.match(sessionRoute, /c\.status = 'active'/);
+  assert.match(announcements, /requireStudent\(request\)/);
+});
+
 test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게 확정한다", async () => {
   const [
     schema,

@@ -1,4 +1,4 @@
-import { getSession } from "@/lib/auth";
+import { getSession, requireStudent } from "@/lib/auth";
 import { database } from "@/lib/database";
 import { ApiError, apiFailure, json } from "@/lib/responses";
 
@@ -6,6 +6,7 @@ export async function GET(request: Request) {
   try {
     const session = await getSession(request);
     if (!session) throw new ApiError(401, "로그인이 필요합니다.", "LOGIN_REQUIRED");
+    if (session.actorType === "student") await requireStudent(request);
     const audience = session.actorType;
     const result = await database().prepare(
       `SELECT id, title, body, audience, updated_at

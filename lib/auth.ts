@@ -208,8 +208,14 @@ export async function requireStudent(request: Request): Promise<{ studentId: str
   if (!session || session.actorType !== "student" || !session.studentId) {
     throw new ApiError(401, "학생 로그인이 필요합니다.", "STUDENT_LOGIN_REQUIRED");
   }
-  const student = await database().prepare(`SELECT status FROM students WHERE id = ?`).bind(session.studentId).first<{ status: string }>();
-  if (!student || student.status !== "active") throw new ApiError(403, "이 계정은 지금 로그인할 수 없어요.", "ACCOUNT_DISABLED");
+  const student = await database().prepare(
+    `SELECT s.status AS student_status, c.status AS class_status
+     FROM students s JOIN classes c ON c.id = s.class_id
+     WHERE s.id = ?`,
+  ).bind(session.studentId).first<{ student_status: string; class_status: string }>();
+  if (!student || student.student_status !== "active" || student.class_status !== "active") {
+    throw new ApiError(403, "이 계정은 지금 로그인할 수 없어요.", "ACCOUNT_DISABLED");
+  }
   return { studentId: session.studentId };
 }
 

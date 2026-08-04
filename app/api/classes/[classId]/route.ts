@@ -41,9 +41,18 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
       await assertClassCanBeArchived(classId);
     }
     try {
-      await database().prepare(
-        `UPDATE classes SET school_name = ?, school_normalized = ?, school_year = ?, grade = ?, class_number = ?, display_name = ?, status = ?, updated_at = ? WHERE id = ?`,
-      ).bind(schoolName, schoolNormalized, schoolYear, grade, classNumber, displayName, status, Date.now(), classId).run();
+      const statements: D1PreparedStatement[] = [
+        database().prepare(
+          `UPDATE classes SET school_name = ?, school_normalized = ?, school_year = ?, grade = ?, class_number = ?, display_name = ?, status = ?, updated_at = ? WHERE id = ?`,
+        ).bind(schoolName, schoolNormalized, schoolYear, grade, classNumber, displayName, status, Date.now(), classId),
+      ];
+      if (status === "archived" || current.status !== status) {
+        statements.push(database().prepare(
+          `DELETE FROM sessions
+           WHERE student_id IN (SELECT id FROM students WHERE class_id = ?)`,
+        ).bind(classId));
+      }
+      await database().batch(statements);
     } catch (error) {
       mapFinanceDepositLifecycleError(error);
     }
