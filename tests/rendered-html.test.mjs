@@ -66,8 +66,9 @@ test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CS
 });
 
 test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP 전체 한도를 둔다", async () => {
-  const [rateLimit, teacherLogin, adminLogin, signup, passwordRequest] = await Promise.all([
+  const [rateLimit, cryptoSource, teacherLogin, adminLogin, signup, passwordRequest] = await Promise.all([
     readFile(new URL("../lib/rate-limit.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/crypto.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/admin/auth/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/signup/route.ts", import.meta.url), "utf8"),
@@ -76,6 +77,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(rateLimit, /ON CONFLICT\(key\) DO UPDATE/);
   assert.match(rateLimit, /subjectThrottleKey/);
   assert.doesNotMatch(rateLimit, /export async function recordFailure/);
+  assert.match(cryptoSource, /verifyPasswordOrDummy/);
+  assert.match(cryptoSource, /DUMMY_PASSWORD_HASH/);
+  assert.match(teacherLogin, /verifyPasswordOrDummy\(password, teacher\?\.password_hash\)/);
   assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
   assert.match(adminLogin, /consumeRateLimit\(ipKey/);
   assert.match(signup, /teacher-signup-ip/);

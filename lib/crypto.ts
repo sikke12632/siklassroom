@@ -1,6 +1,7 @@
 const encoder = new TextEncoder();
 // Cloudflare Workers Web Crypto currently accepts at most 100,000 PBKDF2 rounds.
 const PASSWORD_ITERATIONS = 100_000;
+const DUMMY_PASSWORD_HASH = "pbkdf2$100000$IzyR44y7mCyFEkowiYi3Fw$im4VNHlrX8B3dpvL-7Y6Brh4bcTe3zC_AzlovHOwRXw";
 
 function bytesToBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -72,4 +73,9 @@ export async function verifyPassword(password: string, stored: string | null): P
   } catch {
     return false;
   }
+}
+
+export async function verifyPasswordOrDummy(password: string, stored: string | null | undefined): Promise<boolean> {
+  const matches = await verifyPassword(password, stored || DUMMY_PASSWORD_HASH);
+  return Boolean(stored) && matches;
 }

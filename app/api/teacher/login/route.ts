@@ -1,6 +1,6 @@
 import { createGuardedTeacherSession } from "@/lib/auth";
 import { database, ensureSchema } from "@/lib/database";
-import { verifyPassword } from "@/lib/crypto";
+import { verifyPasswordOrDummy } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     const accountIssue = teacher
       ? teacherAccountIssue(teacher.status, teacher.teacher_access_status)
       : "ACCOUNT_DISABLED";
-    const passwordMatches = teacher ? await verifyPassword(password, teacher.password_hash) : false;
+    const passwordMatches = await verifyPasswordOrDummy(password, teacher?.password_hash);
     if (!teacher || accountIssue || !passwordMatches) {
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
