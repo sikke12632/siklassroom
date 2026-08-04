@@ -178,6 +178,33 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(portal, /"3 \/ 3"/);
 });
 
+test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
+  const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/teacher-verification.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/email-verification/confirm/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/invite-code/redeem/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/schools/select/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/schools/manual/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /prepareTeacherSessionRotation/);
+  assert.match(auth, /teacher_session_rotation/);
+  assert.match(auth, /DELETE FROM sessions WHERE teacher_id = \?/);
+  assert.match(verification, /teacher_email_verification/);
+  assert.match(verification, /rotation\?\.revoke/);
+  assert.match(verification, /teacher_invite_code/);
+  assert.match(verification, /database\(\)\.batch/);
+  for (const route of [emailConfirm, inviteRedeem, schoolSelect, schoolManual]) {
+    assert.match(route, /Set-Cookie/);
+  }
+  for (const route of [schoolSelect, schoolManual]) {
+    assert.match(route, /rotation\.guard/);
+    assert.match(route, /rotation\.revoke/);
+    assert.match(route, /rotation\.create/);
+    assert.match(route, /database\(\)\.batch/);
+  }
+});
+
 test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제공한다", async () => {
   const [database, schema, assignmentPage, calendarPage, winnerPage, assignmentApi, completeApi] = await Promise.all([
     readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),

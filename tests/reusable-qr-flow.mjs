@@ -73,30 +73,43 @@ const teacherLogin = await request("/api/teacher/login", {
   method: "POST",
   body: { email: teacherEmail, password: teacherPassword },
 });
-const teacherCookie = responseCookie(teacherLogin.response);
+let teacherCookie = responseCookie(teacherLogin.response);
 const verification = await request("/api/teacher/email-verification/request", {
   cookie: teacherCookie,
   method: "POST",
 });
 const emailToken = new URL(verification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
-await request("/api/teacher/email-verification/confirm", {
+const cookieBeforeEmail = teacherCookie;
+const confirmation = await request("/api/teacher/email-verification/confirm", {
+  cookie: teacherCookie,
   method: "POST",
   body: { token: emailToken },
 });
-await request("/api/teacher/invite-code/redeem", {
+teacherCookie = responseCookie(confirmation.response);
+assert.notEqual(teacherCookie, cookieBeforeEmail);
+await request("/api/classes", { cookie: cookieBeforeEmail, expected: 401 });
+const cookieBeforeInvite = teacherCookie;
+const redeemed = await request("/api/teacher/invite-code/redeem", {
   cookie: teacherCookie,
   method: "POST",
   body: { code: invite.data.code },
 });
+teacherCookie = responseCookie(redeemed.response);
+assert.notEqual(teacherCookie, cookieBeforeInvite);
+await request("/api/classes", { cookie: cookieBeforeInvite, expected: 401 });
 
 const schools = await request(`/api/schools/search?q=${encodeURIComponent("서이초")}`, {
   cookie: teacherCookie,
 });
-await request("/api/schools/select", {
+const cookieBeforeSchool = teacherCookie;
+const selectedSchool = await request("/api/schools/select", {
   cookie: teacherCookie,
   method: "POST",
   body: { schoolId: schools.data.schools[0].id },
 });
+teacherCookie = responseCookie(selectedSchool.response);
+assert.notEqual(teacherCookie, cookieBeforeSchool);
+await request("/api/classes", { cookie: cookieBeforeSchool, expected: 401 });
 
 let classCreated;
 for (let attempt = 0; attempt < 30 && !classCreated; attempt += 1) {

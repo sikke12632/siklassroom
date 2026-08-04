@@ -120,6 +120,42 @@ export async function createGuardedTeacherSession(input: {
   return { cookie: session.cookie };
 }
 
+export async function prepareTeacherSessionRotation(teacherId: string, request: Request) {
+  await ensureSchema();
+  const rawToken = requestCookie(request, SESSION_COOKIE);
+  if (!rawToken) {
+    throw new ApiError(401, "교사 로그인이 필요합니다.", "TEACHER_LOGIN_REQUIRED");
+  }
+  const currentTokenHash = await sha256(rawToken);
+  const next = await prepareSession({ actorType: "teacher", teacherId }, request);
+  const guardId = crypto.randomUUID();
+  const now = Date.now();
+  return {
+    cookie: next.cookie,
+    guardId,
+    guard: database().prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN EXISTS (
+         SELECT 1 FROM sessions session
+         JOIN teachers teacher ON teacher.id = session.teacher_id
+         WHERE session.token_hash = ? AND session.actor_type = 'teacher'
+           AND session.teacher_id = ? AND session.expires_at > ?
+           AND teacher.status = 'active' AND teacher.teacher_access_status != 'revoked'
+       ) THEN ? ELSE NULL END, 'teacher_session_rotation', ?`,
+    ).bind(currentTokenHash, teacherId, now, guardId, now),
+    revoke: database().prepare(`DELETE FROM sessions WHERE teacher_id = ?`).bind(teacherId),
+    create: database().prepare(
+      `INSERT INTO sessions
+       (id, token_hash, actor_type, teacher_id, student_id, expires_at, created_at, last_seen_at)
+       VALUES (?, ?, 'teacher', ?, NULL, ?, ?, ?)`,
+    ).bind(
+      next.id, next.tokenHash, teacherId,
+      next.expiresAt, next.createdAt, next.createdAt,
+    ),
+    cleanup: database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+  };
+}
+
 export async function getSession(request: Request): Promise<SessionActor | null> {
   await ensureSchema();
   const rawToken = requestCookie(request, SESSION_COOKIE);

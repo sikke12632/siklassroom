@@ -10,8 +10,8 @@ export async function POST(request: Request) {
     const body = await readJson<{ code?: string }>(request);
     const key = await subjectThrottleKey("teacher-invite-code", teacherId);
     await consumeRateLimit(key, { maxAttempts: 7 });
-    await redeemInviteCode(teacherId, body.code);
-    return json({ ok: true });
+    const rotation = await redeemInviteCode(teacherId, body.code, request);
+    return json({ ok: true }, 200, { "Set-Cookie": rotation.cookie });
   } catch (error) {
     return apiFailure(error);
   }

@@ -100,6 +100,12 @@ const initialVerification = await request("/api/teacher/email-verification/reque
   method: "POST",
 });
 assert.ok(initialVerification.data.verification?.developmentUrl);
+const secondaryPendingLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: firstPassword },
+});
+const secondaryPendingCookie = cookieFrom(secondaryPendingLogin.response);
+assert.notEqual(secondaryPendingCookie, teacherCookie);
 await request("/api/session", {
   cookie: teacherCookie,
   method: "DELETE",
@@ -116,15 +122,24 @@ await request("/api/classes", {
   expected: 403,
 });
 const emailToken = new URL(initialVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
-await request("/api/teacher/email-verification/confirm", {
+const preEmailVerificationCookie = teacherCookie;
+const emailConfirmation = await request("/api/teacher/email-verification/confirm", {
+  cookie: teacherCookie,
   method: "POST",
   body: { token: emailToken },
 });
+teacherCookie = cookieFrom(emailConfirmation.response);
+assert.match(teacherCookie, /^job_classroom_session=/);
+assert.notEqual(teacherCookie, preEmailVerificationCookie);
+await request("/api/classes", { cookie: preEmailVerificationCookie, expected: 401 });
+await request("/api/classes", { cookie: secondaryPendingCookie, expected: 401 });
 await request("/api/teacher/email-verification/confirm", {
+  cookie: teacherCookie,
   method: "POST",
   body: { token: emailToken },
   expected: 410,
 });
+await request("/api/session", { cookie: teacherCookie });
 
 const outsider = await request("/api/teacher/signup", {
   method: "POST",
@@ -142,6 +157,21 @@ const outsiderVerification = await request("/api/teacher/email-verification/requ
   method: "POST",
 });
 assert.ok(outsiderVerification.data.verification?.developmentUrl);
+const outsiderEmailToken = new URL(outsiderVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const preOutsiderVerificationCookie = outsiderCookie;
+const crossAccountConfirmation = await request("/api/teacher/email-verification/confirm", {
+  cookie: teacherCookie,
+  method: "POST",
+  body: { token: outsiderEmailToken },
+});
+assert.equal(cookieFrom(crossAccountConfirmation.response), "");
+await request("/api/session", { cookie: teacherCookie });
+await request("/api/classes", { cookie: preOutsiderVerificationCookie, expected: 401 });
+const verifiedOutsiderLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: secondTeacherEmail, password: firstPassword },
+});
+outsiderCookie = cookieFrom(verifiedOutsiderLogin.response);
 const parallelSignupPasswordFailures = await Promise.all(Array.from({ length: 5 }, (_, index) => (
   fetch(`${baseUrl}/api/teacher/signup`, {
     method: "POST",
@@ -212,12 +242,6 @@ assert.deepEqual(
   [200, 200, 200, 200, 200, 429],
   "여러 IP에서도 같은 이메일의 비밀번호 재설정 요청을 제한한다",
 );
-const outsiderEmailToken = new URL(outsiderVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
-await request("/api/teacher/email-verification/confirm", {
-  method: "POST",
-  body: { token: outsiderEmailToken },
-});
-
 await request("/api/admin/schools/import", {
   cookie: adminCookie,
   method: "POST",
@@ -247,6 +271,11 @@ const sharedInvite = await request("/api/admin/invite-codes", {
   body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
   expected: 201,
 });
+const secondaryPreInviteLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: firstPassword },
+});
+const secondaryPreInviteCookie = cookieFrom(secondaryPreInviteLogin.response);
 const parallelRedeem = await Promise.all([
   fetch(`${baseUrl}/api/teacher/invite-code/redeem`, {
     method: "POST", headers: { cookie: teacherCookie, "content-type": "application/json" },
@@ -258,23 +287,49 @@ const parallelRedeem = await Promise.all([
   }),
 ]);
 assert.deepEqual(parallelRedeem.map((response) => response.status).sort(), [200, 410]);
-for (const [cookie, response] of [[teacherCookie, parallelRedeem[0]], [outsiderCookie, parallelRedeem[1]]]) {
-  if (response.status === 200) continue;
-  const replacement = await request("/api/admin/invite-codes", {
-    cookie: adminCookie,
-    method: "POST",
-    headers: { "x-admin-csrf": adminCsrf },
-    body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
-    expected: 201,
-  });
-  await request("/api/teacher/invite-code/redeem", {
-    cookie,
-    method: "POST",
-    body: { code: replacement.data.code },
-  });
+const cookiesBeforeInvite = [teacherCookie, outsiderCookie];
+const cookiesAfterInvite = [];
+for (const [index, response] of parallelRedeem.entries()) {
+  let nextCookie = cookieFrom(response);
+  if (response.status !== 200) {
+    const replacement = await request("/api/admin/invite-codes", {
+      cookie: adminCookie,
+      method: "POST",
+      headers: { "x-admin-csrf": adminCsrf },
+      body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
+      expected: 201,
+    });
+    const redeemed = await request("/api/teacher/invite-code/redeem", {
+      cookie: cookiesBeforeInvite[index],
+      method: "POST",
+      body: { code: replacement.data.code },
+    });
+    nextCookie = cookieFrom(redeemed.response);
+  }
+  assert.match(nextCookie, /^job_classroom_session=/);
+  assert.notEqual(nextCookie, cookiesBeforeInvite[index]);
+  await request("/api/classes", { cookie: cookiesBeforeInvite[index], expected: 401 });
+  cookiesAfterInvite[index] = nextCookie;
 }
-await request("/api/schools/select", { cookie: teacherCookie, method: "POST", body: { schoolId } });
-await request("/api/schools/select", { cookie: outsiderCookie, method: "POST", body: { schoolId } });
+teacherCookie = cookiesAfterInvite[0];
+outsiderCookie = cookiesAfterInvite[1];
+await request("/api/classes", { cookie: secondaryPreInviteCookie, expected: 401 });
+const secondaryPreSchoolLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: firstPassword },
+});
+const secondaryPreSchoolCookie = cookieFrom(secondaryPreSchoolLogin.response);
+const teacherSchoolSelection = await request("/api/schools/select", { cookie: teacherCookie, method: "POST", body: { schoolId } });
+const teacherCookieBeforeSchool = teacherCookie;
+teacherCookie = cookieFrom(teacherSchoolSelection.response);
+assert.notEqual(teacherCookie, teacherCookieBeforeSchool);
+await request("/api/classes", { cookie: teacherCookieBeforeSchool, expected: 401 });
+await request("/api/classes", { cookie: secondaryPreSchoolCookie, expected: 401 });
+const outsiderSchoolSelection = await request("/api/schools/select", { cookie: outsiderCookie, method: "POST", body: { schoolId } });
+const outsiderCookieBeforeSchool = outsiderCookie;
+outsiderCookie = cookieFrom(outsiderSchoolSelection.response);
+assert.notEqual(outsiderCookie, outsiderCookieBeforeSchool);
+await request("/api/classes", { cookie: outsiderCookieBeforeSchool, expected: 401 });
 
 const manualSignup = await request("/api/teacher/signup", {
   method: "POST",
@@ -287,13 +342,18 @@ const manualLogin = await request("/api/teacher/login", {
   method: "POST",
   body: { email: manualEmail, password: firstPassword },
 });
-const manualCookie = cookieFrom(manualLogin.response);
+let manualCookie = cookieFrom(manualLogin.response);
 const manualVerification = await request("/api/teacher/email-verification/request", {
   cookie: manualCookie,
   method: "POST",
 });
 const manualEmailToken = new URL(manualVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
-await request("/api/teacher/email-verification/confirm", { method: "POST", body: { token: manualEmailToken } });
+const manualConfirmation = await request("/api/teacher/email-verification/confirm", {
+  cookie: manualCookie,
+  method: "POST",
+  body: { token: manualEmailToken },
+});
+manualCookie = cookieFrom(manualConfirmation.response);
 const manualInvite = await request("/api/admin/invite-codes", {
   cookie: adminCookie,
   method: "POST",
@@ -301,11 +361,12 @@ const manualInvite = await request("/api/admin/invite-codes", {
   body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
   expected: 201,
 });
-await request("/api/teacher/invite-code/redeem", {
+const manualInviteRedemption = await request("/api/teacher/invite-code/redeem", {
   cookie: manualCookie,
   method: "POST",
   body: { code: manualInvite.data.code },
 });
+manualCookie = cookieFrom(manualInviteRedemption.response);
 const manualSchool = await request("/api/schools/manual", {
   cookie: manualCookie,
   method: "POST",
@@ -330,6 +391,10 @@ const manualRequest = await request("/api/schools/manual", {
   },
   expected: 201,
 });
+const manualCookieBeforeSchool = manualCookie;
+manualCookie = cookieFrom(manualRequest.response);
+assert.notEqual(manualCookie, manualCookieBeforeSchool);
+await request("/api/classes", { cookie: manualCookieBeforeSchool, expected: 401 });
 await request("/api/admin/school-requests", {
   cookie: adminCookie,
   method: "PATCH",

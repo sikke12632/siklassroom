@@ -1,5 +1,5 @@
-import { requireEmailVerified } from "@/lib/auth";
-import { audit, database } from "@/lib/database";
+import { prepareTeacherSessionRotation, requireEmailVerified } from "@/lib/auth";
+import { database, isOperationGuardFailure } from "@/lib/database";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { manualSchoolInput } from "@/lib/schools";
 
@@ -30,29 +30,45 @@ export async function POST(request: Request) {
     }
     const id = crypto.randomUUID();
     const now = Date.now();
-    await database().batch([
-      database().prepare(
-        `INSERT INTO school_manual_requests
-         (id, submitted_by_teacher_id, entered_name, normalized_name, province_name,
-          school_level, district_or_address, note, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-      ).bind(
-        id, teacherId, input.enteredName, input.normalizedName, input.provinceName,
-        input.schoolLevel, input.districtOrAddress, input.note, now,
-      ),
-      database().prepare(
-        `UPDATE teachers SET school_id = NULL, manual_school_request_id = ?, updated_at = ? WHERE id = ?`,
-      ).bind(id, now, teacherId),
-    ]);
-    await audit({
-      action: "teacher_manual_school_requested",
-      teacherId,
-      detail: { requestId: id, duplicateRequest: Boolean(duplicateRequest) },
-    });
+    const rotation = await prepareTeacherSessionRotation(teacherId, request);
+    try {
+      await database().batch([
+        rotation.guard,
+        database().prepare(
+          `INSERT INTO school_manual_requests
+           (id, submitted_by_teacher_id, entered_name, normalized_name, province_name,
+            school_level, district_or_address, note, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+        ).bind(
+          id, teacherId, input.enteredName, input.normalizedName, input.provinceName,
+          input.schoolLevel, input.districtOrAddress, input.note, now,
+        ),
+        database().prepare(
+          `UPDATE teachers SET school_id = NULL, manual_school_request_id = ?, updated_at = ? WHERE id = ?`,
+        ).bind(id, now, teacherId),
+        rotation.revoke,
+        rotation.create,
+        database().prepare(
+          `INSERT INTO audit_logs (id, teacher_id, action, detail, created_at)
+           VALUES (?, ?, 'teacher_manual_school_requested', ?, ?)`,
+        ).bind(
+          crypto.randomUUID(),
+          teacherId,
+          JSON.stringify({ requestId: id, duplicateRequest: Boolean(duplicateRequest) }),
+          now,
+        ),
+        rotation.cleanup,
+      ]);
+    } catch (error) {
+      if (isOperationGuardFailure(error)) {
+        throw new ApiError(409, "로그인 상태가 바뀌었습니다. 다시 로그인해 주세요.", "TEACHER_SESSION_CHANGED");
+      }
+      throw error;
+    }
     return json({
       request: { id, ...input, status: "pending" },
       duplicateRequest: Boolean(duplicateRequest),
-    }, 201);
+    }, 201, { "Set-Cookie": rotation.cookie });
   } catch (error) {
     return apiFailure(error);
   }
