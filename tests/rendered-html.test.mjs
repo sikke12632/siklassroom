@@ -85,6 +85,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(signup, /teacher-signup-ip/);
   assert.match(signup, /windowMs: 60 \* 60 \* 1000/);
   assert.match(passwordRequest, /teacher-password-reset-ip/);
+  assert.match(passwordRequest, /INSERT INTO teacher_password_resets[\s\S]*SELECT \?, id, \?, \?, \? FROM teachers/);
+  assert.match(passwordRequest, /sendTeacherPasswordReset\(email, url\)\.catch/);
+  assert.match(passwordRequest, /teacherId: teacher\?\.id \?\? null/);
 });
 
 test("본문이 없는 변경 요청도 같은 출처만 허용하고 외부 요청은 제한 횟수를 소모하지 않는다", async () => {

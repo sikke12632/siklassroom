@@ -951,6 +951,21 @@ const recovery = await request("/api/teacher/password/request", {
 });
 assert.equal(recovery.data.emailConfigured, false);
 assert.ok(recovery.data.developmentResetUrl);
+const missingRecovery = await request("/api/teacher/password/request", {
+  method: "POST",
+  body: { email: `missing-reset-${runId}@example.test` },
+});
+assert.equal(missingRecovery.data.message, recovery.data.message);
+assert.equal(missingRecovery.data.ok, recovery.data.ok);
+assert.equal(missingRecovery.data.emailConfigured, recovery.data.emailConfigured);
+assert.deepEqual(Object.keys(missingRecovery.data).sort(), Object.keys(recovery.data).sort());
+assert.ok(missingRecovery.data.developmentResetUrl);
+const missingResetToken = new URL(missingRecovery.data.developmentResetUrl).searchParams.get("token");
+await request("/api/teacher/password/reset", {
+  method: "POST",
+  body: { token: missingResetToken, password: "Missing!234" },
+  expected: 410,
+});
 const teacherResetToken = new URL(recovery.data.developmentResetUrl).searchParams.get("token");
 await request("/api/teacher/password/reset", {
   method: "POST",
