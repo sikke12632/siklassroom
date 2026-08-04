@@ -433,6 +433,52 @@ const rejectedTeacherSession = await request("/api/session", { cookie: rejectedT
 assert.equal(rejectedTeacherSession.data.actor.school_id, null);
 assert.equal(rejectedTeacherSession.data.actor.manual_school_request_id, null);
 await request("/api/classes", { cookie: rejectedTeacherCookie, expected: 403 });
+const concurrentReviewRequest = await request("/api/schools/manual", {
+  cookie: rejectedTeacherCookie,
+  method: "POST",
+  body: {
+    enteredName: `동시검토학교${runId.slice(-4)}`,
+    provinceName: "서울특별시",
+    schoolLevel: "초등학교",
+    districtOrAddress: "동시검토구",
+  },
+  expected: 201,
+});
+const concurrentReviewCookie = cookieFrom(concurrentReviewRequest.response);
+const concurrentReviewId = concurrentReviewRequest.data.request.id;
+const concurrentReviews = await Promise.all([
+  fetch(`${baseUrl}/api/admin/school-requests`, {
+    method: "PATCH",
+    headers: {
+      cookie: adminCookie,
+      "content-type": "application/json",
+      "x-admin-csrf": adminCsrf,
+    },
+    body: JSON.stringify({ id: concurrentReviewId, action: "link", schoolId, note: "동시 연결" }),
+  }),
+  fetch(`${baseUrl}/api/admin/school-requests`, {
+    method: "PATCH",
+    headers: {
+      cookie: adminCookie,
+      "content-type": "application/json",
+      "x-admin-csrf": adminCsrf,
+    },
+    body: JSON.stringify({ id: concurrentReviewId, action: "reject", note: "동시 반려" }),
+  }),
+]);
+assert.deepEqual(concurrentReviews.map((response) => response.status).sort(), [200, 409]);
+if (concurrentReviews[0].status === 200) {
+  const linkedSession = await request("/api/session", { cookie: concurrentReviewCookie });
+  assert.equal(linkedSession.data.actor.school_id, schoolId);
+  assert.equal(linkedSession.data.actor.manual_school_request_id, null);
+} else {
+  await request("/api/classes", { cookie: concurrentReviewCookie, expected: 401 });
+  const afterConcurrentReject = await request("/api/teacher/login", {
+    method: "POST",
+    body: { email: manualEmail, password: firstPassword },
+  });
+  await request("/api/classes", { cookie: cookieFrom(afterConcurrentReject.response), expected: 403 });
+}
 
 const classCreated = await request("/api/classes", {
   cookie: teacherCookie,

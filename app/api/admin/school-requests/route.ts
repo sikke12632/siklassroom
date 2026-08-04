@@ -1,4 +1,4 @@
-import { database } from "@/lib/database";
+import { database, isOperationGuardFailure } from "@/lib/database";
 import { cleanDisplayText, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { normalizeSchoolSearch } from "@/lib/schools";
@@ -59,6 +59,7 @@ export async function PATCH(request: Request) {
     const now = Date.now();
     let linkedSchoolId: string | null = null;
     let nextStatus = "rejected";
+    let createSchool: D1PreparedStatement | null = null;
     if (action === "link") {
       linkedSchoolId = String(body.schoolId ?? "");
       if (!linkedSchoolId) throw new ApiError(400, "연결할 공식 학교를 선택해 주세요.", "SCHOOL_REQUIRED");
@@ -74,7 +75,7 @@ export async function PATCH(request: Request) {
       ).bind(current.normalized_name, current.province_name, current.school_level).first<{ id: string }>();
       linkedSchoolId = duplicate?.id ?? `manual:${crypto.randomUUID()}`;
       if (!duplicate) {
-        await database().prepare(
+        createSchool = database().prepare(
           `INSERT INTO schools
            (id, office_code, school_code, official_name, normalized_name, search_name, school_level,
             province_name, district_name, road_address, status, source, created_at, updated_at)
@@ -91,18 +92,28 @@ export async function PATCH(request: Request) {
           current.district_or_address,
           now,
           now,
-        ).run();
+        );
       }
       nextStatus = "approved";
     }
 
-    const statements = [
+    const guardId = crypto.randomUUID();
+    const statements: D1PreparedStatement[] = [
+      database().prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM school_manual_requests WHERE id = ? AND status = 'pending'
+         ) THEN ? ELSE NULL END, 'admin_school_request_review', ?`,
+      ).bind(id, guardId, now),
+    ];
+    if (createSchool) statements.push(createSchool);
+    statements.push(
       database().prepare(
         `UPDATE school_manual_requests
          SET status = ?, linked_school_id = ?, reviewed_at = ?, reviewed_by = ?, review_note = ?
          WHERE id = ? AND status = 'pending'`,
       ).bind(nextStatus, linkedSchoolId, now, admin.adminKey, note, id),
-    ];
+    );
     if (linkedSchoolId) {
       statements.push(
         database().prepare(
@@ -132,7 +143,17 @@ export async function PATCH(request: Request) {
         ).bind(now, current.submitted_by_teacher_id, id),
       );
     }
-    await database().batch(statements);
+    statements.push(
+      database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    );
+    try {
+      await database().batch(statements);
+    } catch (error) {
+      if (isOperationGuardFailure(error)) {
+        throw new ApiError(409, "다른 관리자 화면에서 먼저 처리한 학교 요청입니다.", "SCHOOL_REQUEST_ALREADY_REVIEWED");
+      }
+      throw error;
+    }
     await auditSystemAdmin({
       adminKey: admin.adminKey,
       action: action === "reject" ? "school_request_rejected" : action === "link" ? "school_request_linked" : "school_request_approved",

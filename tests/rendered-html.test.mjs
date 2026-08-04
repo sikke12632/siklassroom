@@ -215,6 +215,9 @@ test("수동 학교 요청이 거절되면 학교 연결과 기존 교사 세션
   assert.match(schoolRequests, /DELETE FROM sessions[\s\S]*manual_school_request_id = \?/);
   assert.match(schoolRequests, /manual_school_request_id = NULL/);
   assert.match(schoolRequests, /credential_revision = credential_revision \+ 1/);
+  assert.match(schoolRequests, /admin_school_request_review/);
+  assert.match(schoolRequests, /isOperationGuardFailure/);
+  assert.match(schoolRequests, /if \(createSchool\) statements\.push\(createSchool\)/);
 });
 
 test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제공한다", async () => {
