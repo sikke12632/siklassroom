@@ -1215,6 +1215,11 @@ export const financeStockMarkets = sqliteTable("finance_stock_markets", {
   createdAt: integer("created_at").notNull(),
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [
+  index("finance_stock_markets_due_idx").on(
+    table.isOpen,
+    table.nextTickAt,
+    table.classId,
+  ),
   check("finance_stock_markets_open_ck", sql`${table.isOpen} IN (0, 1)`),
   check(
     "finance_stock_markets_fee_ck",
@@ -1330,6 +1335,66 @@ export const financeStocks = sqliteTable("finance_stocks", {
         AND ${table.updatedByTeacherId} IS NULL)`,
   ),
 ]);
+
+export const financeStockTickRetries = sqliteTable(
+  "finance_stock_tick_retries",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull().references(() => financeStockMarkets.classId),
+    stockId: text("stock_id").notNull(),
+    stockRevision: integer("stock_revision").notNull(),
+    marketRevision: integer("market_revision").notNull(),
+    scheduledTickAt: integer("scheduled_tick_at").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(1),
+    nextAttemptAt: integer("next_attempt_at").notNull(),
+    lastErrorCode: text("last_error_code").notNull(),
+    lastFailedAt: integer("last_failed_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_tick_retries_occurrence_uq").on(
+      table.classId,
+      table.stockId,
+      table.stockRevision,
+      table.marketRevision,
+      table.scheduledTickAt,
+    ),
+    index("finance_stock_tick_retries_next_attempt_idx").on(
+      table.nextAttemptAt,
+      table.classId,
+    ),
+    index("finance_stock_tick_retries_class_idx").on(
+      table.classId,
+      table.updatedAt,
+    ),
+    foreignKey({
+      columns: [table.stockId, table.classId],
+      foreignColumns: [financeStocks.id, financeStocks.classId],
+      name: "finance_stock_tick_retries_stock_class_fk",
+    }),
+    check(
+      "finance_stock_tick_retries_revision_ck",
+      sql`${table.stockRevision} >= 0 AND ${table.marketRevision} >= 0`,
+    ),
+    check(
+      "finance_stock_tick_retries_attempt_ck",
+      sql`${table.attemptCount} BETWEEN 1 AND 1000000`,
+    ),
+    check(
+      "finance_stock_tick_retries_timing_ck",
+      sql`${table.scheduledTickAt} >= 0
+        AND ${table.lastFailedAt} >= ${table.scheduledTickAt}
+        AND ${table.nextAttemptAt} >= ${table.lastFailedAt}
+        AND ${table.createdAt} >= 0
+        AND ${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "finance_stock_tick_retries_error_ck",
+      sql`LENGTH(TRIM(${table.lastErrorCode})) BETWEEN 1 AND 100`,
+    ),
+  ],
+);
 
 export const financeStockEvents = sqliteTable("finance_stock_events", {
   id: text("id").primaryKey(),

@@ -2111,6 +2111,8 @@ test("overlapping automatic stock runs apply one due tick only once", {
       ticked: 0,
       skipped: 0,
       failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
       expiredNews: 0,
     });
 
@@ -2348,6 +2350,435 @@ test("automatic stock tick keys survive an interval change at the same bucket", 
       tickKeys[1].idempotency_key,
       "stock-tick:v2:stock-interval:2:1800000",
     );
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("failed automatic stock ticks back off without starving healthy classes", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-tick-backoff-d1-"),
+  );
+  const dueNow = 1_000_000;
+  const tickIntervalMs = 120 * 60_000;
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, created_at, updated_at
+      ) VALUES (
+        'teacher-stock-backoff', 'teacher-stock-backoff@test.local', 'hash',
+        'active', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES
+        ('class-stock-backoff-a', 'teacher-stock-backoff',
+         'Test School', 'test school', 2099, 6, 13, 'active', 1, 1),
+        ('class-stock-backoff-b', 'teacher-stock-backoff',
+         'Test School', 'test school', 2099, 6, 14, 'active', 1, 1),
+        ('class-stock-backoff-c', 'teacher-stock-backoff',
+         'Test School', 'test school', 2099, 6, 15, 'active', 1, 1);
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES
+        ('stock-backoff-a', 'class-stock-backoff-a', 'Backoff A', 'BKA',
+         'Oldest failing automatic tick', 1000, 1000, 1000,
+         20, 20, 10, 'active', 0, 0, NULL,
+         'teacher-stock-backoff', 'teacher', 'teacher-stock-backoff', 10, 10),
+        ('stock-backoff-b', 'class-stock-backoff-b', 'Backoff B', 'BKB',
+         'Second failing automatic tick', 1000, 1000, 1000,
+         20, 20, 10, 'active', 0, 0, NULL,
+         'teacher-stock-backoff', 'teacher', 'teacher-stock-backoff', 10, 10),
+        ('stock-backoff-c', 'class-stock-backoff-c', 'Backoff C', 'BKC',
+         'Healthy automatic tick behind failures', 1000, 1000, 1000,
+         20, 20, 10, 'active', 0, 0, NULL,
+         'teacher-stock-backoff', 'teacher', 'teacher-stock-backoff', 10, 10);
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, previous_snapshot_json,
+        stock_snapshot_json, actor_type, actor_teacher_id, created_at
+      ) VALUES
+        ('stock-backoff-a-issued', 'class-stock-backoff-a', 'stock-backoff-a',
+         0, 'issued', 'Initial issue A', 'stock:backoff:a:issued',
+         'hash:stock:backoff:a:issued', NULL,
+         '{"price":1000,"availableShares":20}',
+         'teacher', 'teacher-stock-backoff', 10),
+        ('stock-backoff-b-issued', 'class-stock-backoff-b', 'stock-backoff-b',
+         0, 'issued', 'Initial issue B', 'stock:backoff:b:issued',
+         'hash:stock:backoff:b:issued', NULL,
+         '{"price":1000,"availableShares":20}',
+         'teacher', 'teacher-stock-backoff', 10),
+        ('stock-backoff-c-issued', 'class-stock-backoff-c', 'stock-backoff-c',
+         0, 'issued', 'Initial issue C', 'stock:backoff:c:issued',
+         'hash:stock:backoff:c:issued', NULL,
+         '{"price":1000,"availableShares":20}',
+         'teacher', 'teacher-stock-backoff', 10);
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 0, sell_fee_bps = 0,
+          buy_spread = 0, sell_spread = 0,
+          market_mood = 'surge', tick_interval_minutes = 120,
+          next_tick_at = CASE class_id
+            WHEN 'class-stock-backoff-a' THEN ${dueNow - 3}
+            WHEN 'class-stock-backoff-b' THEN ${dueNow - 2}
+            ELSE ${dueNow - 1}
+          END,
+          revision = 1, updated_by_teacher_id = 'teacher-stock-backoff',
+          updated_at = 20
+      WHERE class_id IN (
+        'class-stock-backoff-a',
+        'class-stock-backoff-b',
+        'class-stock-backoff-c'
+      );
+      INSERT INTO finance_stock_market_events (
+        id, class_id, revision, action, idempotency_key, payload_hash,
+        previous_snapshot_json, market_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES
+        ('market-backoff-a-opened', 'class-stock-backoff-a', 1, 'opened',
+         'stock:backoff:a:market:opened', 'hash:stock:backoff:a:market:opened',
+         '{"isOpen":false,"revision":0}',
+         '{"isOpen":true,"tickIntervalMinutes":120,"revision":1}',
+         'teacher-stock-backoff', 20),
+        ('market-backoff-b-opened', 'class-stock-backoff-b', 1, 'opened',
+         'stock:backoff:b:market:opened', 'hash:stock:backoff:b:market:opened',
+         '{"isOpen":false,"revision":0}',
+         '{"isOpen":true,"tickIntervalMinutes":120,"revision":1}',
+         'teacher-stock-backoff', 20),
+        ('market-backoff-c-opened', 'class-stock-backoff-c', 1, 'opened',
+         'stock:backoff:c:market:opened', 'hash:stock:backoff:c:market:opened',
+         '{"isOpen":false,"revision":0}',
+         '{"isOpen":true,"tickIntervalMinutes":120,"revision":1}',
+         'teacher-stock-backoff', 20);
+      CREATE TRIGGER test_stock_tick_failure_ab
+      BEFORE INSERT ON finance_stock_events
+      WHEN NEW.action IN ('automatic_tick', 'news_tick')
+        AND NEW.stock_id IN ('stock-backoff-a', 'stock-backoff-b')
+      BEGIN
+        SELECT RAISE(ABORT, 'FINANCE_STOCK_TEST_TICK_FAILURE');
+      END;
+    `);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockTickRaceWorkerPath,
+      {
+        config: stockTickRaceConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    const runPlainTick = async (now, limit = 2) => {
+      const response = await worker.fetch("http://test.local/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "plain", now, limit }),
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const marketState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT stock.id AS stock_id, stock.revision AS stock_revision,
+              market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events event
+               WHERE event.stock_id = stock.id
+                 AND event.action IN ('automatic_tick', 'news_tick')) AS tick_event_count
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id IN ('stock-backoff-a', 'stock-backoff-b', 'stock-backoff-c')
+       ORDER BY stock.id;`,
+    ));
+
+    assert.deepEqual(await runPlainTick(dueNow), {
+      due: 2,
+      ticked: 0,
+      skipped: 0,
+      failed: 2,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    assert.deepEqual(marketState(), [
+      { stock_id: "stock-backoff-a", stock_revision: 0, next_tick_at: dueNow - 3, tick_event_count: 0 },
+      { stock_id: "stock-backoff-b", stock_revision: 0, next_tick_at: dueNow - 2, tick_event_count: 0 },
+      { stock_id: "stock-backoff-c", stock_revision: 0, next_tick_at: dueNow - 1, tick_event_count: 0 },
+    ]);
+    const firstRetries = lastResults(executeSql(
+      persistPath,
+      `SELECT class_id, stock_id, stock_revision, market_revision,
+              scheduled_tick_at, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_stock_tick_retries ORDER BY stock_id;`,
+    ));
+    assert.deepEqual(firstRetries, [
+      {
+        class_id: "class-stock-backoff-a",
+        stock_id: "stock-backoff-a",
+        stock_revision: 0,
+        market_revision: 1,
+        scheduled_tick_at: dueNow - 3,
+        attempt_count: 1,
+        next_attempt_at: dueNow + 120_000,
+        last_error_code: "FINANCE_STOCK_TEST_TICK_FAILURE",
+        last_failed_at: dueNow,
+        created_at: dueNow,
+        updated_at: dueNow,
+      },
+      {
+        class_id: "class-stock-backoff-b",
+        stock_id: "stock-backoff-b",
+        stock_revision: 0,
+        market_revision: 1,
+        scheduled_tick_at: dueNow - 2,
+        attempt_count: 1,
+        next_attempt_at: dueNow + 120_000,
+        last_error_code: "FINANCE_STOCK_TEST_TICK_FAILURE",
+        last_failed_at: dueNow,
+        created_at: dueNow,
+        updated_at: dueNow,
+      },
+    ]);
+
+    const healthyTickAt = dueNow + 60_000;
+    const healthyResult = await runPlainTick(healthyTickAt);
+    assert.equal(healthyResult.due, 3);
+    assert.equal(healthyResult.failed, 0);
+    assert.equal(healthyResult.deferred, 2);
+    assert.equal(healthyResult.retrySchedulingFailed, 0);
+    assert.equal(healthyResult.ticked + healthyResult.skipped, 1);
+    assert.deepEqual(marketState(), [
+      { stock_id: "stock-backoff-a", stock_revision: 0, next_tick_at: dueNow - 3, tick_event_count: 0 },
+      { stock_id: "stock-backoff-b", stock_revision: 0, next_tick_at: dueNow - 2, tick_event_count: 0 },
+      { stock_id: "stock-backoff-c", stock_revision: 1, next_tick_at: healthyTickAt + tickIntervalMs, tick_event_count: 1 },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, next_attempt_at
+       FROM finance_stock_tick_retries ORDER BY stock_id;`,
+    )), firstRetries.map(({ stock_id, attempt_count, next_attempt_at }) => ({
+      stock_id,
+      attempt_count,
+      next_attempt_at,
+    })));
+
+    assert.deepEqual(await runPlainTick(dueNow + 119_999), {
+      due: 2,
+      ticked: 0,
+      skipped: 0,
+      failed: 0,
+      deferred: 2,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, next_attempt_at
+       FROM finance_stock_tick_retries ORDER BY stock_id;`,
+    )), firstRetries.map(({ stock_id, attempt_count, next_attempt_at }) => ({
+      stock_id,
+      attempt_count,
+      next_attempt_at,
+    })));
+
+    const secondAttemptAt = dueNow + 120_000;
+    assert.deepEqual(await runPlainTick(secondAttemptAt), {
+      due: 2,
+      ticked: 0,
+      skipped: 0,
+      failed: 2,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    const secondRetries = lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_stock_tick_retries ORDER BY stock_id;`,
+    ));
+    assert.deepEqual(secondRetries, firstRetries.map((retry) => ({
+      stock_id: retry.stock_id,
+      attempt_count: 2,
+      next_attempt_at: secondAttemptAt + 240_000,
+      last_error_code: retry.last_error_code,
+      last_failed_at: secondAttemptAt,
+      created_at: dueNow,
+      updated_at: secondAttemptAt,
+    })));
+
+    const fairnessAt = secondAttemptAt + 240_000;
+    executeSql(persistPath, `
+      UPDATE finance_stock_tick_retries
+      SET next_attempt_at = ${fairnessAt - 1}
+      WHERE stock_id = 'stock-backoff-a';
+      UPDATE finance_stock_tick_retries
+      SET next_attempt_at = ${fairnessAt - 1000}
+      WHERE stock_id = 'stock-backoff-b';
+      UPDATE finance_stock_markets
+      SET next_tick_at = ${fairnessAt - 500}, revision = revision + 1,
+          updated_by_teacher_id = 'teacher-stock-backoff',
+          updated_at = ${fairnessAt - 2}
+      WHERE class_id = 'class-stock-backoff-c';
+      INSERT INTO finance_stock_market_events (
+        id, class_id, revision, action, idempotency_key, payload_hash,
+        previous_snapshot_json, market_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES (
+        'market-backoff-c-rescheduled', 'class-stock-backoff-c', 2, 'updated',
+        'stock:backoff:c:market:rescheduled',
+        'hash:stock:backoff:c:market:rescheduled',
+        '{"isOpen":true,"revision":1}',
+        '{"isOpen":true,"nextTickAt":${fairnessAt - 500},"revision":2}',
+        'teacher-stock-backoff', ${fairnessAt - 2}
+      );
+      DROP TRIGGER test_stock_tick_failure_ab;
+      CREATE TRIGGER test_stock_tick_failure_a
+      BEFORE INSERT ON finance_stock_events
+      WHEN NEW.action IN ('automatic_tick', 'news_tick')
+        AND NEW.stock_id = 'stock-backoff-a'
+      BEGIN
+        SELECT RAISE(ABORT, 'FINANCE_STOCK_TEST_TICK_FAILURE');
+      END;
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.id AS stock_id, market.next_tick_at, retry.next_attempt_at
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       JOIN finance_stock_tick_retries retry ON retry.stock_id = stock.id
+       ORDER BY market.next_tick_at, stock.id;`,
+    )), [
+      { stock_id: "stock-backoff-a", next_tick_at: dueNow - 3, next_attempt_at: fairnessAt - 1 },
+      { stock_id: "stock-backoff-b", next_tick_at: dueNow - 2, next_attempt_at: fairnessAt - 1000 },
+    ]);
+    const fairnessResult = await runPlainTick(fairnessAt, 1);
+    assert.equal(fairnessResult.due, 1);
+    assert.equal(fairnessResult.failed, 0);
+    assert.equal(fairnessResult.ticked + fairnessResult.skipped, 1);
+    assert.deepEqual(marketState(), [
+      { stock_id: "stock-backoff-a", stock_revision: 0, next_tick_at: dueNow - 3, tick_event_count: 0 },
+      { stock_id: "stock-backoff-b", stock_revision: 1, next_tick_at: fairnessAt + tickIntervalMs, tick_event_count: 1 },
+      { stock_id: "stock-backoff-c", stock_revision: 1, next_tick_at: fairnessAt - 500, tick_event_count: 1 },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, next_attempt_at
+       FROM finance_stock_tick_retries;`,
+    )), [{
+      stock_id: "stock-backoff-a",
+      attempt_count: 2,
+      next_attempt_at: fairnessAt - 1,
+    }]);
+
+    const freshResult = await runPlainTick(fairnessAt, 1);
+    assert.equal(freshResult.due, 1);
+    assert.equal(freshResult.failed, 0);
+    assert.equal(freshResult.ticked + freshResult.skipped, 1);
+    assert.deepEqual(marketState(), [
+      { stock_id: "stock-backoff-a", stock_revision: 0, next_tick_at: dueNow - 3, tick_event_count: 0 },
+      { stock_id: "stock-backoff-b", stock_revision: 1, next_tick_at: fairnessAt + tickIntervalMs, tick_event_count: 1 },
+      { stock_id: "stock-backoff-c", stock_revision: 2, next_tick_at: fairnessAt + tickIntervalMs, tick_event_count: 2 },
+    ]);
+
+    const capAttemptAt = fairnessAt + 1;
+    executeSql(persistPath, `
+      UPDATE finance_stock_tick_retries
+      SET attempt_count = 5, next_attempt_at = ${capAttemptAt},
+          last_failed_at = ${fairnessAt}, updated_at = ${fairnessAt}
+      WHERE stock_id = 'stock-backoff-a';
+    `);
+    assert.deepEqual(await runPlainTick(capAttemptAt, 1), {
+      due: 1,
+      ticked: 0,
+      skipped: 0,
+      failed: 1,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    const recoveryAt = capAttemptAt + 60 * 60_000;
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_stock_tick_retries;`,
+    )), [{
+      stock_id: "stock-backoff-a",
+      attempt_count: 6,
+      next_attempt_at: recoveryAt,
+      last_error_code: "FINANCE_STOCK_TEST_TICK_FAILURE",
+      last_failed_at: capAttemptAt,
+      created_at: dueNow,
+      updated_at: capAttemptAt,
+    }]);
+
+    executeSql(persistPath, "DROP TRIGGER test_stock_tick_failure_a;");
+    const recoveryResult = await runPlainTick(recoveryAt, 1);
+    assert.equal(recoveryResult.due, 1);
+    assert.equal(recoveryResult.failed, 0);
+    assert.equal(recoveryResult.ticked + recoveryResult.skipped, 1);
+    const finalState = marketState();
+    assert.deepEqual(finalState, [
+      { stock_id: "stock-backoff-a", stock_revision: 1, next_tick_at: recoveryAt + tickIntervalMs, tick_event_count: 1 },
+      { stock_id: "stock-backoff-b", stock_revision: 1, next_tick_at: fairnessAt + tickIntervalMs, tick_event_count: 1 },
+      { stock_id: "stock-backoff-c", stock_revision: 2, next_tick_at: fairnessAt + tickIntervalMs, tick_event_count: 2 },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      "SELECT COUNT(*) AS count FROM finance_stock_tick_retries;",
+    )), [{ count: 0 }]);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_stock_tick_retries (
+        id, class_id, stock_id, stock_revision, market_revision,
+        scheduled_tick_at, attempt_count, next_attempt_at,
+        last_error_code, last_failed_at, created_at, updated_at
+      ) VALUES (
+        'stock-retry-stale-after-success', 'class-stock-backoff-a',
+        'stock-backoff-a', 0, 1, ${dueNow - 3}, 1,
+        ${recoveryAt + 120_000}, 'FINANCE_STOCK_TICK_AUTOMATION_FAILED',
+        ${recoveryAt}, ${recoveryAt}, ${recoveryAt}
+      );
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      "SELECT COUNT(*) AS count FROM finance_stock_tick_retries;",
+    )), [{ count: 0 }]);
+
+    assert.deepEqual(await runPlainTick(recoveryAt, 2), {
+      due: 0,
+      ticked: 0,
+      skipped: 0,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    assert.deepEqual(marketState(), finalState);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

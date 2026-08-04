@@ -1856,6 +1856,8 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ),
     CONSTRAINT finance_stock_markets_revision_ck CHECK (revision >= 0)
   )`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_markets_due_idx
+    ON finance_stock_markets(is_open, next_tick_at, class_id)`,
   `CREATE TABLE IF NOT EXISTS finance_stock_market_events (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, revision INTEGER NOT NULL,
     action TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -1924,6 +1926,38 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_stocks(class_id, symbol)`,
   `CREATE INDEX IF NOT EXISTS finance_stocks_class_status_idx
     ON finance_stocks(class_id, status)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_tick_retries (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    stock_revision INTEGER NOT NULL, market_revision INTEGER NOT NULL,
+    scheduled_tick_at INTEGER NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    next_attempt_at INTEGER NOT NULL, last_error_code TEXT NOT NULL,
+    last_failed_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES finance_stock_markets(class_id),
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    CONSTRAINT finance_stock_tick_retries_revision_ck CHECK (
+      stock_revision >= 0 AND market_revision >= 0
+    ),
+    CONSTRAINT finance_stock_tick_retries_attempt_ck CHECK (
+      attempt_count BETWEEN 1 AND 1000000
+    ),
+    CONSTRAINT finance_stock_tick_retries_timing_ck CHECK (
+      scheduled_tick_at >= 0 AND last_failed_at >= scheduled_tick_at
+      AND next_attempt_at >= last_failed_at AND created_at >= 0
+      AND updated_at >= created_at
+    ),
+    CONSTRAINT finance_stock_tick_retries_error_ck
+      CHECK (LENGTH(TRIM(last_error_code)) BETWEEN 1 AND 100)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_tick_retries_occurrence_uq
+    ON finance_stock_tick_retries(
+      class_id, stock_id, stock_revision, market_revision, scheduled_tick_at
+    )`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_tick_retries_next_attempt_idx
+    ON finance_stock_tick_retries(next_attempt_at, class_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_tick_retries_class_idx
+    ON finance_stock_tick_retries(class_id, updated_at)`,
   `CREATE TABLE IF NOT EXISTS finance_stock_events (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
     revision INTEGER NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
@@ -2566,6 +2600,59 @@ export const FINANCE_SCHEMA_STATEMENTS = [
             FROM json_each(setting.denominations_json)
           ) = 0
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_tick_retries_market_cleanup
+    AFTER UPDATE OF is_open, next_tick_at, revision ON finance_stock_markets
+    BEGIN
+      DELETE FROM finance_stock_tick_retries WHERE class_id = NEW.class_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_tick_retries_stock_cleanup
+    AFTER UPDATE OF revision, status ON finance_stocks
+    BEGIN
+      DELETE FROM finance_stock_tick_retries
+      WHERE class_id = NEW.class_id AND stock_id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_tick_retries_class_cleanup
+    AFTER UPDATE OF status ON classes
+    WHEN NEW.status <> 'active'
+    BEGIN
+      DELETE FROM finance_stock_tick_retries WHERE class_id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_tick_retries_insert_cleanup
+    AFTER INSERT ON finance_stock_tick_retries
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM finance_stock_markets market
+      JOIN finance_stocks stock ON stock.class_id = market.class_id
+      JOIN classes classroom ON classroom.id = market.class_id
+      WHERE market.class_id = NEW.class_id AND stock.id = NEW.stock_id
+        AND market.is_open = 1 AND classroom.status = 'active'
+        AND stock.status IN ('active', 'sell_only')
+        AND stock.revision = NEW.stock_revision
+        AND market.revision = NEW.market_revision
+        AND market.next_tick_at = NEW.scheduled_tick_at
+        AND market.next_tick_at <= NEW.last_failed_at
+    )
+    BEGIN
+      DELETE FROM finance_stock_tick_retries WHERE id = NEW.id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_tick_retries_update_cleanup
+    AFTER UPDATE ON finance_stock_tick_retries
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM finance_stock_markets market
+      JOIN finance_stocks stock ON stock.class_id = market.class_id
+      JOIN classes classroom ON classroom.id = market.class_id
+      WHERE market.class_id = NEW.class_id AND stock.id = NEW.stock_id
+        AND market.is_open = 1 AND classroom.status = 'active'
+        AND stock.status IN ('active', 'sell_only')
+        AND stock.revision = NEW.stock_revision
+        AND market.revision = NEW.market_revision
+        AND market.next_tick_at = NEW.scheduled_tick_at
+        AND market.next_tick_at <= NEW.last_failed_at
+    )
+    BEGIN
+      DELETE FROM finance_stock_tick_retries WHERE id = NEW.id;
     END`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_events_insert_guard
     BEFORE INSERT ON finance_stock_events

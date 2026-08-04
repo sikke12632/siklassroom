@@ -75,8 +75,18 @@ const worker = {
         }
         if (stockResult.status === "rejected") {
           console.error("finance stock tick processing failed", stockResult.reason);
-        } else if (stockResult.value.failed > 0) {
-          console.error("finance stock tick processing incomplete", stockResult.value);
+        } else if (
+          stockResult.value.failed > 0
+          || stockResult.value.retrySchedulingFailed > 0
+        ) {
+          console.error("finance stock tick processing incomplete", {
+            due: stockResult.value.due,
+            ticked: stockResult.value.ticked,
+            skipped: stockResult.value.skipped,
+            failed: stockResult.value.failed,
+            deferred: stockResult.value.deferred,
+            retrySchedulingFailed: stockResult.value.retrySchedulingFailed,
+          });
         }
       }),
     );

@@ -3554,6 +3554,66 @@ export async function tickFinanceStockForRequest(
   };
 }
 
+const FINANCE_STOCK_TICK_RETRY_BASE_DELAY_MS = 2 * 60_000;
+const FINANCE_STOCK_TICK_RETRY_MAX_DELAY_MS = 60 * 60_000;
+
+function financeStockTickFailureCode(error: unknown) {
+  const code = error instanceof ApiError
+    ? error.code
+    : String(error).match(/FINANCE_[A-Z0-9_]+/)?.[0];
+  return code && /^[A-Z0-9_]{1,100}$/.test(code)
+    ? code
+    : "FINANCE_STOCK_TICK_AUTOMATION_FAILED";
+}
+
+async function deferFailedFinanceStockTick(
+  db: D1Database,
+  input: {
+    market: MarketRow;
+    stock: StockRow;
+    now: number;
+    error: unknown;
+  },
+) {
+  const scheduledTickAt = Number(input.market.next_tick_at);
+  await db.prepare(
+    `INSERT INTO finance_stock_tick_retries (
+       id, class_id, stock_id, stock_revision, market_revision,
+       scheduled_tick_at, attempt_count, next_attempt_at,
+       last_error_code, last_failed_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+     ON CONFLICT(
+       class_id, stock_id, stock_revision, market_revision, scheduled_tick_at
+     ) DO UPDATE SET
+       attempt_count = MIN(1000000,
+         finance_stock_tick_retries.attempt_count + 1),
+       next_attempt_at = excluded.last_failed_at + CASE
+         WHEN finance_stock_tick_retries.attempt_count >= 5
+           THEN ?
+         ELSE ? * (1 << finance_stock_tick_retries.attempt_count)
+       END,
+       last_error_code = excluded.last_error_code,
+       last_failed_at = excluded.last_failed_at,
+       updated_at = excluded.updated_at
+     WHERE finance_stock_tick_retries.next_attempt_at
+       <= excluded.last_failed_at`,
+  ).bind(
+    crypto.randomUUID(),
+    input.stock.class_id,
+    input.stock.id,
+    input.stock.revision,
+    input.market.revision,
+    scheduledTickAt,
+    input.now + FINANCE_STOCK_TICK_RETRY_BASE_DELAY_MS,
+    financeStockTickFailureCode(input.error),
+    input.now,
+    input.now,
+    input.now,
+    FINANCE_STOCK_TICK_RETRY_MAX_DELAY_MS,
+    FINANCE_STOCK_TICK_RETRY_BASE_DELAY_MS,
+  ).run();
+}
+
 export async function processFinanceStockMarketTicks(
   db: D1Database,
   options: { now?: number; limit?: number; classId?: string } = {},
@@ -3561,26 +3621,67 @@ export async function processFinanceStockMarketTicks(
   const now = options.now ?? Date.now();
   const limit = Math.max(1, Math.min(100, options.limit ?? 50));
   const expiredNews = await expireFinanceStockNews(db, now, options.classId);
+  const deferred = await db.prepare(
+    `SELECT COUNT(*) AS count
+     FROM finance_stock_markets market
+     JOIN finance_stocks stock ON stock.class_id = market.class_id
+     JOIN classes classroom ON classroom.id = market.class_id
+     JOIN finance_stock_tick_retries retry
+       ON retry.class_id = market.class_id
+       AND retry.stock_id = stock.id
+       AND retry.stock_revision = stock.revision
+       AND retry.market_revision = market.revision
+       AND retry.scheduled_tick_at = market.next_tick_at
+     WHERE market.is_open = 1 AND market.next_tick_at IS NOT NULL
+       AND market.next_tick_at <= ? AND retry.next_attempt_at > ?
+       AND stock.status IN ('active', 'sell_only')
+       AND classroom.status = 'active'
+       AND (? IS NULL OR market.class_id = ?)`,
+  ).bind(
+    now,
+    now,
+    options.classId ?? null,
+    options.classId ?? null,
+  ).first<{ count: number }>();
   const due = await db.prepare(
     `SELECT market.class_id
      FROM finance_stock_markets market
      JOIN finance_stocks stock ON stock.class_id = market.class_id
      JOIN classes classroom ON classroom.id = market.class_id
+     LEFT JOIN finance_stock_tick_retries retry
+       ON retry.class_id = market.class_id
+       AND retry.stock_id = stock.id
+       AND retry.stock_revision = stock.revision
+       AND retry.market_revision = market.revision
+       AND retry.scheduled_tick_at = market.next_tick_at
      WHERE market.is_open = 1 AND market.next_tick_at IS NOT NULL
        AND market.next_tick_at <= ?
        AND stock.status IN ('active', 'sell_only')
        AND classroom.status = 'active'
        AND (? IS NULL OR market.class_id = ?)
-     ORDER BY market.next_tick_at, market.class_id LIMIT ?`,
-  ).bind(now, options.classId ?? null, options.classId ?? null, limit).all<{
+       AND (retry.id IS NULL OR retry.next_attempt_at <= ?)
+     ORDER BY CASE WHEN retry.id IS NULL
+                THEN market.next_tick_at ELSE retry.next_attempt_at END,
+              market.next_tick_at, market.class_id
+     LIMIT ?`,
+  ).bind(
+    now,
+    options.classId ?? null,
+    options.classId ?? null,
+    now,
+    limit,
+  ).all<{
     class_id: string;
   }>();
   let ticked = 0;
   let skipped = 0;
   let failed = 0;
+  let retrySchedulingFailed = 0;
   for (const row of due.results) {
+    let market: MarketRow | null = null;
+    let stock: StockRow | null = null;
     try {
-      const [market, stock] = await Promise.all([
+      [market, stock] = await Promise.all([
         marketForClass(db, row.class_id),
         stockForClass(db, row.class_id),
       ]);
@@ -3608,9 +3709,26 @@ export async function processFinanceStockMarketTicks(
       });
       if (result.skipped) skipped += 1;
       else ticked += 1;
-    } catch {
+    } catch (error) {
       failed += 1;
+      if (market && stock && market.next_tick_at !== null) {
+        try {
+          await deferFailedFinanceStockTick(db, { market, stock, now, error });
+        } catch {
+          retrySchedulingFailed += 1;
+        }
+      } else {
+        retrySchedulingFailed += 1;
+      }
     }
   }
-  return { due: due.results.length, ticked, skipped, failed, expiredNews };
+  return {
+    due: due.results.length + Number(deferred?.count ?? 0),
+    ticked,
+    skipped,
+    failed,
+    deferred: Number(deferred?.count ?? 0),
+    retrySchedulingFailed,
+    expiredNews,
+  };
 }
