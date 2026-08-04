@@ -236,3 +236,18 @@ test("조회 API는 일반 학생의 본인 범위와 교사·은행원의 학�
   assert.match(route, /private, no-store/);
   assert.match(route, /financeOverviewForRequest\(request\)/);
 });
+
+test("교사·학생 감사 기록은 생성 후 수정하거나 삭제할 수 없다", async () => {
+  const [migration, runtime] = await Promise.all([
+    readFile(
+      new URL("../drizzle/0026_audit_logs_append_only.sql", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
+  ]);
+  for (const source of [migration, runtime]) {
+    assert.match(source, /audit_logs_update_guard/);
+    assert.match(source, /audit_logs_delete_guard/);
+    assert.match(source, /AUDIT_LOG_IMMUTABLE/);
+  }
+});

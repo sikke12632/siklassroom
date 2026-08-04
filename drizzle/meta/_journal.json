@@ -183,6 +183,13 @@
       "when": 1785842796631,
       "tag": "0025_finance_transactions_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1785845665172,
+      "tag": "0026_audit_logs_append_only",
+      "breakpoints": true
     }
   ]
 }

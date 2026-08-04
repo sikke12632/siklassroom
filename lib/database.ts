@@ -98,6 +98,16 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS audit_logs_teacher_idx ON audit_logs(teacher_id)`,
   `CREATE INDEX IF NOT EXISTS audit_logs_class_idx ON audit_logs(class_id)`,
+  `CREATE TRIGGER IF NOT EXISTS audit_logs_update_guard
+    BEFORE UPDATE ON audit_logs
+    BEGIN
+      SELECT RAISE(ABORT, 'AUDIT_LOG_IMMUTABLE');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS audit_logs_delete_guard
+    BEFORE DELETE ON audit_logs
+    BEGIN
+      SELECT RAISE(ABORT, 'AUDIT_LOG_IMMUTABLE');
+    END`,
   `CREATE TABLE IF NOT EXISTS job_templates (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, short_description TEXT NOT NULL,
     detailed_tasks TEXT NOT NULL, category TEXT NOT NULL,

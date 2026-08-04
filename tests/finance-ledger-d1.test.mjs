@@ -284,6 +284,36 @@ test("D1은 확정된 금융 원장만 잔액에 반영하고 보존 상태를 �
        WHERE id = 'tx-empty-pending';`,
     )), [{ status: "pending" }]);
 
+    executeSql(
+      persistPath,
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       ) VALUES (
+         'audit-immutable', 'teacher-test', 'class-test', 'student-one',
+         'finance_test_event', '{"reason":"original"}', 80
+       );`,
+    );
+    const auditUpdate = executeSql(
+      persistPath,
+      `UPDATE audit_logs SET detail = '{"reason":"changed"}'
+       WHERE id = 'audit-immutable';`,
+      { expectSuccess: false },
+    );
+    assert.match(auditUpdate.output, /AUDIT_LOG_IMMUTABLE/);
+    const auditDelete = executeSql(
+      persistPath,
+      `DELETE FROM audit_logs WHERE id = 'audit-immutable';`,
+      { expectSuccess: false },
+    );
+    assert.match(auditDelete.output, /AUDIT_LOG_IMMUTABLE/);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT action, detail FROM audit_logs WHERE id = 'audit-immutable';`,
+    )), [{
+      action: "finance_test_event",
+      detail: '{"reason":"original"}',
+    }]);
+
     const foreignKeys = executeSql(
       persistPath,
       "PRAGMA foreign_key_check;",
