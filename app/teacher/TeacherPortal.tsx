@@ -837,7 +837,10 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNumber, setEditNumber] = useState("");
   const [editName, setEditName] = useState("");
-  const [financeBlockedStudentId, setFinanceBlockedStudentId] = useState<string | null>(null);
+  const [financeBlock, setFinanceBlock] = useState<{
+    studentId: string;
+    kind: "request" | "deposit" | "stock";
+  } | null>(null);
 
   async function updateStudent(student: Student, input: Record<string, string | number>) {
     onBusy(true); onError("");
@@ -845,15 +848,19 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
       await patchJson(`/api/students/${student.id}`, input);
       onMessage("학생 정보를 고쳤어요.");
       setEditingId(null);
-      setFinanceBlockedStudentId((current) => current === student.id ? null : current);
+      setFinanceBlock((current) => current?.studentId === student.id ? null : current);
       onReload();
     } catch (reason) {
-      if (
-        reason instanceof ClientApiError
-        && reason.code === "FINANCE_DEPOSIT_ACTIVE_STUDENT"
-      ) {
+      const blockedKind = reason instanceof ClientApiError
+        ? {
+          FINANCE_REQUEST_PENDING_STUDENT: "request",
+          FINANCE_DEPOSIT_ACTIVE_STUDENT: "deposit",
+          FINANCE_STOCK_ACTIVE_STUDENT: "stock",
+        }[reason.code] as "request" | "deposit" | "stock" | undefined
+        : undefined;
+      if (blockedKind) {
         onError("");
-        setFinanceBlockedStudentId(student.id);
+        setFinanceBlock({ studentId: student.id, kind: blockedKind });
       } else {
         onError((reason as Error).message);
       }
@@ -901,21 +908,36 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
               </>}
             </div></td>
           </tr>
-          {financeBlockedStudentId === student.id && (
+          {financeBlock?.studentId === student.id && (
             <tr className="student-finance-guidance-row">
               <td colSpan={4}>
                 <div className="finance-action-notice warning" role="alert">
                   <Landmark aria-hidden="true" />
                   <div className="finance-action-notice-body">
-                    <p><b>{student.official_name} 학생을 아직 제외하지 않았어요.</b> 진행 중인 예금을 약정 금액대로 먼저 정산해 주세요.</p>
+                    <p>
+                      <b>{student.official_name} 학생을 아직 제외하지 않았어요.</b>{" "}
+                      {financeBlock.kind === "request"
+                        ? "처리 대기 중인 입금·출금 신청을 먼저 승인하거나 거절해 주세요."
+                        : financeBlock.kind === "deposit"
+                          ? "진행 중인 예금을 약정 금액대로 먼저 정산해 주세요."
+                          : "보유 중인 주식을 먼저 매도하거나 비상 청산해 주세요."}
+                    </p>
                     <div className="button-row">
                       <a
                         className="button button-primary"
-                        href={`/finance?classId=${encodeURIComponent(classId)}&depositStudentId=${encodeURIComponent(student.id)}&depositOrigin=student_exclusion#finance-deposit-contracts`}
+                        href={financeBlock.kind === "request"
+                          ? `/finance?classId=${encodeURIComponent(classId)}#finance-operations`
+                          : financeBlock.kind === "deposit"
+                            ? `/finance?classId=${encodeURIComponent(classId)}&depositStudentId=${encodeURIComponent(student.id)}&depositOrigin=student_exclusion#finance-deposit-contracts`
+                            : `/finance?classId=${encodeURIComponent(classId)}#finance-stocks`}
                       >
-                        예금 확인·정산
+                        {financeBlock.kind === "request"
+                          ? "입출금 신청 처리"
+                          : financeBlock.kind === "deposit"
+                            ? "예금 확인·정산"
+                            : "주식 확인·청산"}
                       </a>
-                      <button className="button button-light" type="button" onClick={() => setFinanceBlockedStudentId(null)}>취소</button>
+                      <button className="button button-light" type="button" onClick={() => setFinanceBlock(null)}>취소</button>
                     </div>
                   </div>
                 </div>

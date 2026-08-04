@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   depositAutomationChangedWallet,
@@ -454,4 +454,104 @@ test("매수와 가격 상승은 학생별 평가액 10억 안전선을 함께 �
   assert.match(service, /skipped: stockTickEventWasSkipped\(duplicate\)/);
   assert.match(service, /skipped: stockTickEventWasSkipped\(concurrent\)/);
   assert.match(service, /return \{ stock: nextStock, deduplicated: false, skipped \}/);
+});
+
+test("unresolved cash requests block roster lifecycle changes without auto-cancellation", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationNames = (await readdir(migrationDirectory))
+    .filter((name) => /^\d{4}_.+\.sql$/u.test(name))
+    .sort();
+  const [
+    migrationSources,
+    runtime,
+    lifecycle,
+    classRoute,
+    studentRoute,
+    overview,
+    operationsPanel,
+  ] =
+    await Promise.all([
+      Promise.all(migrationNames.map((name) => (
+        readFile(new URL(name, migrationDirectory), "utf8")
+      ))),
+      readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL("../lib/finance-deposit-lifecycle.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/api/classes/[classId]/route.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(
+        new URL("../app/api/students/[studentId]/route.ts", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../lib/finance-overview.ts", import.meta.url), "utf8"),
+      readFile(
+        new URL("../app/finance/FinanceOperations.tsx", import.meta.url),
+        "utf8",
+      ),
+    ]);
+  const migrations = migrationSources.join("\n");
+
+  for (const source of [migrations, runtime]) {
+    assert.match(source, /finance_cash_requests_classes_archive_guard/);
+    assert.match(source, /finance_cash_requests_students_exclude_guard/);
+    assert.match(
+      source,
+      /NEW\.status = 'archived'[\s\S]*finance_cash_requests[\s\S]*finance_request_resolutions[\s\S]*FINANCE_REQUEST_PENDING_CLASS/,
+    );
+    assert.match(
+      source,
+      /NEW\.status = 'excluded'[\s\S]*finance_cash_requests[\s\S]*requester_student_id = NEW\.id[\s\S]*finance_request_resolutions[\s\S]*FINANCE_REQUEST_PENDING_STUDENT/,
+    );
+  }
+  assert.match(lifecycle, /pendingCashRequestCount/);
+  assert.match(lifecycle, /FINANCE_REQUEST_PENDING_CLASS/);
+  assert.match(lifecycle, /FINANCE_REQUEST_PENDING_STUDENT/);
+  assert.match(lifecycle, /finance_cash_requests/);
+  assert.match(lifecycle, /finance_request_resolutions/);
+  assert.match(lifecycle, /NOT EXISTS/);
+  assert.doesNotMatch(
+    lifecycle,
+    /INSERT INTO finance_request_resolutions/,
+    "Roster lifecycle checks must not silently cancel student requests.",
+  );
+  assert.match(classRoute, /assertClassCanBeArchived\(classId\)/);
+  assert.match(classRoute, /mapFinanceDepositLifecycleError\(error\)/);
+  assert.match(
+    classRoute,
+    /UPDATE classes[\s\S]*DELETE FROM sessions[\s\S]*database\(\)\.batch\(statements\)/,
+  );
+  assert.match(
+    studentRoute,
+    /assertStudentCanBeExcluded\(String\(current\.class_id\), studentId\)/,
+  );
+  assert.match(studentRoute, /mapFinanceDepositLifecycleError\(error\)/);
+  assert.match(
+    studentRoute,
+    /UPDATE students[\s\S]*revokeActorSessions\("student", studentId\)/,
+  );
+  assert.match(
+    overview,
+    /const canApprove = pending[\s\S]*row\.wallet_status === "active"/,
+  );
+  assert.match(
+    overview,
+    /const canReject = pending[\s\S]*context\.financeRole === "teacher"/,
+  );
+  assert.match(overview, /const canDecide = canApprove \|\| canReject/);
+  assert.match(
+    operationsPanel,
+    /const approveBlocked =[\s\S]*request\.canApprove === false/,
+  );
+  assert.match(
+    operationsPanel,
+    /const rejectBlocked =[\s\S]*request\.canReject === false/,
+  );
+  assert.match(
+    operationsPanel,
+    /disabled=\{approveBlocked \|\| busyId !== null\}[\s\S]*disabled=\{rejectBlocked \|\| busyId !== null\}/,
+  );
 });

@@ -804,9 +804,12 @@ function RequestDecisionQueue({
         <ol>
           {requests.map((request) => {
             const selfRequest = role === "banker" && request.student.id === actorId;
-            const decisionBlocked = !classIsActive
+            const approveBlocked = !classIsActive
               || selfRequest
-              || request.canDecide === false;
+              || request.canApprove === false;
+            const rejectBlocked = !classIsActive
+              || selfRequest
+              || request.canReject === false;
             const activeDecision = active?.requestId === request.id
               ? active.decision
               : null;
@@ -843,7 +846,8 @@ function RequestDecisionQueue({
                           closeAction();
                           setActive({ requestId: request.id, decision: "approve" });
                         }}
-                        disabled={decisionBlocked || busyId !== null}
+                        disabled={approveBlocked || busyId !== null}
+                        title={request.approveBlockedReason ?? undefined}
                       >
                         <Check aria-hidden="true" />승인
                       </button>
@@ -854,12 +858,21 @@ function RequestDecisionQueue({
                           closeAction();
                           setActive({ requestId: request.id, decision: "reject" });
                         }}
-                        disabled={decisionBlocked || busyId !== null}
+                        disabled={rejectBlocked || busyId !== null}
+                        title={request.rejectBlockedReason ?? undefined}
                       >
                         <X aria-hidden="true" />거절
                       </button>
                     </div>
                   )}
+                  {!selfRequest
+                    && request.canApprove === false
+                    && request.canReject
+                    && request.approveBlockedReason && (
+                      <small className="finance-decision-guidance">
+                        {request.approveBlockedReason}
+                      </small>
+                    )}
                 </div>
 
                 {activeDecision && (

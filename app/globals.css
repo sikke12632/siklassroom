@@ -2349,6 +2349,15 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 }
 .finance-decision-buttons { display: flex; gap: 7px; }
 .finance-decision-buttons .button { min-width: 82px; }
+.finance-decision-guidance {
+  grid-column: 3;
+  justify-self: end;
+  max-width: 260px;
+  color: var(--color-warning);
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: right;
+}
 .finance-self-lock {
   display: flex;
   align-items: center;
@@ -2915,6 +2924,11 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   .finance-request-main { grid-template-columns: auto minmax(0, 1fr); }
   .finance-decision-buttons,
   .finance-self-lock { grid-column: 2; justify-self: start; }
+  .finance-decision-guidance {
+    grid-column: 2;
+    justify-self: start;
+    text-align: left;
+  }
   .finance-audit-transaction { grid-template-columns: auto minmax(0, 1fr); }
   .finance-audit-transaction .finance-ledger-amount {
     grid-column: 2;
@@ -2990,6 +3004,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
     width: 100%;
     max-width: none;
   }
+  .finance-decision-guidance { grid-column: auto; }
   .finance-decision-buttons { display: grid; grid-template-columns: 1fr 1fr; }
   .finance-rejection-options { grid-template-columns: 1fr; }
   .finance-confirm-actions { display: grid; grid-template-columns: 1fr; }

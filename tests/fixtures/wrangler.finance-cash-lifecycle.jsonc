@@ -1,0 +1,14 @@
+{
+  "name": "finance-cash-lifecycle-test",
+  "main": "./finance-cash-lifecycle-worker.ts",
+  "compatibility_date": "2026-05-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "finance-cash-lifecycle-test",
+      "database_id": "45ab94b4-5577-47f2-a69f-d011f93bd3f8",
+      "migrations_dir": "../../drizzle"
+    }
+  ]
+}

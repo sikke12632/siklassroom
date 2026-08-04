@@ -1,0 +1,224 @@
+import { PATCH as patchClass } from "../../app/api/classes/[classId]/route";
+import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
+import { runtimeEnv } from "../../lib/database";
+
+type TestEnvironment = {
+  DB: D1Database;
+};
+
+type InjectionScope = "class" | "student";
+
+type InjectionHook = {
+  scope: InjectionScope;
+  matched: boolean;
+};
+
+const lifecycleFixtures = {
+  class: {
+    classId: "class-cash-archive",
+    studentId: "student-cash-archive",
+    requestId: "request-cash-archive-race",
+  },
+  student: {
+    classId: "class-cash-exclude",
+    studentId: "student-cash-exclude",
+    requestId: "request-cash-exclude-race",
+  },
+} as const;
+
+let rawDatabase: D1Database | null = null;
+let databaseWrapped = false;
+let injectionHook: InjectionHook | null = null;
+
+function isUnresolvedCashRequestCount(query: string) {
+  return query.includes("finance_cash_requests") && query.includes("COUNT");
+}
+
+async function injectPendingCashRequest(scope: InjectionScope) {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const fixture = lifecycleFixtures[scope];
+  const context = await rawDatabase.prepare(
+    `SELECT student.student_number, student.official_name,
+            account.id AS wallet_account_id, account.balance,
+            account.revision
+     FROM students student
+     JOIN finance_accounts account
+       ON account.class_id = student.class_id
+      AND account.student_id = student.id
+      AND account.account_type = 'student_wallet'
+     WHERE student.id = ? AND student.class_id = ? LIMIT 1`,
+  ).bind(fixture.studentId, fixture.classId).first<{
+    student_number: number;
+    official_name: string;
+    wallet_account_id: string;
+    balance: number;
+    revision: number;
+  }>();
+  if (!context) throw new Error(`Missing lifecycle fixture context: ${scope}`);
+  await rawDatabase.prepare(
+    `INSERT INTO finance_cash_requests (
+       id, class_id, requester_student_id, wallet_account_id,
+       request_type, amount, memo, idempotency_key, payload_hash,
+       student_number_snapshot, student_name_snapshot,
+       wallet_balance_snapshot, wallet_revision_snapshot, revision, created_at
+     ) VALUES (?, ?, ?, ?, 'deposit', 100, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+  ).bind(
+    fixture.requestId,
+    fixture.classId,
+    fixture.studentId,
+    context.wallet_account_id,
+    `Injected ${scope} lifecycle race`,
+    `cash-lifecycle:${scope}:request`,
+    `hash:cash-lifecycle:${scope}:request`,
+    context.student_number,
+    context.official_name,
+    context.balance,
+    context.revision,
+    Date.now(),
+  ).run();
+}
+
+function wrapPreparedStatement(
+  statement: D1PreparedStatement,
+  query: string,
+): D1PreparedStatement {
+  return new Proxy(statement, {
+    get(target, property) {
+      if (property === "bind") {
+        return (...values: unknown[]) => wrapPreparedStatement(
+          target.bind(...values),
+          query,
+        );
+      }
+      if (property === "first") {
+        return async (...args: unknown[]) => {
+          const first = Reflect.get(target, property, target) as (
+            ...firstArgs: unknown[]
+          ) => Promise<unknown>;
+          const result = await first.apply(target, args);
+          const hook = injectionHook;
+          if (
+            hook
+            && !hook.matched
+            && isUnresolvedCashRequestCount(query)
+          ) {
+            hook.matched = true;
+            await injectPendingCashRequest(hook.scope);
+          }
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as D1PreparedStatement;
+}
+
+function installDatabaseProxy(database: D1Database) {
+  if (databaseWrapped) return;
+  rawDatabase = database;
+  runtimeEnv().DB = new Proxy(database, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => wrapPreparedStatement(target.prepare(query), query);
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as D1Database;
+  databaseWrapped = true;
+}
+
+async function resolvePendingRequest(scope: InjectionScope) {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const fixture = lifecycleFixtures[scope];
+  const now = Date.now();
+  await rawDatabase.prepare(
+    `INSERT INTO finance_request_resolutions (
+       id, request_id, class_id, decision, idempotency_key, payload_hash,
+       expected_request_revision, actor_type, actor_teacher_id,
+       actor_student_id, actor_job_period_id, actor_label,
+       reason_code, reason_note, intervention_reason, is_emergency,
+       posted_transaction_id, transaction_payload_hash, resolved_at, created_at
+     ) VALUES (?, ?, ?, 'rejected', ?, ?, 0, 'teacher', 'teacher-cash-lifecycle',
+               NULL, NULL, 'Lifecycle Teacher', 'class_change', NULL,
+               'Resolve the request before changing roster state', 1,
+               NULL, NULL, ?, ?)`,
+  ).bind(
+    `resolution-cash-${scope}`,
+    fixture.requestId,
+    fixture.classId,
+    `cash-lifecycle:${scope}:resolution`,
+    `hash:cash-lifecycle:${scope}:resolution`,
+    now,
+    now,
+  ).run();
+}
+
+function responseWithInjectionStatus(response: Response, matched: boolean) {
+  const headers = new Headers(response.headers);
+  headers.set("x-test-injection-matched", matched ? "1" : "0");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+const financeCashLifecycleWorker = {
+  async fetch(request: Request, environment: TestEnvironment) {
+    installDatabaseProxy(environment.DB);
+    const url = new URL(request.url);
+    if (url.pathname === "/test/resolve") {
+      const scope = url.searchParams.get("scope");
+      if (scope !== "class" && scope !== "student") {
+        return Response.json({ error: "Unknown lifecycle scope." }, { status: 400 });
+      }
+      await resolvePendingRequest(scope);
+      return Response.json({ resolved: true });
+    }
+
+    const requestedScope = request.headers.get(
+      "x-test-inject-pending-after-lifecycle-preflight",
+    );
+    if (
+      requestedScope !== null
+      && requestedScope !== "class"
+      && requestedScope !== "student"
+    ) {
+      return Response.json({ error: "Unknown lifecycle scope." }, { status: 400 });
+    }
+    if (injectionHook) {
+      return Response.json(
+        { error: "A lifecycle injection hook is already active." },
+        { status: 409 },
+      );
+    }
+    if (requestedScope) {
+      injectionHook = { scope: requestedScope, matched: false };
+    }
+
+    try {
+      let response: Response;
+      if (url.pathname === "/classes/class-cash-archive") {
+        response = await patchClass(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (url.pathname === "/students/student-cash-exclude") {
+        response = await patchStudent(request, {
+          params: Promise.resolve({ studentId: "student-cash-exclude" }),
+        });
+      } else {
+        response = Response.json({ error: "Unknown lifecycle route." }, { status: 404 });
+      }
+      return responseWithInjectionStatus(
+        response,
+        injectionHook?.matched ?? false,
+      );
+    } finally {
+      injectionHook = null;
+    }
+  },
+};
+
+export default financeCashLifecycleWorker;

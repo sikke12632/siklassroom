@@ -59,6 +59,10 @@ export type FinanceRequestData = {
   canCancel: boolean;
   canDecide: boolean;
   decisionBlockedReason: string | null;
+  canApprove: boolean;
+  canReject: boolean;
+  approveBlockedReason: string | null;
+  rejectBlockedReason: string | null;
   transactionId: string | null;
   isCorrected: boolean;
 };

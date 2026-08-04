@@ -41,7 +41,41 @@ async function activeStockHoldingCount(input: {
   return Number(row?.count ?? 0);
 }
 
+async function pendingCashRequestCount(input: {
+  classId: string;
+  studentId?: string;
+}) {
+  await ensureSchema();
+  const conditions = [
+    "request_row.class_id = ?",
+    `NOT EXISTS (
+       SELECT 1 FROM finance_request_resolutions resolution
+       WHERE resolution.request_id = request_row.id
+         AND resolution.class_id = request_row.class_id
+     )`,
+  ];
+  const bindings = [input.classId];
+  if (input.studentId) {
+    conditions.push("request_row.requester_student_id = ?");
+    bindings.push(input.studentId);
+  }
+  const row = await database().prepare(
+    `SELECT COUNT(*) AS count
+     FROM finance_cash_requests request_row
+     WHERE ${conditions.join(" AND ")}`,
+  ).bind(...bindings).first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 export async function assertClassCanBeArchived(classId: string) {
+  const pendingRequestCount = await pendingCashRequestCount({ classId });
+  if (pendingRequestCount > 0) {
+    throw new ApiError(
+      409,
+      `처리 대기 중인 입금·출금 신청 ${pendingRequestCount.toLocaleString("ko-KR")}건이 있어 학급을 아직 보관할 수 없습니다. 금융센터에서 승인하거나 거절한 뒤 다시 시도해 주세요.`,
+      "FINANCE_REQUEST_PENDING_CLASS",
+    );
+  }
   if (await unsettledDepositCount({ classId }) > 0) {
     throw new ApiError(
       409,
@@ -62,6 +96,17 @@ export async function assertStudentCanBeExcluded(
   classId: string,
   studentId: string,
 ) {
+  const pendingRequestCount = await pendingCashRequestCount({
+    classId,
+    studentId,
+  });
+  if (pendingRequestCount > 0) {
+    throw new ApiError(
+      409,
+      `처리 대기 중인 입금·출금 신청 ${pendingRequestCount.toLocaleString("ko-KR")}건이 있어 이 학생을 명단에서 제외할 수 없습니다. 금융센터에서 승인하거나 거절한 뒤 다시 시도해 주세요.`,
+      "FINANCE_REQUEST_PENDING_STUDENT",
+    );
+  }
   if (await unsettledDepositCount({ classId, studentId }) > 0) {
     throw new ApiError(
       409,
@@ -80,6 +125,20 @@ export async function assertStudentCanBeExcluded(
 
 export function mapFinanceDepositLifecycleError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FINANCE_REQUEST_PENDING_CLASS")) {
+    throw new ApiError(
+      409,
+      "처리 대기 중인 입금·출금 신청이 있어 학급을 아직 보관할 수 없습니다. 금융센터에서 승인하거나 거절한 뒤 다시 시도해 주세요.",
+      "FINANCE_REQUEST_PENDING_CLASS",
+    );
+  }
+  if (message.includes("FINANCE_REQUEST_PENDING_STUDENT")) {
+    throw new ApiError(
+      409,
+      "처리 대기 중인 입금·출금 신청이 있어 이 학생을 명단에서 제외할 수 없습니다. 금융센터에서 승인하거나 거절한 뒤 다시 시도해 주세요.",
+      "FINANCE_REQUEST_PENDING_STUDENT",
+    );
+  }
   if (message.includes("FINANCE_DEPOSIT_ACTIVE_CLASS")) {
     throw new ApiError(
       409,

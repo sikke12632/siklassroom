@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,6 +17,14 @@ const wranglerPath = path.join(
   "wrangler",
   "bin",
   "wrangler.js",
+);
+const cashLifecycleWorkerPath =
+  "tests/fixtures/finance-cash-lifecycle-worker.ts";
+const cashLifecycleConfigPath = path.join(
+  projectRoot,
+  "tests",
+  "fixtures",
+  "wrangler.finance-cash-lifecycle.jsonc",
 );
 
 function runWrangler(args, { expectSuccess = true } = {}) {
@@ -622,6 +631,267 @@ test("입출금 신청은 은행원 처리·교사 개입·정정을 불변 원�
     );
     assert.deepEqual(lastResults(reconciliation), []);
   } finally {
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("unresolved cash requests atomically block class archive and student exclusion", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-finance-cash-lifecycle-d1-"),
+  );
+  let worker;
+  const rawTeacherToken = "teacher-cash-lifecycle-session";
+  const teacherTokenHash = createHash("sha256")
+    .update(rawTeacherToken)
+    .digest("base64url");
+  const cookie = `job_classroom_session=${rawTeacherToken}`;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
+      ) VALUES (
+        'teacher-cash-lifecycle', 'teacher-cash-lifecycle@test.local', 'hash',
+        'active', 1, 'invite_verified', 1, 'school-cash-lifecycle', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized, school_id,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES
+        ('class-cash-archive', 'teacher-cash-lifecycle', 'Lifecycle School',
+         'lifecycle school', 'school-cash-lifecycle', 2099, 6, 20,
+         'active', 1, 1),
+        ('class-cash-exclude', 'teacher-cash-lifecycle', 'Lifecycle School',
+         'lifecycle school', 'school-cash-lifecycle', 2099, 6, 21,
+         'active', 1, 1);
+      INSERT INTO students (
+        id, class_id, student_number, official_name, password_hash,
+        status, activated_at, created_at, updated_at
+      ) VALUES
+        ('student-cash-archive', 'class-cash-archive', 1,
+         'Archive Request Student', 'hash', 'active', 1, 1, 1),
+        ('student-cash-archive-peer', 'class-cash-archive', 2,
+         'Archive Peer Student', 'hash', 'active', 1, 1, 1),
+        ('student-cash-exclude', 'class-cash-exclude', 1,
+         'Exclude Request Student', 'hash', 'active', 1, 1, 1),
+        ('student-cash-exclude-peer', 'class-cash-exclude', 2,
+         'Exclude Peer Student', 'hash', 'active', 1, 1, 1);
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES
+        ('session-cash-teacher', '${teacherTokenHash}', 'teacher',
+         'teacher-cash-lifecycle', NULL, 4102444800000, 1, 1),
+        ('session-cash-archive', 'hash:session:cash:archive', 'student',
+         NULL, 'student-cash-archive', 4102444800000, 1, 1),
+        ('session-cash-archive-peer', 'hash:session:cash:archive:peer', 'student',
+         NULL, 'student-cash-archive-peer', 4102444800000, 1, 1),
+        ('session-cash-exclude', 'hash:session:cash:exclude', 'student',
+         NULL, 'student-cash-exclude', 4102444800000, 1, 1),
+        ('session-cash-exclude-peer', 'hash:session:cash:exclude:peer', 'student',
+         NULL, 'student-cash-exclude-peer', 4102444800000, 1, 1);
+    `);
+
+    const classState = () => lastResults(executeSql(persistPath, `
+      SELECT
+        classroom.status AS class_status,
+        student.status AS student_status,
+        wallet.status AS wallet_status,
+        (SELECT COUNT(*) FROM sessions
+         WHERE student_id = 'student-cash-archive') AS student_session_count,
+        (SELECT COUNT(*) FROM sessions
+         WHERE student_id = 'student-cash-archive-peer') AS peer_session_count,
+        (SELECT COUNT(*) FROM finance_cash_requests request_row
+         WHERE request_row.id = 'request-cash-archive-race'
+           AND request_row.class_id = classroom.id
+           AND request_row.requester_student_id = student.id
+           AND request_row.request_type = 'deposit'
+           AND request_row.amount = 100
+           AND request_row.revision = 0) AS request_count,
+        (SELECT COUNT(*) FROM finance_request_resolutions resolution
+         WHERE resolution.request_id = 'request-cash-archive-race')
+          AS resolution_count
+      FROM classes classroom
+      JOIN students student ON student.id = 'student-cash-archive'
+        AND student.class_id = classroom.id
+      JOIN finance_accounts wallet
+        ON wallet.class_id = classroom.id AND wallet.student_id = student.id
+       AND wallet.account_type = 'student_wallet'
+      WHERE classroom.id = 'class-cash-archive';
+    `));
+    const studentState = () => lastResults(executeSql(persistPath, `
+      SELECT
+        classroom.status AS class_status,
+        student.status AS student_status,
+        wallet.status AS wallet_status,
+        (SELECT COUNT(*) FROM sessions
+         WHERE student_id = 'student-cash-exclude') AS student_session_count,
+        (SELECT COUNT(*) FROM sessions
+         WHERE student_id = 'student-cash-exclude-peer') AS peer_session_count,
+        (SELECT COUNT(*) FROM finance_cash_requests request_row
+         WHERE request_row.id = 'request-cash-exclude-race'
+           AND request_row.class_id = classroom.id
+           AND request_row.requester_student_id = student.id
+           AND request_row.request_type = 'deposit'
+           AND request_row.amount = 100
+           AND request_row.revision = 0) AS request_count,
+        (SELECT COUNT(*) FROM finance_request_resolutions resolution
+         WHERE resolution.request_id = 'request-cash-exclude-race')
+          AS resolution_count
+      FROM classes classroom
+      JOIN students student ON student.id = 'student-cash-exclude'
+        AND student.class_id = classroom.id
+      JOIN finance_accounts wallet
+        ON wallet.class_id = classroom.id AND wallet.student_id = student.id
+       AND wallet.account_type = 'student_wallet'
+      WHERE classroom.id = 'class-cash-exclude';
+    `));
+
+    const { unstable_dev: unstableDev } = await import("wrangler");
+    worker = await unstableDev(cashLifecycleWorkerPath, {
+      config: cashLifecycleConfigPath,
+      moduleRoot: projectRoot,
+      persistTo: persistPath,
+      logLevel: "none",
+      experimental: {
+        disableDevRegistry: true,
+        disableExperimentalWarning: true,
+        watch: false,
+      },
+    });
+
+    const archiveResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-inject-pending-after-lifecycle-preflight": "class",
+        },
+        body: JSON.stringify({ status: "archived" }),
+      },
+    );
+    const archiveResult = await archiveResponse.json();
+    assert.equal(
+      archiveResponse.headers.get("x-test-injection-matched"),
+      "1",
+      `The API preflight must inspect unresolved class cash requests: ${JSON.stringify({
+        status: archiveResponse.status,
+        result: archiveResult,
+      })}`,
+    );
+    assert.equal(archiveResponse.status, 409, JSON.stringify(archiveResult));
+    assert.equal(archiveResult.code, "FINANCE_REQUEST_PENDING_CLASS");
+    assert.deepEqual(classState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 0,
+    }]);
+
+    const resolveClassResponse = await worker.fetch(
+      "http://test.local/test/resolve?scope=class",
+      { method: "POST" },
+    );
+    assert.equal(resolveClassResponse.status, 200);
+    const archiveRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "archived" }),
+      },
+    );
+    const archiveRetryBody = await archiveRetry.text();
+    assert.equal(archiveRetry.status, 200, archiveRetryBody);
+    assert.deepEqual(classState(), [{
+      class_status: "archived",
+      student_status: "active",
+      wallet_status: "closed",
+      student_session_count: 0,
+      peer_session_count: 0,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+
+    const excludeResponse = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-inject-pending-after-lifecycle-preflight": "student",
+        },
+        body: JSON.stringify({ status: "excluded" }),
+      },
+    );
+    const excludeResult = await excludeResponse.json();
+    assert.equal(
+      excludeResponse.headers.get("x-test-injection-matched"),
+      "1",
+      `The API preflight must inspect unresolved student cash requests: ${JSON.stringify({
+        status: excludeResponse.status,
+        result: excludeResult,
+      })}`,
+    );
+    assert.equal(excludeResponse.status, 409, JSON.stringify(excludeResult));
+    assert.equal(excludeResult.code, "FINANCE_REQUEST_PENDING_STUDENT");
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 0,
+    }]);
+
+    const resolveStudentResponse = await worker.fetch(
+      "http://test.local/test/resolve?scope=student",
+      { method: "POST" },
+    );
+    assert.equal(resolveStudentResponse.status, 200);
+    const excludeRetry = await worker.fetch(
+      "http://test.local/students/student-cash-exclude",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "excluded" }),
+      },
+    );
+    const excludeRetryBody = await excludeRetry.text();
+    assert.equal(excludeRetry.status, 200, excludeRetryBody);
+    assert.deepEqual(studentState(), [{
+      class_status: "active",
+      student_status: "excluded",
+      wallet_status: "frozen",
+      student_session_count: 0,
+      peer_session_count: 1,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      "PRAGMA foreign_key_check;",
+    )), []);
+  } finally {
+    await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });
   }
 });

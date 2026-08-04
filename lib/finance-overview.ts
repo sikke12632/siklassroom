@@ -121,6 +121,10 @@ export type FinanceRequestView = {
   canCancel: boolean;
   canDecide: boolean;
   decisionBlockedReason: string | null;
+  canApprove: boolean;
+  canReject: boolean;
+  approveBlockedReason: string | null;
+  rejectBlockedReason: string | null;
   transactionId: string | null;
   isCorrected: boolean;
 };
@@ -255,27 +259,50 @@ function serializeRequest(
         || (row.request_type === "withdrawal" && settings.withdrawalEnabled)
       )
     );
-  const canDecide = pending
+  const roleCanDecide = context.financeRole === "teacher"
+    || (context.financeRole === "banker" && !selfRequest);
+  const canApprove = pending
     && classIsActive
     && row.wallet_status === "active"
     && bankerPolicyAllows
+    && roleCanDecide;
+  const canReject = pending
+    && classIsActive
+    && roleCanDecide
     && (
       context.financeRole === "teacher"
-      || (context.financeRole === "banker" && !selfRequest)
+      || (row.wallet_status === "active" && bankerPolicyAllows)
     );
-  const decisionBlockedReason = canDecide
+  const approveBlockedReason = canApprove
     ? null
     : !pending
       ? "이미 처리된 신청입니다."
       : !classIsActive
         ? "보관된 학급에서는 기록만 확인할 수 있습니다."
+        : context.financeRole === "banker" && selfRequest
+          ? "내 신청은 다른 은행원이나 선생님이 처리해야 합니다."
         : row.wallet_status !== "active"
-          ? "현재 사용할 수 없는 학생 지갑입니다."
+          ? "현재 사용할 수 없는 학생 지갑이라 승인할 수 없습니다. 거절하면 대기 신청을 정리할 수 있습니다."
           : context.financeRole === "banker" && !bankerPolicyAllows
             ? "현재 학급의 은행 운영 설정에 따라 처리가 잠시 멈춰 있습니다."
-          : context.financeRole === "banker" && selfRequest
-            ? "내 신청은 다른 은행원이나 선생님이 처리해야 합니다."
             : "이 신청을 처리할 권한이 없습니다.";
+  const rejectBlockedReason = canReject
+    ? null
+    : !pending
+      ? "이미 처리된 신청입니다."
+      : !classIsActive
+        ? "보관된 학급에서는 기록만 확인할 수 있습니다."
+        : context.financeRole === "banker" && selfRequest
+          ? "내 신청은 다른 은행원이나 선생님이 처리해야 합니다."
+          : context.financeRole === "banker" && row.wallet_status !== "active"
+            ? "현재 사용할 수 없는 학생 지갑입니다. 선생님이 신청을 정리해야 합니다."
+            : context.financeRole === "banker" && !bankerPolicyAllows
+              ? "현재 학급의 은행 운영 설정에 따라 처리가 잠시 멈춰 있습니다."
+              : "이 신청을 처리할 권한이 없습니다.";
+  const canDecide = canApprove || canReject;
+  const decisionBlockedReason = canDecide
+    ? null
+    : rejectBlockedReason ?? approveBlockedReason;
   return {
     id: row.id,
     requestType: row.request_type === "withdrawal" ? "withdrawal" : "deposit",
@@ -299,6 +326,10 @@ function serializeRequest(
     canCancel: pending && classIsActive && selfRequest && row.wallet_status === "active",
     canDecide,
     decisionBlockedReason,
+    canApprove,
+    canReject,
+    approveBlockedReason,
+    rejectBlockedReason,
     transactionId: row.posted_transaction_id,
     isCorrected: Boolean(row.is_corrected),
   };
