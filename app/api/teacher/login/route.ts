@@ -4,7 +4,7 @@ import { verifyPasswordOrDummy } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
-import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
+import { isOpenTeacherRegistration } from "@/lib/open-registration";
 import { teacherAccountIssue } from "@/lib/teacher-access-rules";
 
 export async function POST(request: Request) {
@@ -40,8 +40,11 @@ export async function POST(request: Request) {
     if (!teacher || accountIssue || !passwordMatches) {
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
-    await activateOpenTeacherRegistration(teacher.id);
-    if (isOpenTeacherRegistration() && teacher.teacher_access_status !== "revoked") {
+    const openRegistration = isOpenTeacherRegistration();
+    const activateOpenRegistration = openRegistration && (
+      !teacher.email_verified_at || teacher.teacher_access_status !== "invite_verified"
+    );
+    if (openRegistration && teacher.teacher_access_status !== "revoked") {
       const now = Date.now();
       teacher.email_verified_at ??= now;
       teacher.teacher_access_status = "invite_verified";
@@ -53,6 +56,7 @@ export async function POST(request: Request) {
       credentialRevision: teacher.credential_revision,
       request,
       clearThrottleKeys: [key],
+      activateOpenRegistration,
     });
     return json({
       teacher: {
@@ -63,7 +67,7 @@ export async function POST(request: Request) {
         teacher_access_verified_at: teacher.teacher_access_verified_at,
         school_id: teacher.school_id,
         manual_school_request_id: teacher.manual_school_request_id,
-        registration_mode: isOpenTeacherRegistration() ? "open" : "verified",
+        registration_mode: openRegistration ? "open" : "verified",
       },
     }, 200, { "Set-Cookie": session.cookie });
   } catch (error) {

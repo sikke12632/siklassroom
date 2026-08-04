@@ -82,20 +82,49 @@ export async function createGuardedTeacherSession(input: {
   credentialRevision: number;
   request: Request;
   clearThrottleKeys?: string[];
+  activateOpenRegistration?: boolean;
 }) {
   await ensureSchema();
   const session = await prepareSession({ actorType: "teacher", teacherId: input.teacherId }, input.request);
   const guardId = crypto.randomUUID();
   const now = Date.now();
+  const activationCondition = input.activateOpenRegistration
+    ? " AND (email_verified_at IS NULL OR teacher_access_status != 'invite_verified')"
+    : "";
   const statements: D1PreparedStatement[] = [
     database().prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        SELECT CASE WHEN EXISTS (
          SELECT 1 FROM teachers
          WHERE id = ? AND status = 'active' AND teacher_access_status != 'revoked'
-           AND password_hash = ? AND credential_revision = ?
+           AND password_hash = ? AND credential_revision = ?${activationCondition}
        ) THEN ? ELSE NULL END, 'teacher_password_login', ?`,
     ).bind(input.teacherId, input.passwordHash, input.credentialRevision, guardId, now),
+  ];
+  if (input.activateOpenRegistration) {
+    statements.push(
+      database().prepare(`DELETE FROM sessions WHERE teacher_id = ?`).bind(input.teacherId),
+      database().prepare(
+        `UPDATE teachers
+         SET email_verified_at = COALESCE(email_verified_at, ?),
+             teacher_access_status = 'invite_verified',
+             teacher_access_verified_at = COALESCE(teacher_access_verified_at, ?),
+             credential_revision = credential_revision + 1,
+             updated_at = ?
+         WHERE id = ?`,
+      ).bind(now, now, now, input.teacherId),
+      database().prepare(
+        `INSERT INTO audit_logs (id, teacher_id, action, detail, created_at)
+         VALUES (?, ?, 'teacher_open_registration_activated', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        JSON.stringify({ mode: "temporary_open_registration" }),
+        now,
+      ),
+    );
+  }
+  statements.push(
     database().prepare(
       `INSERT INTO sessions
        (id, token_hash, actor_type, teacher_id, student_id, expires_at, created_at, last_seen_at)
@@ -104,7 +133,7 @@ export async function createGuardedTeacherSession(input: {
       session.id, session.tokenHash, input.teacherId,
       session.expiresAt, session.createdAt, session.createdAt,
     ),
-  ];
+  );
   for (const key of new Set(input.clearThrottleKeys ?? [])) {
     statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(key));
   }
