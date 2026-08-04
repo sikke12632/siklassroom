@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
@@ -8,7 +8,7 @@ import { TeacherEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { api, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
+import { api, ClientApiError, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
 import { PROVINCES, SCHOOL_LEVELS } from "@/lib/schools";
 
 type TeacherActor = {
@@ -330,7 +330,7 @@ export function TeacherPortal() {
                       }}>{busy ? "만드는 중…" : "미등록 QR 인쇄"}</button>
                     </div>
                   </div>
-                  <StudentTable students={students} busy={busy} onBusy={setBusy} onError={setError} onMessage={setMessage} onCards={setCards} onReload={() => { loadClass(classRoom.id); loadClasses(classRoom.id); }} />
+                  <StudentTable classId={classRoom.id} students={students} busy={busy} onBusy={setBusy} onError={setError} onMessage={setMessage} onCards={setCards} onReload={() => { loadClass(classRoom.id); loadClasses(classRoom.id); }} />
                 </section>
                 </>
               )}
@@ -829,18 +829,35 @@ function RosterEditor({ classId, onSaved, onCancel }: { classId: string; onSaved
   );
 }
 
-function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onReload }: {
+function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onCards, onReload }: {
+  classId: string;
   students: Student[]; busy: boolean; onBusy: (value: boolean) => void; onError: (value: string) => void;
   onMessage: (value: string) => void; onCards: (cards: RegistrationCard[]) => void; onReload: () => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNumber, setEditNumber] = useState("");
   const [editName, setEditName] = useState("");
+  const [financeBlockedStudentId, setFinanceBlockedStudentId] = useState<string | null>(null);
 
   async function updateStudent(student: Student, input: Record<string, string | number>) {
     onBusy(true); onError("");
-    try { await patchJson(`/api/students/${student.id}`, input); onMessage("학생 정보를 고쳤어요."); setEditingId(null); onReload(); }
-    catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+    try {
+      await patchJson(`/api/students/${student.id}`, input);
+      onMessage("학생 정보를 고쳤어요.");
+      setEditingId(null);
+      setFinanceBlockedStudentId((current) => current === student.id ? null : current);
+      onReload();
+    } catch (reason) {
+      if (
+        reason instanceof ClientApiError
+        && reason.code === "FINANCE_DEPOSIT_ACTIVE_STUDENT"
+      ) {
+        onError("");
+        setFinanceBlockedStudentId(student.id);
+      } else {
+        onError((reason as Error).message);
+      }
+    } finally { onBusy(false); }
   }
   async function issueCard(student: Student) {
     const isReplacement = student.status === "active" || student.status === "reset_required";
@@ -869,7 +886,8 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
     <div className="student-table-wrap">
       <table className="student-table"><thead><tr><th>번호</th><th>공식 이름</th><th>계정 상태</th><th>관리</th></tr></thead><tbody>
         {students.map((student) => (
-          <tr key={student.id} className={student.status === "excluded" ? "muted-row" : ""}>
+          <Fragment key={student.id}>
+          <tr className={student.status === "excluded" ? "muted-row" : ""}>
             <td>{editingId === student.id ? <input className="table-input number" inputMode="numeric" value={editNumber} onChange={(event) => setEditNumber(event.target.value.replace(/\D/g, ""))} /> : <b>{student.student_number}</b>}</td>
             <td>{editingId === student.id ? <input className="table-input" value={editName} onChange={(event) => setEditName(event.target.value)} /> : <strong>{student.official_name}</strong>}</td>
             <td><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span></td>
@@ -883,6 +901,28 @@ function StudentTable({ students, busy, onBusy, onError, onMessage, onCards, onR
               </>}
             </div></td>
           </tr>
+          {financeBlockedStudentId === student.id && (
+            <tr className="student-finance-guidance-row">
+              <td colSpan={4}>
+                <div className="finance-action-notice warning" role="alert">
+                  <Landmark aria-hidden="true" />
+                  <div className="finance-action-notice-body">
+                    <p><b>{student.official_name} 학생을 아직 제외하지 않았어요.</b> 진행 중인 예금을 약정 금액대로 먼저 정산해 주세요.</p>
+                    <div className="button-row">
+                      <a
+                        className="button button-primary"
+                        href={`/finance?classId=${encodeURIComponent(classId)}&depositStudentId=${encodeURIComponent(student.id)}&depositOrigin=student_exclusion#finance-deposit-contracts`}
+                      >
+                        예금 확인·정산
+                      </a>
+                      <button className="button button-light" type="button" onClick={() => setFinanceBlockedStudentId(null)}>취소</button>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          )}
+          </Fragment>
         ))}
       </tbody></table>
       {busy && <div className="table-busy">변경 내용을 안전하게 저장하고 있어요…</div>}

@@ -63,6 +63,30 @@ export type FinanceDepositQuote = {
   earlyPayout: number;
 };
 
+export type FinanceDepositSettlementPreview = {
+  settlementType: "early_termination" | "maturity";
+  principal: number;
+  interest: number;
+  payout: number;
+};
+
+/**
+ * Keeps retries for settlements written before the emergency-settlement hash
+ * upgrade working without letting teacher interventions claim a legacy row.
+ */
+export function financeDepositSettlementReplayMatches(input: {
+  actorType: "system" | "teacher";
+  storedPayloadHash: string;
+  currentPayloadHash: string;
+  legacyPayloadHash: string;
+}) {
+  return input.storedPayloadHash === input.currentPayloadHash
+    || (
+      input.actorType === "system"
+      && input.storedPayloadHash === input.legacyPayloadHash
+    );
+}
+
 function normalizedText(value: unknown) {
   return typeof value === "string"
     ? value.trim().replace(/\s+/gu, " ")
@@ -193,6 +217,65 @@ export function calculateFinanceDepositQuote(input: {
     maturityPayout,
     earlyPayout,
   };
+}
+
+/** Chooses only the immutable payout stored on the contract at the server time. */
+export function financeDepositSettlementPreview(input: {
+  now: unknown;
+  maturesAt: unknown;
+  principal: unknown;
+  maturityInterest: unknown;
+  earlyInterest: unknown;
+  maturityPayout: unknown;
+  earlyPayout: unknown;
+}): FinanceDepositSettlementPreview {
+  if (
+    !Number.isSafeInteger(input.now)
+    || Number(input.now) < 0
+    || !Number.isSafeInteger(input.maturesAt)
+    || Number(input.maturesAt) < 0
+  ) {
+    throw new FinanceDepositRuleError(
+      "예금 정산 시각이 올바르지 않습니다.",
+      "FINANCE_DEPOSIT_INVALID_TIME",
+    );
+  }
+  const principal = amount(input.principal, "예금 원금");
+  const maturityInterest = Number(input.maturityInterest);
+  const earlyInterest = Number(input.earlyInterest);
+  const maturityPayout = Number(input.maturityPayout);
+  const earlyPayout = Number(input.earlyPayout);
+  if (
+    !Number.isSafeInteger(maturityInterest)
+    || maturityInterest < 0
+    || !Number.isSafeInteger(earlyInterest)
+    || earlyInterest < 0
+    || earlyInterest > maturityInterest
+    || !Number.isSafeInteger(maturityPayout)
+    || maturityPayout !== principal + maturityInterest
+    || !Number.isSafeInteger(earlyPayout)
+    || earlyPayout !== principal + earlyInterest
+    || maturityPayout > FINANCE_MAX_ABSOLUTE_AMOUNT
+  ) {
+    throw new FinanceDepositRuleError(
+      "예금 계약의 지급 금액이 올바르지 않습니다.",
+      "FINANCE_DEPOSIT_INVALID_AMOUNT",
+    );
+  }
+  const matured = Number(input.now) >= Number(input.maturesAt);
+  return matured
+    ? {
+      settlementType: "maturity",
+      principal,
+      interest: maturityInterest,
+      payout: maturityPayout,
+    }
+    : {
+      settlementType: "early_termination",
+      principal,
+      interest: earlyInterest,
+      payout: earlyPayout,
+    };
 }
 
 export function normalizeFinanceDepositProduct(

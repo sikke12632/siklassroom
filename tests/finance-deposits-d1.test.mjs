@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +18,13 @@ const wranglerPath = path.join(
   "bin",
   "wrangler.js",
 );
+const settlementRetryConfigPath = path.join(
+  projectRoot,
+  "tests",
+  "fixtures",
+  "wrangler.deposit-settlement-retry.jsonc",
+);
+const settlementRetryWorkerPath = "tests/fixtures/deposit-settlement-retry-worker.ts";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
   const result = spawnSync(process.execPath, [wranglerPath, ...args], {
@@ -60,6 +68,15 @@ function lastResults(execution) {
   const last = execution.data.at(-1);
   assert.equal(last?.success, true);
   return last.results;
+}
+
+function legacySettlementHash(payload) {
+  const stablePayload = Object.fromEntries(
+    Object.entries(payload).sort(([left], [right]) => left.localeCompare(right)),
+  );
+  return createHash("sha256")
+    .update(JSON.stringify(stablePayload))
+    .digest("base64url");
 }
 
 test("deposit products and contracts keep terms, timing, and ledger data safe in D1", async () => {
@@ -777,6 +794,472 @@ test("deposit products and contracts keep terms, timing, and ledger data safe in
       "PRAGMA foreign_key_check;",
     )), []);
   } finally {
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("teacher emergency deposit settlement requires owned access and an immutable reason", async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-finance-deposit-emergency-d1-"),
+  );
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+    executeSql(persistPath, `
+      INSERT INTO teachers (id, email, password_hash, status, created_at, updated_at)
+      VALUES
+        ('teacher-emergency', 'teacher-emergency@test.local', 'hash', 'active', 1, 1),
+        ('teacher-other', 'teacher-other@test.local', 'hash', 'active', 1, 1);
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-emergency', 'teacher-emergency', 'Test School', 'test school',
+        2099, 6, 8, 'active', 1, 1
+      );
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status, created_at, updated_at
+      ) VALUES
+        ('student-emergency-valid', 'class-emergency', 1, 'Valid Student', 'active', 1, 1),
+        ('student-emergency-no-reason', 'class-emergency', 2, 'No Reason Student', 'active', 1, 1);
+      INSERT INTO finance_deposit_products (
+        id, class_id, name, description, term_weeks,
+        maturity_interest_bps, early_interest_bps, min_amount, max_amount,
+        is_open, revision, created_by_teacher_id, updated_by_teacher_id,
+        created_at, updated_at
+      ) VALUES (
+        'product-emergency', 'class-emergency', 'Emergency Savings', '', 1,
+        1000, 5000, 1000, 5000, 1, 0,
+        'teacher-emergency', 'teacher-emergency', 1000, 1000
+      );
+    `);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES
+        ('tx-emergency-fund-valid', 'class-emergency', 'pending', 'manual_credit',
+         'Fund valid wallet', 'emergency:fund:valid', 'hash:emergency:fund:valid',
+         'teacher', 'teacher-emergency', 'Teacher', 10),
+        ('tx-emergency-fund-no-reason', 'class-emergency', 'pending', 'manual_credit',
+         'Fund no reason wallet', 'emergency:fund:no-reason', 'hash:emergency:fund:no-reason',
+         'teacher', 'teacher-emergency', 'Teacher', 11);
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-fund-valid-wallet', 'tx-emergency-fund-valid', 'class-emergency',
+         'finance:student:student-emergency-valid:wallet', 10000, 10000, 1, 10),
+        ('entry-emergency-fund-valid-issuance', 'tx-emergency-fund-valid', 'class-emergency',
+         'finance:class:class-emergency:issuance', -10000, -10000, 1, 10);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 10
+      WHERE id = 'tx-emergency-fund-valid';
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-fund-no-reason-wallet', 'tx-emergency-fund-no-reason', 'class-emergency',
+         'finance:student:student-emergency-no-reason:wallet', 10000, 10000, 1, 11),
+        ('entry-emergency-fund-no-reason-issuance', 'tx-emergency-fund-no-reason', 'class-emergency',
+         'finance:class:class-emergency:issuance', -10000, -20000, 2, 11);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 11
+      WHERE id = 'tx-emergency-fund-no-reason';
+    `);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_label, created_at
+      ) VALUES
+        ('tx-emergency-open-valid', 'class-emergency', 'pending', 'deposit_open',
+         'Open valid emergency contract', 'emergency:open:valid', 'hash:emergency:open:valid',
+         'deposit_contract', 'contract-emergency-valid', 'system', 'Deposit automation', 2000),
+        ('tx-emergency-open-no-reason', 'class-emergency', 'pending', 'deposit_open',
+         'Open no-reason contract', 'emergency:open:no-reason', 'hash:emergency:open:no-reason',
+         'deposit_contract', 'contract-emergency-no-reason', 'system', 'Deposit automation', 2001);
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-open-valid-wallet', 'tx-emergency-open-valid', 'class-emergency',
+         'finance:student:student-emergency-valid:wallet', -2000, 8000, 2, 2000),
+        ('entry-emergency-open-valid-issuance', 'tx-emergency-open-valid', 'class-emergency',
+         'finance:class:class-emergency:issuance', 2000, -18000, 3, 2000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 2000
+      WHERE id = 'tx-emergency-open-valid';
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-open-no-reason-wallet', 'tx-emergency-open-no-reason', 'class-emergency',
+         'finance:student:student-emergency-no-reason:wallet', -2000, 8000, 2, 2001),
+        ('entry-emergency-open-no-reason-issuance', 'tx-emergency-open-no-reason', 'class-emergency',
+         'finance:class:class-emergency:issuance', 2000, -16000, 4, 2001);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 2001
+      WHERE id = 'tx-emergency-open-no-reason';
+      INSERT INTO finance_deposit_contracts (
+        id, class_id, product_id, product_revision, student_id,
+        wallet_account_id, principal, product_name_snapshot,
+        term_weeks_snapshot, maturity_interest_bps_snapshot,
+        early_interest_bps_snapshot, maturity_interest, early_interest,
+        maturity_payout, early_payout, opened_at, matures_at,
+        idempotency_key, payload_hash, posted_transaction_id,
+        transaction_payload_hash, created_at
+      ) VALUES
+        ('contract-emergency-valid', 'class-emergency', 'product-emergency', 0,
+         'student-emergency-valid', 'finance:student:student-emergency-valid:wallet',
+         2000, 'Emergency Savings', 1, 1000, 5000, 200, 100, 2200, 2100,
+         2000, 604802000, 'contract:emergency:valid', 'hash:contract:emergency:valid',
+         'tx-emergency-open-valid', 'hash:emergency:open:valid', 2000),
+        ('contract-emergency-no-reason', 'class-emergency', 'product-emergency', 0,
+         'student-emergency-no-reason', 'finance:student:student-emergency-no-reason:wallet',
+         2000, 'Emergency Savings', 1, 1000, 5000, 200, 100, 2200, 2100,
+         2001, 604802001, 'contract:emergency:no-reason', 'hash:contract:emergency:no-reason',
+         'tx-emergency-open-no-reason', 'hash:emergency:open:no-reason', 2001);
+    `);
+
+    const otherTeacher = executeSql(
+      persistPath,
+      `INSERT INTO finance_transactions (
+         id, class_id, status, transaction_type, description,
+         idempotency_key, payload_hash, source_type, source_id,
+         actor_type, actor_teacher_id, actor_label, metadata_json, created_at
+       ) VALUES (
+         'tx-emergency-other-teacher', 'class-emergency', 'pending',
+         'deposit_early_termination', 'Unauthorized emergency settlement',
+         'emergency:settle:other-teacher', 'hash:emergency:settle:other-teacher',
+         'deposit_settlement', 'contract-emergency-valid',
+         'teacher', 'teacher-other', 'Other Teacher',
+         '{"isEmergency":true,"interventionReason":"Wrong teacher"}', 2999
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(otherTeacher.output, /FINANCE_CLASS_ACCESS_DENIED/);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_teacher_id, actor_label, metadata_json, created_at
+      ) VALUES (
+        'tx-emergency-settle-valid', 'class-emergency', 'pending',
+        'deposit_early_termination', 'Emergency Savings teacher settlement',
+        'deposit-contract:contract-emergency-valid:settlement',
+        'hash:tx:emergency:settle:valid', 'deposit_settlement',
+        'contract-emergency-valid', 'teacher', 'teacher-emergency',
+        'Homeroom emergency settlement',
+        '{"contractId":"contract-emergency-valid","expectedSettlementRevision":0,"interest":100,"interventionReason":"Transfer cleanup before exclusion","isEmergency":true,"origin":"student_exclusion","payout":2100,"principal":2000,"settlementPolicy":"contract_terms_at_settlement","settlementType":"early_termination","studentId":"student-emergency-valid"}',
+        3000
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-settle-valid-wallet', 'tx-emergency-settle-valid', 'class-emergency',
+         'finance:student:student-emergency-valid:wallet', 2100, 10100, 3, 3000),
+        ('entry-emergency-settle-valid-issuance', 'tx-emergency-settle-valid', 'class-emergency',
+         'finance:class:class-emergency:issuance', -2100, -18100, 5, 3000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 3000
+      WHERE id = 'tx-emergency-settle-valid';
+      INSERT INTO finance_deposit_settlements (
+        id, class_id, contract_id, student_id, settlement_type,
+        principal, interest, payout, idempotency_key, payload_hash,
+        posted_transaction_id, transaction_payload_hash, settled_at, created_at
+      ) VALUES (
+        'settlement-emergency-valid', 'class-emergency', 'contract-emergency-valid',
+        'student-emergency-valid', 'early_termination', 2000, 100, 2100,
+        'settlement:emergency:valid', 'hash:settlement:emergency:valid',
+        'tx-emergency-settle-valid', 'hash:tx:emergency:settle:valid', 3000, 3000
+      );
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT settlement.settlement_type, settlement.payout,
+              transaction_row.actor_type, transaction_row.actor_teacher_id,
+              json_extract(transaction_row.metadata_json, '$.interventionReason') AS reason,
+              account.balance, account.revision
+       FROM finance_deposit_settlements settlement
+       JOIN finance_transactions transaction_row
+         ON transaction_row.id = settlement.posted_transaction_id
+       JOIN finance_accounts account
+         ON account.id = 'finance:student:student-emergency-valid:wallet'
+       WHERE settlement.contract_id = 'contract-emergency-valid';`,
+    )), [{
+      settlement_type: "early_termination",
+      payout: 2100,
+      actor_type: "teacher",
+      actor_teacher_id: "teacher-emergency",
+      reason: "Transfer cleanup before exclusion",
+      balance: 10100,
+      revision: 3,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `UPDATE students SET status = 'excluded', updated_at = 3001
+       WHERE id = 'student-emergency-valid';
+       SELECT status FROM students WHERE id = 'student-emergency-valid';`,
+    )), [{ status: "excluded" }]);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_teacher_id, actor_label, metadata_json, created_at
+      ) VALUES (
+        'tx-emergency-settle-no-reason', 'class-emergency', 'pending',
+        'deposit_early_termination', 'Missing reason settlement',
+        'deposit-contract:contract-emergency-no-reason:settlement',
+        'hash:tx:emergency:settle:no-reason', 'deposit_settlement',
+        'contract-emergency-no-reason', 'teacher', 'teacher-emergency',
+        'Homeroom emergency settlement',
+        '{"contractId":"contract-emergency-no-reason","expectedSettlementRevision":0,"interest":100,"interventionReason":" ","isEmergency":true,"origin":"finance_center","payout":2100,"principal":2000,"settlementPolicy":"contract_terms_at_settlement","settlementType":"early_termination","studentId":"student-emergency-no-reason"}',
+        3002
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-emergency-settle-no-reason-wallet', 'tx-emergency-settle-no-reason', 'class-emergency',
+         'finance:student:student-emergency-no-reason:wallet', 2100, 10100, 3, 3002),
+        ('entry-emergency-settle-no-reason-issuance', 'tx-emergency-settle-no-reason', 'class-emergency',
+         'finance:class:class-emergency:issuance', -2100, -20200, 6, 3002);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 3002
+      WHERE id = 'tx-emergency-settle-no-reason';
+    `);
+    const missingReason = executeSql(
+      persistPath,
+      `INSERT INTO finance_deposit_settlements (
+         id, class_id, contract_id, student_id, settlement_type,
+         principal, interest, payout, idempotency_key, payload_hash,
+         posted_transaction_id, transaction_payload_hash, settled_at, created_at
+       ) VALUES (
+         'settlement-emergency-no-reason', 'class-emergency',
+         'contract-emergency-no-reason', 'student-emergency-no-reason',
+         'early_termination', 2000, 100, 2100,
+         'settlement:emergency:no-reason', 'hash:settlement:emergency:no-reason',
+         'tx-emergency-settle-no-reason', 'hash:tx:emergency:settle:no-reason',
+         3002, 3002
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(missingReason.output, /FINANCE_DEPOSIT_LEDGER_MISMATCH/);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_settlements
+       WHERE contract_id = 'contract-emergency-no-reason';`,
+    )), [{ count: 0 }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      "PRAGMA foreign_key_check;",
+    )), []);
+  } finally {
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("pre-0017 settlement retries deduplicate without another ledger posting", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-finance-deposit-legacy-retry-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    const legacyPayloadHash = legacySettlementHash({
+      classId: "class-legacy",
+      contractId: "contract-legacy",
+      payout: 2_100,
+      settlementType: "early_termination",
+      studentId: "student-legacy",
+    });
+    executeSql(persistPath, `
+      INSERT INTO teachers (id, email, password_hash, status, created_at, updated_at)
+      VALUES ('teacher-legacy', 'teacher-legacy@test.local', 'hash', 'active', 1, 1);
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-legacy', 'teacher-legacy', 'Test School', 'test school',
+        2099, 6, 9, 'active', 1, 1
+      );
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status, created_at, updated_at
+      ) VALUES ('student-legacy', 'class-legacy', 1, 'Legacy Student', 'active', 1, 1);
+      INSERT INTO finance_deposit_products (
+        id, class_id, name, description, term_weeks,
+        maturity_interest_bps, early_interest_bps, min_amount, max_amount,
+        is_open, revision, created_by_teacher_id, updated_by_teacher_id,
+        created_at, updated_at
+      ) VALUES (
+        'product-legacy', 'class-legacy', 'Legacy Savings', '', 1,
+        1000, 5000, 1000, 5000, 1, 0,
+        'teacher-legacy', 'teacher-legacy', 1000, 1000
+      );
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-legacy-fund', 'class-legacy', 'pending', 'manual_credit',
+        'Fund legacy wallet', 'legacy:fund:wallet', 'hash:legacy:fund',
+        'teacher', 'teacher-legacy', 'Teacher', 10
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-legacy-fund-wallet', 'tx-legacy-fund', 'class-legacy',
+         'finance:student:student-legacy:wallet', 10000, 10000, 1, 10),
+        ('entry-legacy-fund-issuance', 'tx-legacy-fund', 'class-legacy',
+         'finance:class:class-legacy:issuance', -10000, -10000, 1, 10);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 10
+      WHERE id = 'tx-legacy-fund';
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_label, created_at
+      ) VALUES (
+        'tx-legacy-open', 'class-legacy', 'pending', 'deposit_open',
+        'Open legacy deposit', 'legacy:open:contract', 'hash:legacy:open',
+        'deposit_contract', 'contract-legacy', 'system', 'Deposit automation', 2000
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-legacy-open-wallet', 'tx-legacy-open', 'class-legacy',
+         'finance:student:student-legacy:wallet', -2000, 8000, 2, 2000),
+        ('entry-legacy-open-issuance', 'tx-legacy-open', 'class-legacy',
+         'finance:class:class-legacy:issuance', 2000, -8000, 2, 2000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 2000
+      WHERE id = 'tx-legacy-open';
+      INSERT INTO finance_deposit_contracts (
+        id, class_id, product_id, product_revision, student_id,
+        wallet_account_id, principal, product_name_snapshot,
+        term_weeks_snapshot, maturity_interest_bps_snapshot,
+        early_interest_bps_snapshot, maturity_interest, early_interest,
+        maturity_payout, early_payout, opened_at, matures_at,
+        idempotency_key, payload_hash, posted_transaction_id,
+        transaction_payload_hash, created_at
+      ) VALUES (
+        'contract-legacy', 'class-legacy', 'product-legacy', 0,
+        'student-legacy', 'finance:student:student-legacy:wallet',
+        2000, 'Legacy Savings', 1, 1000, 5000, 200, 100, 2200, 2100,
+        2000, 604802000, 'legacy:contract:open', 'hash:legacy:contract',
+        'tx-legacy-open', 'hash:legacy:open', 2000
+      );
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_label, created_at
+      ) VALUES (
+        'tx-legacy-settle', 'class-legacy', 'pending',
+        'deposit_early_termination', 'Settle legacy deposit',
+        'deposit-contract:contract-legacy:settlement', 'hash:legacy:settle-transaction',
+        'deposit_settlement', 'contract-legacy', 'system', 'Deposit automation', 3000
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-legacy-settle-wallet', 'tx-legacy-settle', 'class-legacy',
+         'finance:student:student-legacy:wallet', 2100, 10100, 3, 3000),
+        ('entry-legacy-settle-issuance', 'tx-legacy-settle', 'class-legacy',
+         'finance:class:class-legacy:issuance', -2100, -10100, 3, 3000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 3000
+      WHERE id = 'tx-legacy-settle';
+      INSERT INTO finance_deposit_settlements (
+        id, class_id, contract_id, student_id, settlement_type,
+        principal, interest, payout, idempotency_key, payload_hash,
+        posted_transaction_id, transaction_payload_hash, settled_at, created_at
+      ) VALUES (
+        'settlement-legacy', 'class-legacy', 'contract-legacy',
+        'student-legacy', 'early_termination', 2000, 100, 2100,
+        'settlement:legacy:original', '${legacyPayloadHash}',
+        'tx-legacy-settle', 'hash:legacy:settle-transaction', 3000, 3000
+      );
+    `);
+
+    const before = lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_transactions WHERE class_id = 'class-legacy') AS transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries WHERE class_id = 'class-legacy') AS entry_count,
+         (SELECT COUNT(*) FROM finance_deposit_settlements WHERE class_id = 'class-legacy') AS settlement_count,
+         (SELECT balance FROM finance_accounts WHERE id = 'finance:student:student-legacy:wallet') AS wallet_balance,
+         (SELECT revision FROM finance_accounts WHERE id = 'finance:student:student-legacy:wallet') AS wallet_revision,
+         (SELECT balance FROM finance_accounts WHERE id = 'finance:class:class-legacy:issuance') AS issuance_balance,
+         (SELECT revision FROM finance_accounts WHERE id = 'finance:class:class-legacy:issuance') AS issuance_revision;`,
+    ));
+
+    const { unstable_dev: unstableDev } = await import("wrangler");
+    worker = await unstableDev(settlementRetryWorkerPath, {
+      config: settlementRetryConfigPath,
+      moduleRoot: projectRoot,
+      persistTo: persistPath,
+      logLevel: "none",
+      experimental: {
+        disableDevRegistry: true,
+        disableExperimentalWarning: true,
+        watch: false,
+      },
+    });
+    const systemResponse = await worker.fetch("http://test.local/retry", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actorType: "system" }),
+    });
+    assert.equal(systemResponse.status, 200);
+    const systemBody = await systemResponse.json();
+    assert.equal(systemBody.deduplicated, true);
+    assert.equal(systemBody.settlement.id, "settlement-legacy");
+
+    const teacherResponse = await worker.fetch("http://test.local/retry", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actorType: "teacher" }),
+    });
+    assert.equal(teacherResponse.status, 409);
+    assert.equal(
+      (await teacherResponse.json()).code,
+      "FINANCE_DEPOSIT_IDEMPOTENCY_CONFLICT",
+    );
+
+    const after = lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_transactions WHERE class_id = 'class-legacy') AS transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries WHERE class_id = 'class-legacy') AS entry_count,
+         (SELECT COUNT(*) FROM finance_deposit_settlements WHERE class_id = 'class-legacy') AS settlement_count,
+         (SELECT balance FROM finance_accounts WHERE id = 'finance:student:student-legacy:wallet') AS wallet_balance,
+         (SELECT revision FROM finance_accounts WHERE id = 'finance:student:student-legacy:wallet') AS wallet_revision,
+         (SELECT balance FROM finance_accounts WHERE id = 'finance:class:class-legacy:issuance') AS issuance_balance,
+         (SELECT revision FROM finance_accounts WHERE id = 'finance:class:class-legacy:issuance') AS issuance_revision;`,
+    ));
+    assert.deepEqual(after, before);
+  } finally {
+    await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });
   }
 });

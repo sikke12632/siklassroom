@@ -120,6 +120,13 @@
       "when": 1785814336185,
       "tag": "0016_reserve_withdrawals",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1785817270883,
+      "tag": "0017_teacher_deposit_emergency",
+      "breakpoints": true
     }
   ]
 }

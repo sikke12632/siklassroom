@@ -1600,6 +1600,7 @@ export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TRIGGER IF NOT EXISTS finance_deposit_contracts_delete_guard
     BEFORE DELETE ON finance_deposit_contracts
     BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_CONTRACT_IMMUTABLE'); END`,
+  `DROP TRIGGER IF EXISTS finance_deposit_settlements_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_deposit_settlements_insert_guard
     BEFORE INSERT ON finance_deposit_settlements
     BEGIN
@@ -1634,7 +1635,38 @@ export const FINANCE_SCHEMA_STATEMENTS = [
             ELSE 'deposit_early_termination' END
           AND transaction_row.source_type = 'deposit_settlement'
           AND transaction_row.source_id = NEW.contract_id
-          AND transaction_row.actor_type = 'system'
+          AND (
+            transaction_row.actor_type = 'system'
+            OR (
+              transaction_row.actor_type = 'teacher'
+              AND transaction_row.actor_teacher_id IS NOT NULL
+              AND transaction_row.actor_student_id IS NULL
+              AND transaction_row.actor_job_period_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM classes classroom
+                WHERE classroom.id = NEW.class_id
+                  AND classroom.teacher_id = transaction_row.actor_teacher_id
+                  AND classroom.status = 'active'
+              )
+              AND json_valid(transaction_row.metadata_json) = 1
+              AND json_extract(transaction_row.metadata_json, '$.isEmergency') = 1
+              AND json_extract(transaction_row.metadata_json, '$.contractId') = NEW.contract_id
+              AND json_extract(transaction_row.metadata_json, '$.studentId') = NEW.student_id
+              AND json_extract(transaction_row.metadata_json, '$.settlementType') = NEW.settlement_type
+              AND CAST(json_extract(transaction_row.metadata_json, '$.principal') AS INTEGER) = NEW.principal
+              AND CAST(json_extract(transaction_row.metadata_json, '$.interest') AS INTEGER) = NEW.interest
+              AND CAST(json_extract(transaction_row.metadata_json, '$.payout') AS INTEGER) = NEW.payout
+              AND CAST(json_extract(transaction_row.metadata_json, '$.expectedSettlementRevision') AS INTEGER) = 0
+              AND json_extract(transaction_row.metadata_json, '$.settlementPolicy') = 'contract_terms_at_settlement'
+              AND json_extract(transaction_row.metadata_json, '$.origin') IN (
+                'finance_center', 'student_exclusion', 'class_archive'
+              )
+              AND json_type(transaction_row.metadata_json, '$.interventionReason') = 'text'
+              AND LENGTH(TRIM(CAST(json_extract(
+                transaction_row.metadata_json, '$.interventionReason'
+              ) AS TEXT))) BETWEEN 2 AND 300
+            )
+          )
           AND transaction_row.payload_hash = NEW.transaction_payload_hash
           AND (SELECT COUNT(*) FROM finance_ledger_entries entry
                WHERE entry.transaction_id = transaction_row.id) = 2

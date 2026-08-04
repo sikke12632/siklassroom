@@ -6,6 +6,8 @@ import {
   FinanceDepositRuleError,
   calculateFinanceDepositQuote,
   financeDepositMaturityAt,
+  financeDepositSettlementReplayMatches,
+  financeDepositSettlementPreview,
   normalizeFinanceDepositPrincipal,
   normalizeFinanceDepositProduct,
 } from "../lib/finance-deposit-rules";
@@ -172,6 +174,43 @@ test("만기는 시간대나 일광절약시간과 관계없이 정확한 주 �
   );
 });
 
+test("비상 정산은 만기 경계 전후에 계약에 약속된 금액만 선택한다", () => {
+  const contract = {
+    maturesAt: 5_000,
+    principal: 2_000,
+    maturityInterest: 200,
+    earlyInterest: 100,
+    maturityPayout: 2_200,
+    earlyPayout: 2_100,
+  };
+  assert.deepEqual(
+    financeDepositSettlementPreview({ ...contract, now: 4_999 }),
+    {
+      settlementType: "early_termination",
+      principal: 2_000,
+      interest: 100,
+      payout: 2_100,
+    },
+  );
+  assert.deepEqual(
+    financeDepositSettlementPreview({ ...contract, now: 5_000 }),
+    {
+      settlementType: "maturity",
+      principal: 2_000,
+      interest: 200,
+      payout: 2_200,
+    },
+  );
+  assert.throws(
+    () => financeDepositSettlementPreview({
+      ...contract,
+      now: 4_999,
+      earlyPayout: 2_101,
+    }),
+    depositError("FINANCE_DEPOSIT_INVALID_AMOUNT"),
+  );
+});
+
 test("원금과 이자를 합친 지급액은 원장 한도를 넘을 수 없다", () => {
   assert.equal(
     calculateFinanceDepositQuote({
@@ -197,5 +236,29 @@ test("원금과 이자를 합친 지급액은 원장 한도를 넘을 수 없다
       maxAmount: 500_000_001,
     }),
     depositError("FINANCE_DEPOSIT_PAYOUT_LIMIT"),
+  );
+});
+
+test("legacy settlement hashes remain retryable only for system settlements", () => {
+  const replay = {
+    storedPayloadHash: "legacy-hash",
+    currentPayloadHash: "current-hash",
+    legacyPayloadHash: "legacy-hash",
+  };
+  assert.equal(
+    financeDepositSettlementReplayMatches({ ...replay, actorType: "system" }),
+    true,
+  );
+  assert.equal(
+    financeDepositSettlementReplayMatches({ ...replay, actorType: "teacher" }),
+    false,
+  );
+  assert.equal(
+    financeDepositSettlementReplayMatches({
+      ...replay,
+      actorType: "teacher",
+      storedPayloadHash: "current-hash",
+    }),
+    true,
   );
 });

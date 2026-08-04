@@ -64,8 +64,10 @@ export type FinanceDepositContract = {
   openedAt: number;
   maturesAt: number;
   status: "active" | "matured" | "maturity_paid" | "early_terminated";
+  settlementRevision: number;
   settledAt: number | null;
   settlementType: "maturity" | "early_termination" | null;
+  settledByTeacher: boolean;
   payout: number | null;
   student: null | {
     id: string;
@@ -154,6 +156,38 @@ type ProductDraft = {
   minAmount: string;
   maxAmount: string;
 };
+
+type EmergencySettlementDraft = {
+  reason: string;
+  confirmed: boolean;
+};
+
+type EmergencySettlementState = {
+  openContractId: string | null;
+  drafts: Record<string, EmergencySettlementDraft>;
+};
+
+type EmergencySettlementOrigin = "finance_center" | "student_exclusion" | "class_archive";
+
+function emergencyContextFromLocation(): {
+  origin: EmergencySettlementOrigin;
+  studentId: string | null;
+} {
+  if (typeof window === "undefined") {
+    return {
+      origin: "finance_center" as EmergencySettlementOrigin,
+      studentId: null as string | null,
+    };
+  }
+  const query = new URLSearchParams(window.location.search);
+  const origin = query.get("depositOrigin");
+  return {
+    origin: origin === "student_exclusion" || origin === "class_archive"
+      ? origin
+      : "finance_center",
+    studentId: query.get("depositStudentId")?.trim() || null,
+  };
+}
 
 type LooseRecord = Record<string, unknown>;
 
@@ -475,6 +509,10 @@ function normalizeContract(value: unknown): FinanceDepositContract | null {
     openedAt: epochValue(value.openedAt ?? value.opened_at),
     maturesAt: epochValue(value.maturesAt ?? value.matures_at),
     status,
+    settlementRevision: numberValue(
+      value.settlementRevision ?? value.settlement_revision,
+      settlementType ? 1 : 0,
+    ),
     settledAt: epochValue(
       value.settledAt
       ?? value.settled_at
@@ -482,6 +520,10 @@ function normalizeContract(value: unknown): FinanceDepositContract | null {
       ?? settlement.settled_at,
     ) || null,
     settlementType,
+    settledByTeacher: booleanValue(
+      value.settledByTeacher ?? value.settled_by_teacher,
+      false,
+    ),
     payout: numberValue(value.payout ?? settlement.payout) || null,
     student: studentId
       ? {
@@ -740,9 +782,17 @@ export function FinanceDepositsPanel({
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [joinConfirmation, setJoinConfirmation] = useState<string | null>(null);
   const [earlyConfirmation, setEarlyConfirmation] = useState<string | null>(null);
+  const [emergencyState, setEmergencyState] = useState<EmergencySettlementState>({
+    openContractId: null,
+    drafts: {},
+  });
+  const [emergencyContext] = useState(emergencyContextFromLocation);
+  const emergencyOrigin = emergencyContext.origin;
+  const focusStudentId = emergencyContext.studentId;
   const actionKeys = useRef<Record<string, { fingerprint: string; key: string }>>({});
   const requestSequence = useRef(0);
   const lastExternalRefresh = useRef(refreshRevision);
+  const focusedEmergencyContext = useRef<string | null>(null);
   const automationRefreshState = useRef<DepositAutomationRefreshState>({
     pending: false,
     queued: false,
@@ -822,9 +872,25 @@ export function FinanceDepositsPanel({
     return () => controller.abort();
   }, [loadDeposits, refreshRevision, synchronizeAutomatedSettlement]);
 
+  useEffect(() => {
+    if (!data || !isTeacher || !focusStudentId) return;
+    const contextKey = `${classId}:${focusStudentId}`;
+    if (focusedEmergencyContext.current === contextKey) return;
+    const frame = requestAnimationFrame(() => {
+      const section = document.getElementById("finance-deposit-contracts");
+      const heading = document.getElementById("finance-deposit-contracts-title");
+      if (!section || !heading) return;
+      focusedEmergencyContext.current = contextKey;
+      section.scrollIntoView({ block: "start" });
+      heading.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [classId, data, focusStudentId, isTeacher]);
+
   const refreshEverything = useCallback(async () => {
-    await loadDeposits(true);
+    const loaded = await loadDeposits(true);
     await onRefresh?.().catch(() => undefined);
+    return loaded;
   }, [loadDeposits, onRefresh]);
 
   const settleContract = useCallback(async (
@@ -861,6 +927,107 @@ export function FinanceDepositsPanel({
       setBusyId(null);
     }
   }, [classId, refreshEverything]);
+
+  const emergencySettleContract = useCallback(async (
+    contract: FinanceDepositContract,
+    settlementType: "early_termination" | "maturity",
+    payout: number,
+  ) => {
+    const emergencyDraft = emergencyState.drafts[contract.id];
+    const reason = emergencyDraft?.reason.trim() ?? "";
+    if (reason.length < 2 || reason.length > 300 || !emergencyDraft?.confirmed) {
+      setNotice({ tone: "error", message: "비상 정산 사유와 되돌릴 수 없다는 확인을 완료해 주세요." });
+      return;
+    }
+    const contractOrigin: EmergencySettlementOrigin = emergencyOrigin === "student_exclusion"
+      && contract.student?.id !== focusStudentId
+      ? "finance_center"
+      : emergencyOrigin;
+    const slot = `deposit-emergency-settle:${contract.id}`;
+    const fingerprint = [
+      contract.id,
+      contract.settlementRevision,
+      settlementType,
+      payout,
+      contractOrigin,
+      reason,
+    ].join(":");
+    const key = getStableActionKey(actionKeys, slot, fingerprint);
+    setBusyId(slot);
+    setNotice(null);
+    try {
+      await sendAction(
+        `/api/finance/deposits/contracts/${encodeURIComponent(contract.id)}/emergency-settle`
+          + `?classId=${encodeURIComponent(classId)}`,
+        "POST",
+        {
+          expectedSettlementRevision: contract.settlementRevision,
+          expectedSettlementType: settlementType,
+          expectedPayout: payout,
+          interventionReason: reason,
+          idempotencyKey: key,
+          origin: contractOrigin,
+        },
+      );
+      delete actionKeys.current[slot];
+      setEmergencyState((current) => {
+        const drafts = { ...current.drafts };
+        delete drafts[contract.id];
+        return {
+          openContractId: current.openContractId === contract.id
+            ? null
+            : current.openContractId,
+          drafts,
+        };
+      });
+      setNotice({
+        tone: "success",
+        message: `${contract.student?.name ?? "학생"} 학생의 ${contract.productName}을 약정 금액대로 비상 정산했어요.`,
+      });
+      await refreshEverything();
+    } catch (reasonValue) {
+      const latest = await refreshEverything().catch(() => null);
+      const latestContract = latest?.contracts.find((item) => item.id === contract.id);
+      if (
+        latestContract?.status === "maturity_paid"
+        || latestContract?.status === "early_terminated"
+      ) {
+        delete actionKeys.current[slot];
+        setEmergencyState((current) => {
+          const drafts = { ...current.drafts };
+          delete drafts[contract.id];
+          return {
+            openContractId: current.openContractId === contract.id
+              ? null
+              : current.openContractId,
+            drafts,
+          };
+        });
+        setNotice({
+          tone: "success",
+          message: `${contract.student?.name ?? "학생"} 학생의 예금 정산이 완료된 것을 확인했어요.`,
+        });
+        return;
+      }
+      setEmergencyState((current) => ({
+        ...current,
+        drafts: current.drafts[contract.id]
+          ? {
+            ...current.drafts,
+            [contract.id]: { ...current.drafts[contract.id], confirmed: false },
+          }
+          : current.drafts,
+      }));
+      setNotice({
+        tone: "error",
+        message: reasonValue instanceof Error
+          ? reasonValue.message
+          : "교사 비상 정산을 처리하지 못했어요.",
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }, [classId, emergencyOrigin, emergencyState.drafts, focusStudentId, refreshEverything]);
 
   async function createProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1099,10 +1266,15 @@ export function FinanceDepositsPanel({
           draftPreview={draftPreview}
           unit={unit}
           classIsActive={classIsActive}
+          classId={classId}
           busyId={busyId}
           refreshing={refreshing}
+          emergencyState={emergencyState}
+          setEmergencyState={setEmergencyState}
+          focusStudentId={focusStudentId}
           onCreate={createProduct}
           onToggle={toggleProduct}
+          onEmergencySettle={emergencySettleContract}
           onRefresh={() => void refreshEverything()}
         />
       ) : (
@@ -1136,10 +1308,15 @@ function TeacherDeposits({
   draftPreview,
   unit,
   classIsActive,
+  classId,
   busyId,
   refreshing,
+  emergencyState,
+  setEmergencyState,
+  focusStudentId,
   onCreate,
   onToggle,
+  onEmergencySettle,
   onRefresh,
 }: {
   data: FinanceDepositsData;
@@ -1153,18 +1330,39 @@ function TeacherDeposits({
   };
   unit: string;
   classIsActive: boolean;
+  classId: string;
   busyId: string | null;
   refreshing: boolean;
+  emergencyState: EmergencySettlementState;
+  setEmergencyState: Dispatch<SetStateAction<EmergencySettlementState>>;
+  focusStudentId: string | null;
   onCreate: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onToggle: (product: FinanceDepositProduct) => Promise<void>;
+  onEmergencySettle: (
+    contract: FinanceDepositContract,
+    settlementType: "early_termination" | "maturity",
+    payout: number,
+  ) => Promise<void>;
   onRefresh: () => void;
 }) {
   const activeContracts = data.contracts.filter((contract) => (
     contract.status === "active" || contract.status === "matured"
   ));
-  const sortedContracts = [...data.contracts].sort((left, right) => (
-    right.openedAt - left.openedAt
-  ));
+  const sortedContracts = [...data.contracts].sort((left, right) => {
+    const leftFocused = focusStudentId && left.student?.id === focusStudentId ? 1 : 0;
+    const rightFocused = focusStudentId && right.student?.id === focusStudentId ? 1 : 0;
+    if (leftFocused !== rightFocused) return rightFocused - leftFocused;
+    const leftActive = left.status === "active" || left.status === "matured" ? 1 : 0;
+    const rightActive = right.status === "active" || right.status === "matured" ? 1 : 0;
+    if (leftActive !== rightActive) return rightActive - leftActive;
+    return right.openedAt - left.openedAt;
+  });
+  const focusedStudent = focusStudentId
+    ? sortedContracts.find((contract) => contract.student?.id === focusStudentId)?.student ?? null
+    : null;
+  const focusedActiveCount = focusStudentId
+    ? activeContracts.filter((contract) => contract.student?.id === focusStudentId).length
+    : 0;
 
   function updateDraft<Key extends keyof ProductDraft>(key: Key, value: ProductDraft[Key]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -1436,16 +1634,64 @@ function TeacherDeposits({
         )}
       </section>
 
-      <section style={styles.section} aria-labelledby="deposit-contracts-title">
+      <section
+        id="finance-deposit-contracts"
+        style={{ ...styles.section, scrollMarginTop: 20 }}
+        aria-labelledby="finance-deposit-contracts-title"
+      >
         <div style={styles.sectionHeading}>
           <div>
             <p className="eyebrow">교사 확인용</p>
-            <h3 id="deposit-contracts-title" style={styles.sectionTitle}>학생 예금 기록</h3>
+            <h3
+              id="finance-deposit-contracts-title"
+              style={styles.sectionTitle}
+              tabIndex={-1}
+            >학생 예금 기록</h3>
             <p style={styles.muted}>선생님은 진행 상황을 확인만 하면 됩니다. 학생별 처리는 시스템이 자동으로 기록해요.</p>
           </div>
           <span style={styles.tinyBadge}>{data.contracts.length}건</span>
         </div>
-        <ContractHistory contracts={sortedContracts} unit={unit} now={data.serverTime} teacherView />
+        {focusedStudent && focusedActiveCount > 0 && (
+          <div className="finance-action-notice warning" role="status">
+            <CircleAlert aria-hidden="true" />
+            <p>
+              <b>학생 제외 준비 · {focusedStudent.number}번 {focusedStudent.name}</b>{" "}
+              진행 중인 예금 {focusedActiveCount}건을 먼저 정산한 뒤 명단 화면에서 제외를 다시 눌러 주세요.
+            </p>
+          </div>
+        )}
+        {focusedStudent && focusedActiveCount === 0 && (
+          <div className="finance-action-notice success" role="status">
+            <BadgeCheck aria-hidden="true" />
+            <div className="finance-action-notice-body">
+              <p>
+                <b>{focusedStudent.number}번 {focusedStudent.name} 학생의 진행 중인 예금을 모두 정산했어요.</b>{" "}
+                이제 명단으로 돌아가 학생 제외를 마칠 수 있습니다.
+              </p>
+              <div className="button-row">
+                <a
+                  className="button button-primary"
+                  href={`/teacher?classId=${encodeURIComponent(classId)}#students`}
+                >명단으로 돌아가 제외 마치기</a>
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="finance-action-notice info">
+          <ShieldCheck aria-hidden="true" />
+          <p><b>비상 정산은 운영을 끝내야 할 때만 사용하세요.</b> 전학·명단 정리·학급 보관처럼 꼭 필요한 경우에 약정 금액을 지급하고 사유를 교사 금융 기록에 남깁니다.</p>
+        </div>
+        <ContractHistory
+          contracts={sortedContracts}
+          unit={unit}
+          now={data.serverTime}
+          teacherView
+          classIsActive={classIsActive}
+          busyId={busyId}
+          emergencyState={emergencyState}
+          setEmergencyState={setEmergencyState}
+          onEmergencySettle={onEmergencySettle}
+        />
       </section>
     </>
   );
@@ -1828,11 +2074,25 @@ function ContractHistory({
   unit,
   now,
   teacherView = false,
+  classIsActive = true,
+  busyId = null,
+  emergencyState,
+  setEmergencyState,
+  onEmergencySettle,
 }: {
   contracts: FinanceDepositContract[];
   unit: string;
   now: number;
   teacherView?: boolean;
+  classIsActive?: boolean;
+  busyId?: string | null;
+  emergencyState?: EmergencySettlementState;
+  setEmergencyState?: Dispatch<SetStateAction<EmergencySettlementState>>;
+  onEmergencySettle?: (
+    contract: FinanceDepositContract,
+    settlementType: "early_termination" | "maturity",
+    payout: number,
+  ) => Promise<void>;
 }) {
   if (contracts.length === 0) {
     return (
@@ -1849,6 +2109,38 @@ function ContractHistory({
         const payout = contract.payout ?? (
           contract.status === "early_terminated" ? contract.earlyPayout : contract.maturityPayout
         );
+        const emergencyType = contract.status === "matured" || contract.maturesAt <= now
+          ? "maturity" as const
+          : "early_termination" as const;
+        const emergencyInterest = emergencyType === "maturity"
+          ? contract.maturityInterest
+          : contract.earlyInterest;
+        const emergencyPayout = emergencyType === "maturity"
+          ? contract.maturityPayout
+          : contract.earlyPayout;
+        const emergencyDraft = emergencyState?.drafts[contract.id] ?? {
+          reason: "",
+          confirmed: false,
+        };
+        const draftOpen = emergencyState?.openContractId === contract.id;
+        const settling = busyId === `deposit-emergency-settle:${contract.id}`;
+        const reasonLength = draftOpen ? emergencyDraft.reason.trim().length : 0;
+        const formId = `deposit-emergency-${contract.id}`;
+        const closeEmergency = () => {
+          setEmergencyState?.((current) => {
+            const drafts = { ...current.drafts };
+            delete drafts[contract.id];
+            return {
+              openContractId: current.openContractId === contract.id
+                ? null
+                : current.openContractId,
+              drafts,
+            };
+          });
+          requestAnimationFrame(() => {
+            document.getElementById(`${formId}-trigger`)?.focus();
+          });
+        };
         return (
           <li key={contract.id} style={styles.contractCard}>
             <div style={{ minWidth: 0 }}>
@@ -1869,7 +2161,11 @@ function ContractHistory({
               </p>
               {settled && (
                 <small style={styles.termLabel}>
-                  {dateTimeText(contract.settledAt)} · {contract.status === "maturity_paid" ? "만기 자동 지급" : "학생이 직접 중도해지"}
+                  {dateTimeText(contract.settledAt)} · {contract.settledByTeacher
+                    ? "담임교사 비상 정산"
+                    : contract.status === "maturity_paid"
+                      ? "만기 자동 지급"
+                      : "학생이 직접 중도해지"}
                 </small>
               )}
             </div>
@@ -1878,7 +2174,145 @@ function ContractHistory({
               <strong style={{ display: "block", marginTop: 2, color: settled ? "var(--color-success)" : "var(--color-text)" }}>
                 {amountText(settled ? payout : contract.maturityPayout, unit)}
               </strong>
+              {teacherView && !settled && contract.student && setEmergencyState && onEmergencySettle && (
+                <button
+                  id={`${formId}-trigger`}
+                  className="button button-light"
+                  style={{ marginTop: 8 }}
+                  type="button"
+                  aria-expanded={draftOpen}
+                  aria-controls={formId}
+                  aria-label={`${contract.student.number}번 ${contract.student.name} 학생의 ${contract.productName} 비상 정산`}
+                  onClick={() => setEmergencyState((current) => {
+                    if (draftOpen) {
+                      const drafts = { ...current.drafts };
+                      delete drafts[contract.id];
+                      return { openContractId: null, drafts };
+                    }
+                    return {
+                      openContractId: contract.id,
+                      drafts: current.drafts[contract.id]
+                        ? current.drafts
+                        : {
+                          ...current.drafts,
+                          [contract.id]: { reason: "", confirmed: false },
+                        },
+                    };
+                  })}
+                  disabled={busyId !== null || !classIsActive}
+                >
+                  교사 비상 정산
+                </button>
+              )}
             </div>
+            {teacherView && !settled && draftOpen && contract.student && setEmergencyState && onEmergencySettle && (
+              <section
+                id={formId}
+                style={{ gridColumn: "1 / -1" }}
+                className="finance-decision-confirm reject"
+                aria-labelledby={`${formId}-title`}
+                aria-describedby={`${formId}-warning ${formId}-reason-help`}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !settling) {
+                    event.preventDefault();
+                    closeEmergency();
+                  }
+                }}
+              >
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div>
+                    <b id={`${formId}-title`}>{contract.student.number}번 {contract.student.name} · {contract.productName}</b>
+                    <p id={`${formId}-warning`}><strong>정산 후 되돌릴 수 없습니다.</strong> 계약에 약속된 금액만 학생 지갑에 지급합니다.</p>
+                  </div>
+                  <dl style={styles.terms}>
+                    <div style={styles.term}>
+                      <dt style={styles.termLabel}>정산 구분</dt>
+                      <dd style={{ ...styles.termValue, marginInline: 0 }}>{emergencyType === "maturity" ? "만기 지급" : "중도해지 정산"}</dd>
+                    </div>
+                    <div style={styles.term}>
+                      <dt style={styles.termLabel}>원금</dt>
+                      <dd style={{ ...styles.termValue, marginInline: 0 }}>{amountText(contract.principal, unit)}</dd>
+                    </div>
+                    <div style={styles.term}>
+                      <dt style={styles.termLabel}>적용 이자</dt>
+                      <dd style={{ ...styles.termValue, marginInline: 0 }}>+{amountText(emergencyInterest, unit)}</dd>
+                    </div>
+                    <div style={styles.term}>
+                      <dt style={styles.termLabel}>최종 지급액</dt>
+                      <dd style={{ ...styles.termValue, marginInline: 0 }}>{amountText(emergencyPayout, unit)}</dd>
+                    </div>
+                  </dl>
+                  <label style={styles.label}>
+                    비상 정산 사유
+                    <textarea
+                      autoFocus
+                      rows={3}
+                      maxLength={300}
+                      value={emergencyDraft.reason}
+                      placeholder="예: 전학으로 학생 계정을 정리하기 전 예금을 정산합니다."
+                      aria-describedby={`${formId}-reason-help`}
+                      onChange={(event) => setEmergencyState((current) => ({
+                        ...current,
+                        drafts: {
+                          ...current.drafts,
+                          [contract.id]: {
+                            reason: event.target.value,
+                            confirmed: false,
+                          },
+                        },
+                      }))}
+                      disabled={settling}
+                    />
+                    <small id={`${formId}-reason-help`} style={styles.fieldHelp}>
+                      교사 금융 기록에 남습니다. 2자 이상 300자 이하로 구체적으로 적어 주세요. ({emergencyDraft.reason.length}/300)
+                    </small>
+                  </label>
+                  <label className="finance-confirm-check" style={{ fontWeight: 750 }}>
+                    <input
+                      type="checkbox"
+                      checked={emergencyDraft.confirmed}
+                      onChange={(event) => setEmergencyState((current) => ({
+                        ...current,
+                        drafts: {
+                          ...current.drafts,
+                          [contract.id]: {
+                            ...current.drafts[contract.id],
+                            confirmed: event.target.checked,
+                          },
+                        },
+                      }))}
+                      disabled={settling || reasonLength < 2}
+                    />
+                    <span>지급액과 되돌릴 수 없음을 확인했습니다.</span>
+                  </label>
+                  <div className="finance-confirm-actions">
+                    <button
+                      className="button button-light"
+                      type="button"
+                      onClick={closeEmergency}
+                      disabled={settling}
+                    >
+                      취소
+                    </button>
+                    <button
+                      className="button finance-danger-button"
+                      type="button"
+                      onClick={() => void onEmergencySettle(contract, emergencyType, emergencyPayout)}
+                      disabled={
+                        settling
+                        || !classIsActive
+                        || reasonLength < 2
+                        || reasonLength > 300
+                        || !emergencyDraft.confirmed
+                      }
+                    >
+                      {settling && <LoaderCircle className="spin" aria-hidden="true" />}
+                      {amountText(emergencyPayout, unit)} 지급하고 비상 정산
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
           </li>
         );
       })}

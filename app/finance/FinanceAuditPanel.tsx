@@ -51,7 +51,7 @@ const CATEGORY_OPTIONS: ReadonlyArray<{
   { value: "decision", label: "처리" },
   { value: "transaction", label: "거래" },
   { value: "setting", label: "설정" },
-  { value: "deposit", label: "예금상품" },
+  { value: "deposit", label: "예금" },
   { value: "stock", label: "주식" },
 ];
 

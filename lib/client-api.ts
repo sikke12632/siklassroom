@@ -1,12 +1,29 @@
 export type ApiResult<T> = T & { error?: string; code?: string };
 
+export class ClientApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code = "REQUEST_FAILED",
+  ) {
+    super(message);
+    this.name = "ClientApiError";
+  }
+}
+
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
   });
   const data = await response.json().catch(() => ({ error: "응답을 읽을 수 없습니다." })) as ApiResult<T>;
-  if (!response.ok) throw new Error(data.error || "잠시 문제가 생겼어요. 다시 시도해 주세요.");
+  if (!response.ok) {
+    throw new ClientApiError(
+      data.error || "잠시 문제가 생겼어요. 다시 시도해 주세요.",
+      response.status,
+      data.code,
+    );
+  }
   return data;
 }
 

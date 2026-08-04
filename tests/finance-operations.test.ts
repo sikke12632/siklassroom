@@ -327,3 +327,76 @@ test("처리 전 출금액은 모든 지갑 차감에서 예약되고 예금·�
   assert.match(portal, /setModuleRefreshRevision\(\(revision\) => revision \+ 1\)/);
   assert.match(portal, /requestSequence\.current !== sequence/);
 });
+
+test("교사 비상 예금 정산은 약정 금액·소유권·사유·재확인을 함께 강제한다", async () => {
+  const [
+    migration,
+    runtime,
+    service,
+    route,
+    panel,
+    audit,
+    auditPanel,
+    teacherPortal,
+    clientApi,
+    css,
+  ] = await Promise.all([
+    readFile(new URL("../drizzle/0017_teacher_deposit_emergency.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-deposits.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/finance/deposits/contracts/[contractId]/emergency-settle/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/finance/FinanceDepositsPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/finance/FinanceAuditPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/client-api.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [migration, runtime]) {
+    assert.match(source, /DROP TRIGGER IF EXISTS [`]?finance_deposit_settlements_insert_guard/);
+    assert.match(source, /transaction_row\.actor_type = 'teacher'/);
+    assert.match(source, /classroom\.teacher_id = transaction_row\.actor_teacher_id/);
+    assert.match(source, /\$\.interventionReason/);
+    assert.match(source, /BETWEEN 2 AND 300/);
+    assert.match(source, /contract_terms_at_settlement/);
+  }
+  assert.match(service, /emergencySettleFinanceDepositForRequest/);
+  assert.match(service, /assertTeacher\(context\)/);
+  assert.match(service, /expectedClassId: context\.classroom\.id/);
+  assert.match(service, /financeDepositSettlementPreview/);
+  assert.match(service, /FINANCE_DEPOSIT_SETTLEMENT_PREVIEW_STALE/);
+  assert.match(service, /existing\.idempotency_key === input\.idempotencyKey/);
+  assert.match(service, /legacySettlementPayloadHash/);
+  assert.match(service, /financeDepositSettlementReplayMatches/);
+  assert.match(service, /actor_teacher_id,[\s\S]*input\.transaction\.actor\.teacherId/);
+  assert.match(route, /private, no-store/);
+  assert.match(route, /readJson/);
+  assert.match(panel, /교사 비상 정산/);
+  assert.match(panel, /정산 후 되돌릴 수 없습니다/);
+  assert.match(panel, /expectedSettlementRevision/);
+  assert.match(panel, /expectedSettlementType/);
+  assert.match(panel, /expectedPayout/);
+  assert.match(panel, /confirmed: false/);
+  assert.match(panel, /reasonLength < 2/);
+  assert.match(panel, /drafts: Record<string, EmergencySettlementDraft>/);
+  assert.match(panel, /current\.drafts\[contract\.id\]/);
+  assert.match(panel, /className="finance-confirm-check"/);
+  assert.match(panel, /focusedActiveCount/);
+  assert.match(panel, /finance-deposit-contracts-title/);
+  assert.match(panel, /scrollIntoView\(\{ block: "start" \}\)/);
+  assert.match(panel, /contract\.student\?\.id !== focusStudentId/);
+  assert.match(panel, /#students/);
+  assert.match(audit, /예금 교사 비상 정산/);
+  assert.match(audit, /'deposit_settlement' THEN 'deposit'/);
+  assert.match(audit, /\$\.interventionReason/);
+  assert.match(auditPanel, /value: "deposit", label: "예금"/);
+  assert.match(teacherPortal, /FINANCE_DEPOSIT_ACTIVE_STUDENT/);
+  assert.match(teacherPortal, /depositOrigin=student_exclusion/);
+  assert.match(teacherPortal, /student-finance-guidance-row/);
+  assert.match(teacherPortal, /#finance-deposit-contracts/);
+  assert.match(clientApi, /class ClientApiError/);
+  assert.match(clientApi, /data\.code/);
+  assert.match(css, /finance-action-notice\.warning/);
+  assert.match(css, /student-finance-guidance-row td::before \{ content: none; display: none; \}/);
+});

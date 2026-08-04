@@ -6,6 +6,8 @@ import {
   FINANCE_DEPOSIT_SETTLEMENT_BATCH_SIZE,
   calculateFinanceDepositQuote,
   financeDepositMaturityAt,
+  financeDepositSettlementReplayMatches,
+  financeDepositSettlementPreview,
   financeDepositSettlementEnabled,
   normalizeFinanceDepositPrincipal,
   normalizeFinanceDepositProduct,
@@ -94,6 +96,7 @@ type ContractRow = {
   settlement_interest: number | null;
   settlement_payout: number | null;
   settled_at: number | null;
+  settlement_actor_type: string | null;
 };
 
 type SettlementRow = {
@@ -110,6 +113,19 @@ type SettlementRow = {
   posted_transaction_id: string;
   settled_at: number;
 };
+
+type SettlementActor =
+  | {
+    type: "system";
+    label: string;
+  }
+  | {
+    type: "teacher";
+    teacherId: string;
+    label: string;
+  };
+
+type SettlementOrigin = "finance_center" | "student_exclusion" | "class_archive";
 
 type ContractForSettlementRow = ContractRow & {
   wallet_status: string;
@@ -136,7 +152,8 @@ const CONTRACT_SELECT = `
   student.student_number, student.official_name AS student_name,
   settlement.id AS settlement_id, settlement.settlement_type,
   settlement.interest AS settlement_interest,
-  settlement.payout AS settlement_payout, settlement.settled_at`;
+  settlement.payout AS settlement_payout, settlement.settled_at,
+  settlement_transaction.actor_type AS settlement_actor_type`;
 
 function ruleError(error: unknown): never {
   if (error instanceof FinanceDepositRuleError) {
@@ -174,6 +191,41 @@ function expectedRevision(value: unknown, label: string) {
     );
   }
   return Number(value);
+}
+
+function expectedPayout(value: unknown) {
+  if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 1_000_000_000) {
+    throw new ApiError(
+      400,
+      "확인한 지급액을 다시 불러와 주세요.",
+      "FINANCE_DEPOSIT_INVALID_PREVIEW",
+    );
+  }
+  return Number(value);
+}
+
+function interventionReason(value: unknown) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (normalized.length < 2) {
+    throw new ApiError(
+      400,
+      "비상 정산 사유를 2자 이상 적어 주세요.",
+      "FINANCE_DEPOSIT_INTERVENTION_REASON_REQUIRED",
+    );
+  }
+  if (normalized.length > 300) {
+    throw new ApiError(
+      400,
+      "비상 정산 사유는 300자 이하로 적어 주세요.",
+      "FINANCE_DEPOSIT_INTERVENTION_REASON_TOO_LONG",
+    );
+  }
+  return normalized;
+}
+
+function settlementOrigin(value: unknown): SettlementOrigin {
+  if (value === "student_exclusion" || value === "class_archive") return value;
+  return "finance_center";
 }
 
 function assertTeacher(context: FinanceContext) {
@@ -283,7 +335,9 @@ function serializeContract(row: ContractRow, now = Date.now()) {
     openedAt: Number(row.opened_at),
     maturesAt: Number(row.matures_at),
     status,
+    settlementRevision: row.settlement_id ? 1 : 0,
     settlementType,
+    settledByTeacher: row.settlement_actor_type === "teacher",
     settledAt: row.settled_at === null ? null : Number(row.settled_at),
     payout: row.settlement_payout === null
       ? null
@@ -335,6 +389,9 @@ async function contractRowById(
      LEFT JOIN finance_deposit_settlements settlement
        ON settlement.contract_id = contract.id
        AND settlement.class_id = contract.class_id
+     LEFT JOIN finance_transactions settlement_transaction
+       ON settlement_transaction.id = settlement.posted_transaction_id
+       AND settlement_transaction.class_id = settlement.class_id
      WHERE contract.class_id = ? AND contract.id = ?
      LIMIT 1`,
   ).bind(classId, contractId).first<ContractRow>();
@@ -354,6 +411,9 @@ async function contractByIdempotency(
      LEFT JOIN finance_deposit_settlements settlement
        ON settlement.contract_id = contract.id
        AND settlement.class_id = contract.class_id
+     LEFT JOIN finance_transactions settlement_transaction
+       ON settlement_transaction.id = settlement.posted_transaction_id
+       AND settlement_transaction.class_id = settlement.class_id
      WHERE contract.class_id = ? AND contract.student_id = ?
        AND contract.idempotency_key = ?
      LIMIT 1`,
@@ -421,7 +481,7 @@ function transactionStatements(
          actor_student_id, actor_job_period_id, actor_label, metadata_json,
          created_at, posted_at
        ) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, NULL,
-                 'system', NULL, NULL, NULL, ?, ?, ?, NULL)`,
+                 ?, ?, ?, ?, ?, ?, ?, NULL)`,
     ).bind(
       input.transactionId,
       input.transaction.classId,
@@ -431,6 +491,10 @@ function transactionStatements(
       input.transactionPayloadHash,
       input.transaction.sourceType,
       input.transaction.sourceId,
+      input.transaction.actor.type,
+      input.transaction.actor.teacherId,
+      input.transaction.actor.studentId,
+      input.transaction.actor.bankerPeriodId,
       input.transaction.actor.label,
       input.transaction.metadataJson,
       input.now,
@@ -940,7 +1004,12 @@ export async function subscribeFinanceDeposit(
   return { contract: serializeContract(saved), deduplicated: false };
 }
 
-async function contractForSettlement(db: D1Database, contractId: string) {
+async function contractForSettlement(
+  db: D1Database,
+  contractId: string,
+  expectedClassId?: string,
+) {
+  const classScope = expectedClassId ? "AND contract.class_id = ?" : "";
   return db.prepare(
     `SELECT ${CONTRACT_SELECT},
             wallet.status AS wallet_status, wallet.balance AS wallet_balance,
@@ -955,12 +1024,17 @@ async function contractForSettlement(db: D1Database, contractId: string) {
      LEFT JOIN finance_deposit_settlements settlement
        ON settlement.contract_id = contract.id
        AND settlement.class_id = contract.class_id
-     WHERE contract.id = ?
+     LEFT JOIN finance_transactions settlement_transaction
+       ON settlement_transaction.id = settlement.posted_transaction_id
+       AND settlement_transaction.class_id = settlement.class_id
+     WHERE contract.id = ? ${classScope}
      LIMIT 1`,
-  ).bind(contractId).first<ContractForSettlementRow>();
+  ).bind(...(expectedClassId ? [contractId, expectedClassId] : [contractId]))
+    .first<ContractForSettlementRow>();
 }
 
-async function settleContractWithDb(
+/** Low-level settlement engine. Callers must authorize and scope the actor first. */
+export async function settleFinanceDepositContractWithDb(
   db: D1Database,
   input: {
     contractId: string;
@@ -968,41 +1042,153 @@ async function settleContractWithDb(
     requestedAction: "early_termination" | "maturity";
     idempotencyKey: string;
     expectedStudentId?: string;
+    expectedClassId?: string;
+    expectedSettlementRevision?: number;
+    expectedSettlementType?: "early_termination" | "maturity";
+    expectedPayout?: number;
+    actor?: SettlementActor;
+    interventionReason?: string | null;
+    origin?: SettlementOrigin;
   },
 ) {
-  const current = await contractForSettlement(db, input.contractId);
+  const current = await contractForSettlement(
+    db,
+    input.contractId,
+    input.expectedClassId,
+  );
   if (!current) {
     throw new ApiError(404, "예금 기록을 찾지 못했습니다.", "FINANCE_DEPOSIT_CONTRACT_NOT_FOUND");
   }
   if (input.expectedStudentId && current.student_id !== input.expectedStudentId) {
     throw new ApiError(403, "다른 학생의 예금은 처리할 수 없어요.", "FINANCE_DEPOSIT_CONTRACT_ACCESS_DENIED");
   }
+  const actor = input.actor ?? { type: "system" as const, label: "예금 자동화" };
+  const reason = input.interventionReason ?? null;
+  const origin = input.origin ?? "finance_center";
+
+  const settlementPayloadHash = async (values: {
+    settlementType: "early_termination" | "maturity";
+    principal: number;
+    interest: number;
+    payout: number;
+  }) => sha256(stableFinanceJson({
+    actor: actor.type === "teacher"
+      ? { type: actor.type, teacherId: actor.teacherId, label: actor.label }
+      : { type: actor.type, label: actor.label },
+    classId: current.class_id,
+    contractId: current.id,
+    expectedSettlementRevision: input.expectedSettlementRevision ?? 0,
+    interventionReason: reason,
+    origin,
+    payout: values.payout,
+    principal: values.principal,
+    interest: values.interest,
+    settlementPolicy: "contract_terms_at_settlement",
+    settlementType: values.settlementType,
+    studentId: current.student_id,
+  }));
+
+  const legacySettlementPayloadHash = async (values: {
+    settlementType: "early_termination" | "maturity";
+    payout: number;
+  }) => sha256(stableFinanceJson({
+    classId: current.class_id,
+    contractId: current.id,
+    payout: values.payout,
+    settlementType: values.settlementType,
+    studentId: current.student_id,
+  }));
+
+  const settlementReplayMatches = async (
+    storedPayloadHash: string,
+    currentPayloadHash: string,
+    values: {
+      settlementType: "early_termination" | "maturity";
+      payout: number;
+    },
+  ) => financeDepositSettlementReplayMatches({
+    actorType: actor.type,
+    storedPayloadHash,
+    currentPayloadHash,
+    legacyPayloadHash: await legacySettlementPayloadHash(values),
+  });
+
+  const assertExpectedPreview = (settlementType: string, payout: number) => {
+    if (
+      input.expectedSettlementType !== undefined
+      && input.expectedSettlementType !== settlementType
+    ) {
+      throw new ApiError(
+        409,
+        "확인하는 사이 만기 상태가 바뀌었어요. 최신 지급액을 다시 확인해 주세요.",
+        "FINANCE_DEPOSIT_SETTLEMENT_PREVIEW_STALE",
+      );
+    }
+    if (input.expectedPayout !== undefined && input.expectedPayout !== payout) {
+      throw new ApiError(
+        409,
+        "확인한 지급액이 최신 계약 금액과 달라요. 다시 확인해 주세요.",
+        "FINANCE_DEPOSIT_SETTLEMENT_PREVIEW_STALE",
+      );
+    }
+  };
+
   if (current.settlement_id) {
     const existing = await settlementForContract(db, current.id);
     if (!existing) throw new ApiError(500, "처리된 예금 기록을 다시 확인하지 못했습니다.", "FINANCE_DEPOSIT_SETTLEMENT_UNAVAILABLE");
-    return { settlement: serializeSettlement(existing), deduplicated: true };
+    assertExpectedPreview(existing.settlement_type, Number(existing.payout));
+    const replayHash = await settlementPayloadHash({
+      settlementType: existing.settlement_type as "early_termination" | "maturity",
+      principal: Number(existing.principal),
+      interest: Number(existing.interest),
+      payout: Number(existing.payout),
+    });
+    if (existing.idempotency_key === input.idempotencyKey) {
+      if (!await settlementReplayMatches(existing.payload_hash, replayHash, {
+        settlementType: existing.settlement_type as "early_termination" | "maturity",
+        payout: Number(existing.payout),
+      })) {
+        throw new ApiError(409, "같은 정산 요청이 다른 내용에 사용됐어요.", "FINANCE_DEPOSIT_IDEMPOTENCY_CONFLICT");
+      }
+      return { settlement: serializeSettlement(existing), deduplicated: true };
+    }
+    throw new ApiError(409, "이 예금은 이미 정산되었습니다.", "FINANCE_DEPOSIT_ALREADY_SETTLED");
   }
-  const matured = input.now >= Number(current.matures_at);
-  if (input.requestedAction === "maturity" && !matured) {
+  if (
+    input.expectedSettlementRevision !== undefined
+    && input.expectedSettlementRevision !== 0
+  ) {
+    throw new ApiError(
+      409,
+      "예금 정산 상태가 바뀌었어요. 최신 기록을 다시 확인해 주세요.",
+      "FINANCE_DEPOSIT_SETTLEMENT_STALE",
+    );
+  }
+  const preview = financeDepositSettlementPreview({
+    now: input.now,
+    maturesAt: Number(current.matures_at),
+    principal: Number(current.principal),
+    maturityInterest: Number(current.maturity_interest),
+    earlyInterest: Number(current.early_interest),
+    maturityPayout: Number(current.maturity_payout),
+    earlyPayout: Number(current.early_payout),
+  });
+  if (input.requestedAction === "maturity" && preview.settlementType !== "maturity") {
     throw new ApiError(409, "아직 만기일이 되지 않았어요.", "FINANCE_DEPOSIT_NOT_MATURED");
   }
-  const settlementType = matured ? "maturity" as const : "early_termination" as const;
+  const settlementType = preview.settlementType;
   if (current.class_status !== "active" || current.wallet_status !== "active") {
     throw new ApiError(409, "지갑이 잠겨 있어 자동 지급을 잠시 기다리고 있어요.", "FINANCE_ACCOUNT_NOT_ACTIVE");
   }
-  const payout = settlementType === "maturity"
-    ? Number(current.maturity_payout)
-    : Number(current.early_payout);
-  const interest = settlementType === "maturity"
-    ? Number(current.maturity_interest)
-    : Number(current.early_interest);
-  const payloadHash = await sha256(stableFinanceJson({
-    classId: current.class_id,
-    contractId: current.id,
-    payout,
+  const payout = preview.payout;
+  const interest = preview.interest;
+  assertExpectedPreview(settlementType, payout);
+  const payloadHash = await settlementPayloadHash({
     settlementType,
-    studentId: current.student_id,
-  }));
+    principal: Number(current.principal),
+    interest,
+    payout,
+  });
   const duplicateByKey = await db.prepare(
     `SELECT id, class_id, contract_id, student_id, settlement_type,
             principal, interest, payout, idempotency_key, payload_hash,
@@ -1012,7 +1198,13 @@ async function settleContractWithDb(
      LIMIT 1`,
   ).bind(current.class_id, current.student_id, input.idempotencyKey).first<SettlementRow>();
   if (duplicateByKey) {
-    if (duplicateByKey.contract_id !== current.id || duplicateByKey.payload_hash !== payloadHash) {
+    if (
+      duplicateByKey.contract_id !== current.id
+      || !await settlementReplayMatches(duplicateByKey.payload_hash, payloadHash, {
+        settlementType,
+        payout,
+      })
+    ) {
       throw new ApiError(409, "같은 정산 요청이 다른 내용에 사용됐어요.", "FINANCE_DEPOSIT_IDEMPOTENCY_CONFLICT");
     }
     return { settlement: serializeSettlement(duplicateByKey), deduplicated: true };
@@ -1026,10 +1218,18 @@ async function settleContractWithDb(
     transactionType: settlementType === "maturity"
       ? "deposit_maturity"
       : "deposit_early_termination",
-    description: settlementType === "maturity"
-      ? `${current.product_name_snapshot} 만기 자동 지급`
-      : `${current.product_name_snapshot} 중도해지`,
-    actor: { type: "system", label: "예금 자동화" },
+    description: actor.type === "teacher"
+      ? `${current.product_name_snapshot} 담임교사 비상 정산`
+      : settlementType === "maturity"
+        ? `${current.product_name_snapshot} 만기 자동 지급`
+        : `${current.product_name_snapshot} 중도해지`,
+    actor: actor.type === "teacher"
+      ? {
+        type: "teacher",
+        teacherId: actor.teacherId,
+        label: actor.label,
+      }
+      : { type: "system", label: actor.label },
     sourceType: "deposit_settlement",
     sourceId: current.id,
     lines: [
@@ -1038,7 +1238,12 @@ async function settleContractWithDb(
     ],
     metadata: {
       contractId: current.id,
+      expectedSettlementRevision: input.expectedSettlementRevision ?? 0,
+      interventionReason: reason,
+      isEmergency: actor.type === "teacher",
+      origin,
       settlementType,
+      settlementPolicy: "contract_terms_at_settlement",
       studentId: current.student_id,
       principal: Number(current.principal),
       interest,
@@ -1081,7 +1286,18 @@ async function settleContractWithDb(
     await db.batch(statements);
   } catch (error) {
     const concurrent = await settlementForContract(db, current.id);
-    if (concurrent) return { settlement: serializeSettlement(concurrent), deduplicated: true };
+    if (concurrent) {
+      if (concurrent.idempotency_key === input.idempotencyKey) {
+        if (!await settlementReplayMatches(concurrent.payload_hash, payloadHash, {
+          settlementType,
+          payout,
+        })) {
+          throw new ApiError(409, "같은 정산 요청이 다른 내용에 사용됐어요.", "FINANCE_DEPOSIT_IDEMPOTENCY_CONFLICT");
+        }
+        return { settlement: serializeSettlement(concurrent), deduplicated: true };
+      }
+      throw new ApiError(409, "이 예금은 이미 정산되었습니다.", "FINANCE_DEPOSIT_ALREADY_SETTLED");
+    }
     mapDatabaseError(error);
   }
   const saved = await settlementForContract(db, current.id);
@@ -1103,12 +1319,67 @@ export async function settleFinanceDepositForRequest(
   if (input.action !== "early_termination" && input.action !== "maturity") {
     throw new ApiError(400, "예금 처리 방법을 다시 선택해 주세요.", "FINANCE_DEPOSIT_INVALID_ACTION");
   }
-  return settleContractWithDb(database(), {
+  return settleFinanceDepositContractWithDb(database(), {
     contractId,
     now: Date.now(),
     requestedAction: input.action,
     idempotencyKey: idempotencyKey(input.idempotencyKey),
     expectedStudentId: context.actor.id,
+    expectedClassId: context.classroom.id,
+  });
+}
+
+export async function emergencySettleFinanceDepositForRequest(
+  request: Request,
+  contractIdValue: unknown,
+  input: {
+    expectedSettlementRevision?: unknown;
+    expectedSettlementType?: unknown;
+    expectedPayout?: unknown;
+    interventionReason?: unknown;
+    idempotencyKey?: unknown;
+    origin?: unknown;
+  },
+) {
+  const context = await financeContextForRequest(request);
+  assertTeacher(context);
+  const contractId = requiredId(contractIdValue, "예금 ID");
+  if (
+    input.expectedSettlementType !== "early_termination"
+    && input.expectedSettlementType !== "maturity"
+  ) {
+    throw new ApiError(
+      400,
+      "확인한 정산 종류를 다시 불러와 주세요.",
+      "FINANCE_DEPOSIT_INVALID_PREVIEW",
+    );
+  }
+  const revision = expectedRevision(input.expectedSettlementRevision, "예금 정산");
+  if (revision !== 0) {
+    throw new ApiError(
+      409,
+      "예금 정산 상태가 바뀌었어요. 최신 기록을 다시 확인해 주세요.",
+      "FINANCE_DEPOSIT_SETTLEMENT_STALE",
+    );
+  }
+  const reason = interventionReason(input.interventionReason);
+  const origin = settlementOrigin(input.origin);
+  return settleFinanceDepositContractWithDb(database(), {
+    contractId,
+    now: Date.now(),
+    requestedAction: input.expectedSettlementType,
+    idempotencyKey: idempotencyKey(input.idempotencyKey),
+    expectedClassId: context.classroom.id,
+    expectedSettlementRevision: revision,
+    expectedSettlementType: input.expectedSettlementType,
+    expectedPayout: expectedPayout(input.expectedPayout),
+    actor: {
+      type: "teacher",
+      teacherId: context.actor.id,
+      label: "담임교사 비상 정산",
+    },
+    interventionReason: reason,
+    origin,
   });
 }
 
@@ -1169,7 +1440,7 @@ export async function settleDueDepositContracts(
   let failed = Number(blocked?.count ?? 0);
   for (const row of rows.results) {
     try {
-      await settleContractWithDb(db, {
+      await settleFinanceDepositContractWithDb(db, {
         contractId: row.id,
         now,
         requestedAction: "maturity",
@@ -1260,6 +1531,9 @@ export async function financeDepositsForRequest(request: Request) {
      LEFT JOIN finance_deposit_settlements settlement
        ON settlement.contract_id = contract.id
        AND settlement.class_id = contract.class_id
+     LEFT JOIN finance_transactions settlement_transaction
+       ON settlement_transaction.id = settlement.posted_transaction_id
+       AND settlement_transaction.class_id = settlement.class_id
      WHERE ${contractWhere}
      ORDER BY CASE WHEN settlement.id IS NULL THEN 0 ELSE 1 END,
               contract.matures_at, contract.created_at DESC

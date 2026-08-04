@@ -391,6 +391,12 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .student-table th:first-child, .student-table td:first-child { width: 80px; text-align: right; }
 .student-table th:last-child, .student-table td:last-child { text-align: right; }
 .student-table tr:last-child td { border-bottom: 0; }
+.student-table .student-finance-guidance-row td {
+  width: auto;
+  padding: 0 18px 14px;
+  text-align: left;
+}
+.student-finance-guidance-row .finance-action-notice { margin-top: 0; }
 .muted-row { opacity: .62; }
 .table-input { min-width: 120px; min-height: 40px; }
 .table-input.number { min-width: 60px; text-align: right; }
@@ -1015,6 +1021,15 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   .student-table td:nth-child(2)::before { content: "공식 이름"; }
   .student-table td:nth-child(3)::before { content: "계정 상태"; }
   .student-table td:nth-child(4)::before { content: "관리"; align-self: flex-start; padding-top: 8px; }
+  .student-table tr.student-finance-guidance-row { padding: 0 16px 14px; }
+  .student-table tr.student-finance-guidance-row td {
+    display: block;
+    width: 100% !important;
+    padding: 0;
+  }
+  .student-table tr.student-finance-guidance-row td::before { content: none; display: none; }
+  .student-finance-guidance-row .button-row { display: grid; grid-template-columns: 1fr; }
+  .student-finance-guidance-row .button-row .button { width: 100%; }
   .table-actions { max-width: 75%; }
   .student-login-card { margin-top: 22px; }
   .student-login-heading, .student-login-form { padding-inline: 22px; }
@@ -2115,6 +2130,11 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   border-color: color-mix(in srgb, var(--color-success) 40%, var(--color-border));
   background: var(--color-success-soft);
 }
+.finance-action-notice.warning {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
+  background: var(--color-warning-soft);
+}
 .finance-action-notice.error {
   color: var(--color-danger);
   border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
@@ -2122,6 +2142,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 }
 .finance-action-notice svg { width: 19px; height: 19px; margin-top: 2px; }
 .finance-action-notice p { margin: 0; color: inherit; font-size: var(--text-sm); }
+.finance-action-notice-body { display: grid; flex: 1 1 auto; gap: 10px; min-width: 0; }
 
 .finance-active-request {
   display: grid;

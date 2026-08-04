@@ -235,6 +235,8 @@ export async function financeAuditForRequest(request: Request) {
          transaction_row.class_id AS class_id,
          CASE transaction_row.source_type
            WHEN 'stock_trade' THEN 'stock'
+           WHEN 'deposit_contract' THEN 'deposit'
+           WHEN 'deposit_settlement' THEN 'deposit'
            ELSE 'transaction'
          END AS category,
          transaction_row.transaction_type AS action,
@@ -246,13 +248,25 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'manual_debit' THEN '교사 차감'
            WHEN 'salary' THEN '직업 월급'
            WHEN 'deposit_open' THEN '예금 가입'
-           WHEN 'deposit_maturity' THEN '예금 만기 자동 지급'
-           WHEN 'deposit_early_termination' THEN '예금 중도해지'
+           WHEN 'deposit_maturity' THEN CASE transaction_row.actor_type
+             WHEN 'teacher' THEN '예금 교사 비상 정산'
+             ELSE '예금 만기 자동 지급' END
+           WHEN 'deposit_early_termination' THEN CASE transaction_row.actor_type
+             WHEN 'teacher' THEN '예금 교사 비상 정산'
+             ELSE '예금 중도해지' END
            WHEN 'stock_buy' THEN '주식 매수'
            WHEN 'stock_sell' THEN '주식 매도'
            ELSE '금융 거래'
          END AS title,
-         transaction_row.description AS detail,
+         CASE
+           WHEN transaction_row.source_type = 'deposit_settlement'
+             AND transaction_row.actor_type = 'teacher'
+           THEN transaction_row.description || ' · 사유: ' || COALESCE(
+             json_extract(transaction_row.metadata_json, '$.interventionReason'),
+             '기록 확인 필요'
+           )
+           ELSE transaction_row.description
+         END AS detail,
          transaction_row.actor_label AS actor_label,
          student.official_name AS student_name,
          entry.amount AS amount,
