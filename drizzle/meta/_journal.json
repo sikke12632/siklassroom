@@ -169,6 +169,13 @@
       "when": 1785839317396,
       "tag": "0023_finance_stock_tick_retries",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1785841059725,
+      "tag": "0024_stock_system_class_guard",
+      "breakpoints": true
     }
   ]
 }

@@ -3681,12 +3681,20 @@ export async function processFinanceStockMarketTicks(
     let market: MarketRow | null = null;
     let stock: StockRow | null = null;
     try {
-      [market, stock] = await Promise.all([
+      const [currentMarket, currentStock, activeClass] = await Promise.all([
         marketForClass(db, row.class_id),
         stockForClass(db, row.class_id),
+        db.prepare(
+          `SELECT id FROM classes
+           WHERE id = ? AND status = 'active'
+           LIMIT 1`,
+        ).bind(row.class_id).first<{ id: string }>(),
       ]);
+      market = currentMarket;
+      stock = currentStock;
       if (
-        !market
+        !activeClass
+        || !market
         || !stock
         || !market.is_open
         || market.next_tick_at === null
@@ -3710,6 +3718,16 @@ export async function processFinanceStockMarketTicks(
       if (result.skipped) skipped += 1;
       else ticked += 1;
     } catch (error) {
+      try {
+        const activeClass = await db.prepare(
+          `SELECT id FROM classes
+           WHERE id = ? AND status = 'active'
+           LIMIT 1`,
+        ).bind(row.class_id).first<{ id: string }>();
+        if (!activeClass) continue;
+      } catch {
+        // Preserve the original tick failure when the status recheck also fails.
+      }
       failed += 1;
       if (market && stock && market.next_tick_at !== null) {
         try {

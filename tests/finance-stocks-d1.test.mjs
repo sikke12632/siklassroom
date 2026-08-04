@@ -2116,25 +2116,100 @@ test("overlapping automatic stock runs apply one due tick only once", {
       expiredNews: 0,
     });
 
-    const finalState = lastResults(executeSql(
-      persistPath,
-      `SELECT stock.current_price, stock.previous_price, stock.revision,
-              market.next_tick_at,
-              (SELECT COUNT(*) FROM finance_stock_events event
-               WHERE event.stock_id = stock.id
-                 AND event.action IN ('automatic_tick', 'news_tick')) AS tick_event_count,
-              (SELECT MAX(event.revision) FROM finance_stock_events event
-               WHERE event.stock_id = stock.id) AS maximum_event_revision
-       FROM finance_stocks stock
-       JOIN finance_stock_markets market ON market.class_id = stock.class_id
-       WHERE stock.id = 'stock-race';`,
-    ))[0];
+    const finalState = result.finalState;
     assert.deepEqual(finalState, result.innerState);
+    assert.equal(finalState.class_status, "active");
     assert.equal(finalState.previous_price, 1000);
     assert.equal(finalState.revision, 1);
     assert.equal(finalState.next_tick_at, 902000);
     assert.equal(finalState.tick_event_count, 1);
     assert.equal(finalState.maximum_event_revision, 1);
+    assert.equal(finalState.retry_count, 0);
+
+    const archiveAfterDueResponse = await worker.fetch("http://test.local/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        now: 903000,
+        limit: 1,
+        mode: "archive-after-due",
+        classId: "class-stock-race",
+      }),
+    });
+    assert.equal(archiveAfterDueResponse.status, 200);
+    const archiveAfterDue = await archiveAfterDueResponse.json();
+    assert.equal(archiveAfterDue.archiveRuns, 1);
+    assert.deepEqual(archiveAfterDue.result, {
+      due: 1,
+      ticked: 0,
+      skipped: 0,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    assert.deepEqual(archiveAfterDue.state, {
+      ...finalState,
+      class_status: "archived",
+    });
+
+    const activateResponse = await worker.fetch("http://test.local/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        now: 903500,
+        limit: 1,
+        mode: "activate",
+        classId: "class-stock-race",
+      }),
+    });
+    assert.equal(activateResponse.status, 200);
+    assert.deepEqual((await activateResponse.json()).state, finalState);
+
+    const archiveBeforeBatchResponse = await worker.fetch("http://test.local/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        now: 904000,
+        limit: 1,
+        mode: "archive-before-batch",
+        classId: "class-stock-race",
+      }),
+    });
+    assert.equal(archiveBeforeBatchResponse.status, 200);
+    const archiveBeforeBatch = await archiveBeforeBatchResponse.json();
+    assert.equal(archiveBeforeBatch.archiveRuns, 1);
+    assert.deepEqual(archiveBeforeBatch.result, {
+      due: 1,
+      ticked: 0,
+      skipped: 0,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+      expiredNews: 0,
+    });
+    assert.deepEqual(archiveBeforeBatch.state, {
+      ...finalState,
+      class_status: "archived",
+    });
+
+    const guardProbeResponse = await worker.fetch("http://test.local/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        now: 904500,
+        limit: 1,
+        mode: "probe-archive-guards",
+        classId: "class-stock-race",
+      }),
+    });
+    assert.equal(guardProbeResponse.status, 200);
+    const guardProbe = await guardProbeResponse.json();
+    assert.equal(guardProbe.errors.length, 3);
+    assert.match(guardProbe.errors[0], /FINANCE_STOCK_SYSTEM_UPDATE_DENIED/);
+    assert.match(guardProbe.errors[1], /FINANCE_STOCK_MARKET_SYSTEM_UPDATE_DENIED/);
+    assert.match(guardProbe.errors[2], /FINANCE_STOCK_EVENT_INVALID/);
+    assert.deepEqual(guardProbe.state, archiveBeforeBatch.state);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });
