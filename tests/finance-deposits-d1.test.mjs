@@ -193,6 +193,69 @@ test("deposit products and contracts keep terms, timing, and ledger data safe in
     executeSql(
       persistPath,
       `
+        INSERT INTO finance_cash_requests (
+          id, class_id, requester_student_id, wallet_account_id,
+          request_type, amount, idempotency_key, payload_hash,
+          student_number_snapshot, student_name_snapshot,
+          wallet_balance_snapshot, wallet_revision_snapshot, revision, created_at
+        ) VALUES (
+          'request-deposit-reserve', 'class-deposits', 'student-early',
+          'finance:student:student-early:wallet', 'withdrawal', 9000,
+          'request:deposit-reserve:1', 'hash:request:deposit-reserve',
+          1, 'Early Student', 10000, 1, 0, 1900
+        );
+        INSERT INTO finance_transactions (
+          id, class_id, status, transaction_type, description,
+          idempotency_key, payload_hash, source_type, source_id,
+          actor_type, actor_label, created_at
+        ) VALUES (
+          'tx-open-reserved-probe', 'class-deposits', 'pending', 'deposit_open',
+          'Reserved withdrawal deposit probe', 'tx:deposit:reserved-probe',
+          'hash:tx:deposit:reserved-probe', 'deposit_contract',
+          'contract-reserved-probe', 'system', 'Automatic deposit system', 1901
+        );
+      `,
+    );
+    const reservedDeposit = executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_ledger_entries (
+          id, transaction_id, class_id, account_id, amount,
+          balance_after, account_revision_after, created_at
+        ) VALUES (
+          'entry-open-reserved-probe-wallet', 'tx-open-reserved-probe',
+          'class-deposits', 'finance:student:student-early:wallet',
+          -2000, 8000, 2, 1901
+        );
+      `,
+      { expectSuccess: false },
+    );
+    assert.match(
+      reservedDeposit.output,
+      /FINANCE_INSUFFICIENT_AVAILABLE_BALANCE/,
+    );
+    executeSql(
+      persistPath,
+      `
+        DELETE FROM finance_transactions
+        WHERE id = 'tx-open-reserved-probe' AND status = 'pending';
+        INSERT INTO finance_request_resolutions (
+          id, request_id, class_id, decision, idempotency_key, payload_hash,
+          expected_request_revision, actor_type, actor_student_id,
+          actor_label, is_emergency, posted_transaction_id,
+          transaction_payload_hash, resolved_at, created_at
+        ) VALUES (
+          'resolution-deposit-reserve', 'request-deposit-reserve',
+          'class-deposits', 'cancelled', 'decision:deposit-reserve:1',
+          'hash:decision:deposit-reserve', 0, 'student', 'student-early',
+          'Early Student', 0, NULL, NULL, 1902, 1902
+        );
+      `,
+    );
+
+    executeSql(
+      persistPath,
+      `
         INSERT INTO finance_transactions (
           id, class_id, status, transaction_type, description,
           idempotency_key, payload_hash, source_type, source_id,

@@ -42,6 +42,7 @@ export type FinanceStocksPanelProps = {
   classIsActive?: boolean;
   currencyLabel?: string;
   denominations?: number[];
+  refreshRevision?: number;
   onRefresh?: () => Promise<void>;
 };
 
@@ -111,6 +112,8 @@ type FinanceStockHolder = FinanceStockHolding & {
 
 type FinanceStockWallet = {
   balance: number;
+  pendingWithdrawalAmount: number;
+  availableBalance: number;
   status: "active" | "frozen" | "closed";
   revision: number;
 };
@@ -576,13 +579,23 @@ function normalizeNews(value: unknown): FinanceStockNews | null {
   };
 }
 
-function normalizeStocksResponse(value: unknown): FinanceStocksData {
+export function normalizeStocksResponse(value: unknown): FinanceStocksData {
   if (!isRecord(value)) throw new Error("주식 정보를 확인할 수 없어요. 새로고침해 주세요.");
   const root = isRecord(value.stocks) ? value.stocks : value;
   const marketRaw = isRecord(root.market) ? root.market : {};
   const stock = normalizeStock(root.stock ?? root.asset);
   const walletRaw = isRecord(root.wallet) ? root.wallet : null;
   const walletStatus = textValue(walletRaw?.status, "active").toLocaleLowerCase("en-US");
+  const walletBalance = numberValue(walletRaw?.balance);
+  const pendingWithdrawalAmount = Math.max(0, numberValue(
+    walletRaw?.pendingWithdrawalAmount ?? walletRaw?.pending_withdrawal_amount,
+  ));
+  const availableBalance = walletRaw
+    ? Math.max(0, numberValue(
+      walletRaw.availableBalance ?? walletRaw.available_balance,
+      walletBalance - pendingWithdrawalAmount,
+    ))
+    : 0;
   return {
     serverTime: epochValue(root.serverTime ?? root.server_time, Date.now()),
     settingsRevision: numberValue(root.settingsRevision ?? root.settings_revision),
@@ -609,7 +622,9 @@ function normalizeStocksResponse(value: unknown): FinanceStocksData {
     holding: normalizeHolding(root.holding, stock),
     wallet: walletRaw
       ? {
-        balance: numberValue(walletRaw.balance),
+        balance: walletBalance,
+        pendingWithdrawalAmount,
+        availableBalance,
         status: ["frozen", "closed"].includes(walletStatus)
           ? walletStatus as "frozen" | "closed"
           : "active",
@@ -1125,6 +1140,7 @@ export function FinanceStocksPanel({
   classIsActive = true,
   currencyLabel,
   denominations,
+  refreshRevision = 0,
   onRefresh,
 }: FinanceStocksPanelProps) {
   const unit = currencyLabel?.trim() || "학급화폐";
@@ -1141,6 +1157,7 @@ export function FinanceStocksPanel({
   const [busyId, setBusyId] = useState<string | null>(null);
   const actionKeys = useRef<Record<string, { fingerprint: string; key: string }>>({});
   const requestSequence = useRef(0);
+  const lastExternalRefresh = useRef(refreshRevision);
 
   const loadStocks = useCallback(async (quiet = false, signal?: AbortSignal) => {
     const sequence = ++requestSequence.current;
@@ -1181,6 +1198,14 @@ export function FinanceStocksPanel({
       controller.abort();
     };
   }, [loadStocks]);
+
+  useEffect(() => {
+    if (lastExternalRefresh.current === refreshRevision) return;
+    lastExternalRefresh.current = refreshRevision;
+    const controller = new AbortController();
+    void loadStocks(true, controller.signal);
+    return () => controller.abort();
+  }, [loadStocks, refreshRevision]);
 
   const refreshEverything = useCallback(async () => {
     await loadStocks(true);
@@ -1266,7 +1291,7 @@ export function FinanceStocksPanel({
       return true;
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "주식을 만들지 못했어요." });
-      await loadStocks(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1327,7 +1352,7 @@ export function FinanceStocksPanel({
       return true;
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "장 설정을 바꾸지 못했어요." });
-      await loadStocks(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1362,7 +1387,7 @@ export function FinanceStocksPanel({
       return true;
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "종목 설정을 바꾸지 못했어요." });
-      await loadStocks(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1395,7 +1420,7 @@ export function FinanceStocksPanel({
       return true;
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "시세를 갱신하지 못했어요." });
-      await loadStocks(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1471,7 +1496,7 @@ export function FinanceStocksPanel({
       return true;
     } catch (errorReason) {
       setNotice({ tone: "error", message: errorReason instanceof Error ? errorReason.message : "시장 뉴스를 내리지 못했어요." });
-      await loadStocks(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1523,6 +1548,7 @@ export function FinanceStocksPanel({
         tone: "error",
         message: reasonValue instanceof Error ? reasonValue.message : "비상 청산을 마치지 못했어요.",
       });
+      await onRefresh?.().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -1550,8 +1576,8 @@ export function FinanceStocksPanel({
       setNotice({ tone: "error", message: `지금은 최대 ${buyCapacity.toLocaleString("ko-KR")}주까지 살 수 있어요.` });
       return false;
     }
-    if (side === "buy" && cashAmount > data.wallet.balance) {
-      setNotice({ tone: "error", message: "수수료를 포함한 결제금액보다 지갑 잔액이 적어요." });
+    if (side === "buy" && cashAmount > data.wallet.availableBalance) {
+      setNotice({ tone: "error", message: "출금 신청 금액을 빼면 수수료를 포함한 결제금액이 부족해요." });
       return false;
     }
     if (side === "sell" && quantity > data.holding.shares) {
@@ -1600,6 +1626,7 @@ export function FinanceStocksPanel({
         return true;
       }
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "주식 거래를 마치지 못했어요." });
+      await onRefresh?.().catch(() => undefined);
       return false;
     } finally {
       setBusyId(null);
@@ -2157,7 +2184,7 @@ function StudentStocks({
   );
   const quantityAllowed = validQuantity && (
     side === "buy"
-      ? quantity <= buyCapacity && Boolean(data.wallet && finalAmount <= data.wallet.balance)
+      ? quantity <= buyCapacity && Boolean(data.wallet && finalAmount <= data.wallet.availableBalance)
       : quantity <= data.holding.shares
   );
   const trading = busyId === `stock-trade:${stock.id}:${side}`;
@@ -2185,7 +2212,16 @@ function StudentStocks({
       </div>
 
       <div style={styles.hero}>
-        <SummaryCard icon={<WalletCards />} label="내 지갑" value={data.wallet ? moneyText(data.wallet.balance, unit) : "확인 필요"} help={data.wallet?.status === "frozen" ? "지갑 사용이 잠시 멈췄어요" : "수수료까지 포함해 확인해요"} />
+        <SummaryCard
+          icon={<WalletCards />}
+          label="내 지갑 사용 가능 금액"
+          value={data.wallet ? moneyText(data.wallet.availableBalance, unit) : "확인 필요"}
+          help={data.wallet?.status === "frozen"
+            ? "지갑 사용이 잠시 멈췄어요"
+            : data.wallet && data.wallet.pendingWithdrawalAmount > 0
+              ? `출금 신청 ${moneyText(data.wallet.pendingWithdrawalAmount, unit)} 보관 중`
+              : "수수료까지 포함해 확인해요"}
+        />
         <SummaryCard icon={<Coins />} label="내 보유 주식" value={`${data.holding.shares.toLocaleString("ko-KR")}주`} help={`평균 매수가 ${moneyText(data.holding.averagePrice, unit)}`} />
         <SummaryCard icon={<BarChart3 />} label="현재 평가금액" value={moneyText(data.holding.marketValue, unit)} help={`현재가 ${moneyText(stock.currentPrice, unit)}`} />
         <SummaryCard icon={profitUp ? <TrendingUp /> : <TrendingDown />} label="평가 손익" value={signedMoneyText(data.holding.evaluationProfit, unit)} help={profitUp ? "현재 가격 기준 이익" : "현재 가격 기준 손실"} />
@@ -2279,9 +2315,9 @@ function StudentStocks({
                 />
                 <span style={styles.suffix}>주</span>
               </span>
-              <small id="stock-quantity-help" style={styles.fieldHelp}>
+              <small id="stock-quantity-help" style={styles.fieldHelp} aria-live="polite">
                 {side === "buy"
-                  ? `지금 최대 ${buyCapacity.toLocaleString("ko-KR")}주 매수 가능`
+                  ? `지금 최대 ${buyCapacity.toLocaleString("ko-KR")}주 매수 가능 · 사용 가능 ${data.wallet ? moneyText(data.wallet.availableBalance, unit) : "확인 필요"}${validQuantity && data.wallet && finalAmount > data.wallet.availableBalance ? ` · ${moneyText(finalAmount - data.wallet.availableBalance, unit)} 부족` : ""}`
                   : `내가 가진 ${data.holding.shares.toLocaleString("ko-KR")}주 안에서 매도 가능`}
               </small>
             </label>

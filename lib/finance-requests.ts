@@ -260,6 +260,12 @@ function mapDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   const mappings: Array<[string, number, string, string]> = [
     [
+      "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE",
+      409,
+      "다른 출금 신청으로 보관 중인 금액을 빼면 사용할 수 있는 잔액이 부족합니다.",
+      "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE",
+    ],
+    [
       "FINANCE_WITHDRAWAL_AVAILABLE_BALANCE",
       409,
       "이미 신청한 출금액을 빼면 출금할 수 있는 잔액이 부족합니다.",

@@ -1,9 +1,12 @@
 import { sha256 } from "./crypto";
 import { database, ensureSchema } from "./database";
+import { financeWalletAvailability } from "./finance-available-balance";
 import {
   FinanceDepositRuleError,
+  FINANCE_DEPOSIT_SETTLEMENT_BATCH_SIZE,
   calculateFinanceDepositQuote,
   financeDepositMaturityAt,
+  financeDepositSettlementEnabled,
   normalizeFinanceDepositPrincipal,
   normalizeFinanceDepositProduct,
 } from "./finance-deposit-rules";
@@ -483,6 +486,7 @@ function mapDatabaseError(error: unknown): never {
     ["FINANCE_DEPOSIT_SETTLEMENT_STALE", 409, "예금이 이미 처리되었거나 만기 상태가 바뀌었어요.", "FINANCE_DEPOSIT_SETTLEMENT_STALE"],
     ["FINANCE_DEPOSIT_LEDGER_MISMATCH", 409, "예금 기록과 지갑 기록이 맞지 않아 처리를 멈췄습니다.", "FINANCE_DEPOSIT_LEDGER_MISMATCH"],
     ["FINANCE_DEPOSIT_CALCULATION_MISMATCH", 409, "예금 이자 계산을 다시 확인해야 합니다.", "FINANCE_DEPOSIT_CALCULATION_MISMATCH"],
+    ["FINANCE_INSUFFICIENT_AVAILABLE_BALANCE", 409, "출금 신청 금액을 빼면 예금에 맡길 수 있는 금액이 부족해요.", "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE"],
     ["FINANCE_INSUFFICIENT_FUNDS", 409, "지갑 잔액이 부족해 예금에 가입하지 못했어요.", "FINANCE_INSUFFICIENT_FUNDS"],
     ["FINANCE_ACCOUNT_NOT_ACTIVE", 409, "현재 사용할 수 없는 지갑입니다.", "FINANCE_ACCOUNT_NOT_ACTIVE"],
     ["FINANCE_ACCOUNT_STALE", 409, "다른 거래가 먼저 반영됐어요. 최신 잔액으로 다시 시도해 주세요.", "FINANCE_ACCOUNT_STALE"],
@@ -816,6 +820,18 @@ export async function subscribeFinanceDeposit(
   const { wallet, issuance } = await accountRows(db, context.classroom.id, context.actor.id);
   if (Number(wallet.balance) < principal) {
     throw new ApiError(409, "지갑 잔액이 부족해 예금에 가입하지 못했어요.", "FINANCE_INSUFFICIENT_FUNDS");
+  }
+  const walletAvailability = await financeWalletAvailability(db, {
+    classId: context.classroom.id,
+    walletAccountId: wallet.id,
+    balance: Number(wallet.balance),
+  });
+  if (walletAvailability.availableBalance < principal) {
+    throw new ApiError(
+      409,
+      "출금 신청 금액을 빼면 예금에 맡길 수 있는 금액이 부족해요.",
+      "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE",
+    );
   }
   const active = await db.prepare(
     `SELECT contract.id
@@ -1187,12 +1203,14 @@ export async function financeDepositsForRequest(request: Request) {
   const context = await financeContextForRequest(request);
   const db = database();
   const now = Date.now();
-  const automation = await settleDueDepositContracts(db, {
-    now,
-    limit: context.actor.type === "teacher" ? 3 : 3,
-    classId: context.classroom.id,
-    studentId: context.actor.type === "student" ? context.actor.id : undefined,
-  });
+  const automation = financeDepositSettlementEnabled(request.url)
+    ? await settleDueDepositContracts(db, {
+      now,
+      limit: FINANCE_DEPOSIT_SETTLEMENT_BATCH_SIZE,
+      classId: context.classroom.id,
+      studentId: context.actor.type === "student" ? context.actor.id : undefined,
+    })
+    : { due: 0, settled: 0, failed: 0 };
   const productWhere = context.actor.type === "teacher"
     ? "product.class_id = ?"
     : `product.class_id = ? AND (
@@ -1250,16 +1268,24 @@ export async function financeDepositsForRequest(request: Request) {
   const serializedContracts = contracts.results.map((row) => serializeContract(row, now));
   const wallet = context.actor.type === "student"
     ? await db.prepare(
-      `SELECT balance, status, revision, updated_at
+      `SELECT id, balance, status, revision, updated_at
        FROM finance_accounts
        WHERE class_id = ? AND student_id = ? AND account_type = 'student_wallet'
        LIMIT 1`,
     ).bind(context.classroom.id, context.actor.id).first<{
+      id: string;
       balance: number;
       status: string;
       revision: number;
       updated_at: number;
     }>()
+    : null;
+  const walletAvailability = wallet
+    ? await financeWalletAvailability(db, {
+      classId: context.classroom.id,
+      walletAccountId: wallet.id,
+      balance: Number(wallet.balance),
+    })
     : null;
   const activeContracts = serializedContracts.filter((contract) => (
     contract.status === "active" || contract.status === "matured"
@@ -1274,6 +1300,8 @@ export async function financeDepositsForRequest(request: Request) {
     contracts: serializedContracts,
     wallet: wallet ? {
       balance: Number(wallet.balance),
+      pendingWithdrawalAmount: walletAvailability?.pendingWithdrawalAmount ?? 0,
+      availableBalance: walletAvailability?.availableBalance ?? Number(wallet.balance),
       status: wallet.status,
       revision: Number(wallet.revision),
       updatedAt: Number(wallet.updated_at),

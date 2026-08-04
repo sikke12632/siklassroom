@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -97,8 +97,11 @@ export function FinancePortal() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+  const [moduleRefreshRevision, setModuleRefreshRevision] = useState(0);
+  const requestSequence = useRef(0);
 
   const loadContext = useCallback(async (signal: AbortSignal, quiet = false) => {
+    const sequence = ++requestSequence.current;
     if (quiet) setRefreshing(true);
     else setLoading(true);
     setError(null);
@@ -113,18 +116,23 @@ export function FinancePortal() {
       });
       const data = await response.json().catch(() => ({})) as FinanceOverviewPayload & { error?: string };
       if (!response.ok) {
+        if (signal.aborted || requestSequence.current !== sequence) return;
         setOverview(null);
         setError(classifyError(response.status, data.error));
         return;
       }
+      if (signal.aborted || requestSequence.current !== sequence) return;
       setOverview(data);
     } catch (reason) {
-      if ((reason as Error).name !== "AbortError") {
+      if (
+        (reason as Error).name !== "AbortError"
+        && requestSequence.current === sequence
+      ) {
         setOverview(null);
         setError(classifyError(0));
       }
     } finally {
-      if (!signal.aborted) {
+      if (!signal.aborted && requestSequence.current === sequence) {
         if (quiet) setRefreshing(false);
         else setLoading(false);
       }
@@ -145,6 +153,7 @@ export function FinancePortal() {
   const refreshOverview = useCallback(async () => {
     const controller = new AbortController();
     await loadContext(controller.signal, true);
+    setModuleRefreshRevision((revision) => revision + 1);
   }, [loadContext]);
 
   if (loading) {
@@ -199,6 +208,7 @@ export function FinancePortal() {
       context={overview.context}
       finance={overview.finance}
       refreshing={refreshing}
+      moduleRefreshRevision={moduleRefreshRevision}
       onRefresh={refreshOverview}
     />
   );
@@ -208,11 +218,13 @@ function FinanceHome({
   context,
   finance,
   refreshing,
+  moduleRefreshRevision,
   onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
   refreshing: boolean;
+  moduleRefreshRevision: number;
   onRefresh: () => Promise<void>;
 }) {
   const isTeacher = context.financeRole === "teacher";
@@ -264,6 +276,7 @@ function FinanceHome({
             classIsActive={classIsActive}
             backHref={backHref}
             refreshing={refreshing}
+            moduleRefreshRevision={moduleRefreshRevision}
             onRefresh={onRefresh}
           />
         ) : isBanker ? (
@@ -273,6 +286,7 @@ function FinanceHome({
             activeJob={context.activeJob}
             backHref={backHref}
             refreshing={refreshing}
+            moduleRefreshRevision={moduleRefreshRevision}
             onRefresh={onRefresh}
           />
         ) : (
@@ -281,6 +295,7 @@ function FinanceHome({
             finance={finance}
             backHref={backHref}
             refreshing={refreshing}
+            moduleRefreshRevision={moduleRefreshRevision}
             onRefresh={onRefresh}
           />
         )}
@@ -295,6 +310,7 @@ function TeacherFinanceHome({
   classIsActive,
   backHref,
   refreshing,
+  moduleRefreshRevision,
   onRefresh,
 }: {
   context: FinanceContext;
@@ -302,6 +318,7 @@ function TeacherFinanceHome({
   classIsActive: boolean;
   backHref: string;
   refreshing: boolean;
+  moduleRefreshRevision: number;
   onRefresh: () => Promise<void>;
 }) {
   return (
@@ -345,6 +362,7 @@ function TeacherFinanceHome({
         classIsActive={classIsActive}
         currencyLabel={finance.currencyLabel}
         denominations={finance.settings.denominations}
+        refreshRevision={moduleRefreshRevision}
         onRefresh={onRefresh}
       />
 
@@ -356,6 +374,7 @@ function TeacherFinanceHome({
           classIsActive={classIsActive}
           currencyLabel={finance.currencyLabel}
           denominations={finance.settings.denominations}
+          refreshRevision={moduleRefreshRevision}
           onRefresh={onRefresh}
         />
       </div>
@@ -395,6 +414,7 @@ function BankerFinanceHome({
   activeJob,
   backHref,
   refreshing,
+  moduleRefreshRevision,
   onRefresh,
 }: {
   context: FinanceContext;
@@ -402,6 +422,7 @@ function BankerFinanceHome({
   activeJob: FinanceContext["activeJob"];
   backHref: string;
   refreshing: boolean;
+  moduleRefreshRevision: number;
   onRefresh: () => Promise<void>;
 }) {
   return (
@@ -436,6 +457,7 @@ function BankerFinanceHome({
         classIsActive={context.classroom.status === "active"}
         currencyLabel={finance.currencyLabel}
         denominations={finance.settings.denominations}
+        refreshRevision={moduleRefreshRevision}
         onRefresh={onRefresh}
       />
 
@@ -447,6 +469,7 @@ function BankerFinanceHome({
           classIsActive={context.classroom.status === "active"}
           currencyLabel={finance.currencyLabel}
           denominations={finance.settings.denominations}
+          refreshRevision={moduleRefreshRevision}
           onRefresh={onRefresh}
         />
       </div>
@@ -476,12 +499,14 @@ function StudentFinanceHome({
   finance,
   backHref,
   refreshing,
+  moduleRefreshRevision,
   onRefresh,
 }: {
   context: FinanceContext;
   finance: FinanceOverviewData;
   backHref: string;
   refreshing: boolean;
+  moduleRefreshRevision: number;
   onRefresh: () => Promise<void>;
 }) {
   return (
@@ -513,6 +538,7 @@ function StudentFinanceHome({
         classIsActive={context.classroom.status === "active"}
         currencyLabel={finance.currencyLabel}
         denominations={finance.settings.denominations}
+        refreshRevision={moduleRefreshRevision}
         onRefresh={onRefresh}
       />
 
@@ -524,6 +550,7 @@ function StudentFinanceHome({
           classIsActive={context.classroom.status === "active"}
           currencyLabel={finance.currencyLabel}
           denominations={finance.settings.denominations}
+          refreshRevision={moduleRefreshRevision}
           onRefresh={onRefresh}
         />
       </div>

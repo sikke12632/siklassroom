@@ -80,6 +80,8 @@ export type FinanceDepositsData = {
   contracts: FinanceDepositContract[];
   wallet: null | {
     balance: number;
+    pendingWithdrawalAmount: number;
+    availableBalance: number;
     status: "active" | "frozen" | "closed";
   };
   summary: {
@@ -95,6 +97,34 @@ export type FinanceDepositsData = {
   };
 };
 
+export function depositAutomationChangedWallet(data: FinanceDepositsData) {
+  return data.automation.settled > 0;
+}
+
+export type DepositAutomationRefreshState = {
+  pending: boolean;
+  queued: boolean;
+};
+
+export async function requestDepositAutomationRefresh(
+  state: DepositAutomationRefreshState,
+  refresh: () => Promise<void>,
+) {
+  if (state.pending) {
+    state.queued = true;
+    return;
+  }
+  state.pending = true;
+  try {
+    do {
+      state.queued = false;
+      await refresh().catch(() => undefined);
+    } while (state.queued);
+  } finally {
+    state.pending = false;
+  }
+}
+
 export type FinanceDepositsPanelProps = {
   classId: string;
   financeRole: FinanceDepositRole;
@@ -106,6 +136,7 @@ export type FinanceDepositsPanelProps = {
     currencyUnit?: string;
     denominations?: number[];
   };
+  refreshRevision?: number;
   onRefresh?: () => Promise<void>;
 };
 
@@ -462,11 +493,21 @@ function normalizeContract(value: unknown): FinanceDepositContract | null {
   };
 }
 
-function normalizeDepositsResponse(value: unknown): FinanceDepositsData {
+export function normalizeDepositsResponse(value: unknown): FinanceDepositsData {
   if (!isRecord(value)) throw new Error("예금 정보를 확인할 수 없어요. 새로고침해 주세요.");
   const root = isRecord(value.deposits) ? value.deposits : value;
   const summaryRaw = isRecord(root.summary) ? root.summary : {};
   const walletRaw = isRecord(root.wallet) ? root.wallet : null;
+  const walletBalance = numberValue(walletRaw?.balance);
+  const pendingWithdrawalAmount = Math.max(0, numberValue(
+    walletRaw?.pendingWithdrawalAmount ?? walletRaw?.pending_withdrawal_amount,
+  ));
+  const availableBalance = walletRaw
+    ? Math.max(0, numberValue(
+      walletRaw.availableBalance ?? walletRaw.available_balance,
+      walletBalance - pendingWithdrawalAmount,
+    ))
+    : 0;
   const automationRaw = isRecord(root.automation) ? root.automation : {};
   const products = Array.isArray(root.products)
     ? root.products.map(normalizeProduct).filter((item): item is FinanceDepositProduct => item !== null)
@@ -481,7 +522,9 @@ function normalizeDepositsResponse(value: unknown): FinanceDepositsData {
     contracts,
     wallet: walletRaw
       ? {
-        balance: numberValue(walletRaw.balance),
+        balance: walletBalance,
+        pendingWithdrawalAmount,
+        availableBalance,
         status: ["frozen", "closed"].includes(textValue(walletRaw.status))
           ? textValue(walletRaw.status) as "frozen" | "closed"
           : "active",
@@ -677,6 +720,7 @@ export function FinanceDepositsPanel({
   currencyLabel,
   denominations,
   settings,
+  refreshRevision = 0,
   onRefresh,
 }: FinanceDepositsPanelProps) {
   const unit = currencyLabel?.trim() || settings?.currencyUnit?.trim() || "학급화폐";
@@ -698,14 +742,24 @@ export function FinanceDepositsPanel({
   const [earlyConfirmation, setEarlyConfirmation] = useState<string | null>(null);
   const actionKeys = useRef<Record<string, { fingerprint: string; key: string }>>({});
   const requestSequence = useRef(0);
+  const lastExternalRefresh = useRef(refreshRevision);
+  const automationRefreshState = useRef<DepositAutomationRefreshState>({
+    pending: false,
+    queued: false,
+  });
 
-  const loadDeposits = useCallback(async (quiet = false, signal?: AbortSignal) => {
+  const loadDeposits = useCallback(async (
+    quiet = false,
+    signal?: AbortSignal,
+    settleMatured = true,
+  ) => {
     const sequence = ++requestSequence.current;
     if (quiet) setRefreshing(true);
     else setLoading(true);
     setError(null);
     try {
       const query = new URLSearchParams({ classId });
+      if (!settleMatured) query.set("settleMatured", "0");
       const response = await fetch(`/api/finance/deposits?${query.toString()}`, {
         headers: { Accept: "application/json" },
         cache: "no-store",
@@ -713,12 +767,20 @@ export function FinanceDepositsPanel({
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(apiErrorMessage(response.status, payload));
-      if (signal?.aborted || requestSequence.current !== sequence) return;
-      setData(normalizeDepositsResponse(payload));
+      const normalized = normalizeDepositsResponse(payload);
+      if (signal?.aborted) return null;
+      if (requestSequence.current !== sequence) {
+        return settleMatured && depositAutomationChangedWallet(normalized)
+          ? normalized
+          : null;
+      }
+      setData(normalized);
+      return normalized;
     } catch (reason) {
       if ((reason as Error).name !== "AbortError" && requestSequence.current === sequence) {
         setError(reason instanceof Error ? reason.message : "예금 정보를 불러오지 못했어요.");
       }
+      return null;
     } finally {
       if (!signal?.aborted && requestSequence.current === sequence) {
         setLoading(false);
@@ -727,16 +789,38 @@ export function FinanceDepositsPanel({
     }
   }, [classId]);
 
+  const synchronizeAutomatedSettlement = useCallback(async (
+    loaded: FinanceDepositsData | null,
+  ) => {
+    if (
+      !loaded
+      || !depositAutomationChangedWallet(loaded)
+      || !onRefresh
+    ) return;
+    await requestDepositAutomationRefresh(
+      automationRefreshState.current,
+      onRefresh,
+    );
+  }, [onRefresh]);
+
   useEffect(() => {
     const controller = new AbortController();
     const frame = requestAnimationFrame(() => {
-      void loadDeposits(false, controller.signal);
+      void loadDeposits(false, controller.signal).then(synchronizeAutomatedSettlement);
     });
     return () => {
       cancelAnimationFrame(frame);
       controller.abort();
     };
-  }, [loadDeposits]);
+  }, [loadDeposits, synchronizeAutomatedSettlement]);
+
+  useEffect(() => {
+    if (lastExternalRefresh.current === refreshRevision) return;
+    lastExternalRefresh.current = refreshRevision;
+    const controller = new AbortController();
+    void loadDeposits(true, controller.signal, false).then(synchronizeAutomatedSettlement);
+    return () => controller.abort();
+  }, [loadDeposits, refreshRevision, synchronizeAutomatedSettlement]);
 
   const refreshEverything = useCallback(async () => {
     await loadDeposits(true);
@@ -772,11 +856,11 @@ export function FinanceDepositsPanel({
         tone: "error",
         message: reason instanceof Error ? reason.message : "예금 해지를 처리하지 못했어요.",
       });
-      await loadDeposits(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
     } finally {
       setBusyId(null);
     }
-  }, [classId, loadDeposits, refreshEverything]);
+  }, [classId, refreshEverything]);
 
   async function createProduct(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -845,7 +929,7 @@ export function FinanceDepositsPanel({
       await refreshEverything();
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "상품을 발행하지 못했어요." });
-      await loadDeposits(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
     } finally {
       setBusyId(null);
     }
@@ -875,7 +959,7 @@ export function FinanceDepositsPanel({
       await refreshEverything();
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "판매 상태를 바꾸지 못했어요." });
-      await loadDeposits(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
     } finally {
       setBusyId(null);
     }
@@ -896,8 +980,8 @@ export function FinanceDepositsPanel({
       });
       return;
     }
-    if (data?.wallet && amount > data.wallet.balance) {
-      setNotice({ tone: "error", message: "지갑 잔액보다 많이 맡길 수 없어요." });
+    if (data?.wallet && amount > data.wallet.availableBalance) {
+      setNotice({ tone: "error", message: "출금 신청 금액을 뺀 사용 가능 금액보다 많이 맡길 수 없어요." });
       return;
     }
     const slot = `deposit-subscribe:${product.id}`;
@@ -919,7 +1003,7 @@ export function FinanceDepositsPanel({
       await refreshEverything();
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "예금에 가입하지 못했어요." });
-      await loadDeposits(true).catch(() => undefined);
+      await refreshEverything().catch(() => undefined);
     } finally {
       setBusyId(null);
     }
@@ -961,7 +1045,7 @@ export function FinanceDepositsPanel({
           <CircleAlert aria-hidden="true" />
         </div>
         <div style={{ ...styles.actions, marginTop: 16 }}>
-          <button className="button button-light" type="button" onClick={() => void loadDeposits(false)}>
+          <button className="button button-light" type="button" onClick={() => void loadDeposits(false).then(synchronizeAutomatedSettlement)}>
             <RefreshCw aria-hidden="true" />다시 불러오기
           </button>
         </div>
@@ -1422,8 +1506,12 @@ function StudentDeposits({
         <SummaryCard
           icon={<WalletCards />}
           label="지갑에서 쓸 수 있는 금액"
-          value={data.wallet ? amountText(data.wallet.balance, unit) : "확인 필요"}
-          help={data.wallet?.status === "frozen" ? "지갑 사용이 잠시 멈췄어요" : "예금 원금은 따로 안전하게 보관"}
+          value={data.wallet ? amountText(data.wallet.availableBalance, unit) : "확인 필요"}
+          help={data.wallet?.status === "frozen"
+            ? "지갑 사용이 잠시 멈췄어요"
+            : data.wallet && data.wallet.pendingWithdrawalAmount > 0
+              ? `출금 신청 ${amountText(data.wallet.pendingWithdrawalAmount, unit)} 보관 중`
+              : "예금 원금은 따로 안전하게 보관"}
         />
         <SummaryCard
           icon={<PiggyBank />}
@@ -1633,8 +1721,11 @@ function StudentDeposits({
                           />
                           <span style={styles.inputSuffix}>{unit}</span>
                         </span>
-                        <small id={`deposit-help-${product.id}`} style={styles.fieldHelp}>
-                          지갑 잔액 {data.wallet ? amountText(data.wallet.balance, unit) : "확인 필요"}
+                        <small id={`deposit-help-${product.id}`} style={styles.fieldHelp} aria-live="polite">
+                          사용 가능 {data.wallet ? amountText(data.wallet.availableBalance, unit) : "확인 필요"}
+                          {data.wallet && data.wallet.pendingWithdrawalAmount > 0
+                            ? ` · 출금 신청 ${amountText(data.wallet.pendingWithdrawalAmount, unit)} 제외`
+                            : ""}
                         </small>
                       </label>
                       <div className="finance-quick-amounts">
@@ -1684,7 +1775,7 @@ function StudentDeposits({
                             <button className="button button-light" type="button" onClick={() => setJoinConfirmation(null)} disabled={joining}>
                               금액 다시 보기
                             </button>
-                            <button className="button button-primary" type="button" onClick={() => void onSubscribe(product)} disabled={joining || !validAmount || !classIsActive || !walletReady}>
+                            <button className="button button-primary" type="button" onClick={() => void onSubscribe(product)} disabled={joining || !validAmount || !classIsActive || !walletReady || Boolean(data.wallet && amount > data.wallet.availableBalance)}>
                               {joining && <LoaderCircle className="spin" aria-hidden="true" />}
                               확인하고 가입
                             </button>
@@ -1699,7 +1790,7 @@ function StudentDeposits({
                             setEarlyConfirmation(null);
                             setJoinConfirmation(product.id);
                           }}
-                          disabled={busyId !== null || !validAmount || !classIsActive || !walletReady || Boolean(data.wallet && amount > data.wallet.balance)}
+                          disabled={busyId !== null || !validAmount || !classIsActive || !walletReady || Boolean(data.wallet && amount > data.wallet.availableBalance)}
                         >
                           <PiggyBank aria-hidden="true" />받을 금액 확인하고 가입
                         </button>

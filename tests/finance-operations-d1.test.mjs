@@ -452,6 +452,151 @@ test("입출금 신청은 은행원 처리·교사 개입·정정을 불변 원�
             AND status = 'posted') AS reversal_count;`,
     )), [{ balance: 500, reversal_count: 1 }]);
 
+    executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_cash_requests (
+          id, class_id, requester_student_id, wallet_account_id,
+          request_type, amount, idempotency_key, payload_hash,
+          student_number_snapshot, student_name_snapshot,
+          wallet_balance_snapshot, wallet_revision_snapshot, revision, created_at
+        ) VALUES (
+          'request-reserved', 'class-ops', 'student-requester',
+          'finance:student:student-requester:wallet',
+          'withdrawal', 400, 'request:reserved:1', 'request-hash-reserved',
+          1, '신청학생', 500, 3, 0, 130
+        );
+        INSERT INTO finance_transactions (
+          id, class_id, status, transaction_type, description,
+          idempotency_key, payload_hash, source_type, source_id,
+          reversal_of_transaction_id, actor_type, actor_teacher_id,
+          actor_label, created_at
+        ) VALUES (
+          'transaction-reserved-reversal', 'class-ops', 'pending', 'reversal',
+          '교사 정정: 입금 취소', 'reversal:deposit:reserved', 'reversal-reserved-hash',
+          'reversal', 'transaction-deposit', 'transaction-deposit',
+          'teacher', 'teacher-ops', '교사', 131
+        );
+      `,
+    );
+    const reservedDebit = executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_ledger_entries (
+          id, transaction_id, class_id, account_id, amount,
+          balance_after, account_revision_after, created_at
+        ) VALUES (
+          'entry-reserved-reversal-wallet', 'transaction-reserved-reversal',
+          'class-ops', 'finance:student:student-requester:wallet',
+          -500, 0, 4, 131
+        );
+      `,
+      { expectSuccess: false },
+    );
+    assert.match(
+      reservedDebit.output,
+      /FINANCE_INSUFFICIENT_AVAILABLE_BALANCE/,
+    );
+    executeSql(
+      persistPath,
+      `
+        DELETE FROM finance_transactions
+        WHERE id = 'transaction-reserved-reversal' AND status = 'pending';
+        INSERT INTO finance_request_resolutions (
+          id, request_id, class_id, decision, idempotency_key, payload_hash,
+          expected_request_revision, actor_type, actor_student_id,
+          actor_job_period_id, actor_label, is_emergency,
+          posted_transaction_id, transaction_payload_hash, resolved_at, created_at
+        ) VALUES (
+          'resolution-reserved', 'request-reserved', 'class-ops', 'approved',
+          'decision:reserved:1', 'decision-hash-reserved', 0,
+          'banker', 'student-banker', 'period-current', '은행학생', 0,
+          'transaction-reserved', 'transaction-hash-reserved', 132, 132
+        );
+      `,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT balance, revision
+       FROM finance_accounts
+       WHERE id = 'finance:student:student-requester:wallet';`,
+    )), [{ balance: 100, revision: 4 }]);
+
+    executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_transactions (
+          id, class_id, status, transaction_type, description,
+          idempotency_key, payload_hash, actor_type, actor_teacher_id,
+          actor_label, created_at
+        ) VALUES (
+          'transaction-posting-race', 'class-ops', 'pending', 'manual_debit',
+          '출금 신청과 동시에 시작된 교사 차감',
+          'manual:posting-race:1', 'posting-race-hash',
+          'teacher', 'teacher-ops', '교사', 140
+        );
+        INSERT INTO finance_ledger_entries (
+          id, transaction_id, class_id, account_id, amount,
+          balance_after, account_revision_after, created_at
+        ) VALUES
+          (
+            'entry-posting-race-wallet', 'transaction-posting-race', 'class-ops',
+            'finance:student:student-requester:wallet', -20, 80, 5, 140
+          ),
+          (
+            'entry-posting-race-issuance', 'transaction-posting-race', 'class-ops',
+            'finance:class:class-ops:issuance', 20, -90, 6, 140
+          );
+        INSERT INTO finance_cash_requests (
+          id, class_id, requester_student_id, wallet_account_id,
+          request_type, amount, idempotency_key, payload_hash,
+          student_number_snapshot, student_name_snapshot,
+          wallet_balance_snapshot, wallet_revision_snapshot, revision, created_at
+        ) VALUES (
+          'request-posting-race', 'class-ops', 'student-requester',
+          'finance:student:student-requester:wallet',
+          'withdrawal', 90, 'request:posting-race:1', 'request-hash-posting-race',
+          1, '신청학생', 100, 4, 0, 141
+        );
+      `,
+    );
+    const reservedAtPosting = executeSql(
+      persistPath,
+      `UPDATE finance_transactions
+       SET status = 'posted', posted_at = 142
+       WHERE id = 'transaction-posting-race' AND status = 'pending';`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      reservedAtPosting.output,
+      /FINANCE_INSUFFICIENT_AVAILABLE_BALANCE/,
+    );
+    executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_request_resolutions (
+          id, request_id, class_id, decision, idempotency_key, payload_hash,
+          expected_request_revision, actor_type, actor_student_id,
+          actor_label, is_emergency, posted_transaction_id,
+          transaction_payload_hash, resolved_at, created_at
+        ) VALUES (
+          'resolution-posting-race', 'request-posting-race', 'class-ops',
+          'cancelled', 'decision:posting-race:1', 'decision-hash-posting-race', 0,
+          'student', 'student-requester', '신청학생', 0,
+          NULL, NULL, 143, 143
+        );
+        UPDATE finance_transactions
+        SET status = 'posted', posted_at = 144
+        WHERE id = 'transaction-posting-race' AND status = 'pending';
+      `,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT balance, revision
+       FROM finance_accounts
+       WHERE id = 'finance:student:student-requester:wallet';`,
+    )), [{ balance: 80, revision: 5 }]);
+
     const foreignKeys = executeSql(persistPath, "PRAGMA foreign_key_check;");
     assert.deepEqual(lastResults(foreignKeys), []);
     const reconciliation = executeSql(

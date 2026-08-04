@@ -391,6 +391,70 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
       createdAt: 31,
     });
 
+    executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_cash_requests (
+          id, class_id, requester_student_id, wallet_account_id,
+          request_type, amount, idempotency_key, payload_hash,
+          student_number_snapshot, student_name_snapshot,
+          wallet_balance_snapshot, wallet_revision_snapshot, revision, created_at
+        ) VALUES (
+          'request-stock-reserve', 'class-stocks', 'student-trader',
+          'finance:student:student-trader:wallet', 'withdrawal', 10000,
+          'request:stock-reserve:1', 'hash:request:stock-reserve',
+          1, 'Trader Student', 20000, 1, 0, 90
+        );
+        INSERT INTO finance_transactions (
+          id, class_id, status, transaction_type, description,
+          idempotency_key, payload_hash, source_type, source_id,
+          actor_type, actor_label, created_at
+        ) VALUES (
+          'transaction:trade-reserved-probe', 'class-stocks', 'pending',
+          'stock_buy', 'Reserved withdrawal stock probe',
+          'idem:transaction:trade-reserved-probe',
+          'tx-hash:trade-reserved-probe', 'stock_trade',
+          'trade-reserved-probe', 'system', 'Stock system', 91
+        );
+      `,
+    );
+    const reservedStockBuy = executeSql(
+      persistPath,
+      `
+        INSERT INTO finance_ledger_entries (
+          id, transaction_id, class_id, account_id, amount,
+          balance_after, account_revision_after, created_at
+        ) VALUES (
+          'entry:trade-reserved-probe:wallet',
+          'transaction:trade-reserved-probe', 'class-stocks',
+          'finance:student:student-trader:wallet', -11500, 8500, 2, 91
+        );
+      `,
+      { expectSuccess: false },
+    );
+    assert.match(
+      reservedStockBuy.output,
+      /FINANCE_INSUFFICIENT_AVAILABLE_BALANCE/,
+    );
+    executeSql(
+      persistPath,
+      `
+        DELETE FROM finance_transactions
+        WHERE id = 'transaction:trade-reserved-probe' AND status = 'pending';
+        INSERT INTO finance_request_resolutions (
+          id, request_id, class_id, decision, idempotency_key, payload_hash,
+          expected_request_revision, actor_type, actor_student_id,
+          actor_label, is_emergency, posted_transaction_id,
+          transaction_payload_hash, resolved_at, created_at
+        ) VALUES (
+          'resolution-stock-reserve', 'request-stock-reserve', 'class-stocks',
+          'cancelled', 'decision:stock-reserve:1', 'hash:decision:stock-reserve',
+          0, 'student', 'student-trader', 'Trader Student', 0,
+          NULL, NULL, 92, 92
+        );
+      `,
+    );
+
     const buy = {
       id: "trade-buy-main",
       idempotencyKey: "stock-buy-main-1",

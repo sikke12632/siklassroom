@@ -739,6 +739,12 @@ export const financeCashRequests = sqliteTable("finance_cash_requests", {
   ),
   uniqueIndex("finance_cash_requests_id_class_uq").on(table.id, table.classId),
   index("finance_cash_requests_class_created_idx").on(table.classId, table.createdAt),
+  index("finance_cash_requests_wallet_pending_idx").on(
+    table.classId,
+    table.walletAccountId,
+    table.requestType,
+    table.createdAt,
+  ),
   index("finance_cash_requests_student_created_idx").on(
     table.requesterStudentId,
     table.createdAt,

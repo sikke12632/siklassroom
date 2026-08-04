@@ -4,6 +4,7 @@ export const FINANCE_DEPOSIT_MIN_TERM_WEEKS = 1;
 export const FINANCE_DEPOSIT_MAX_TERM_WEEKS = 52;
 export const FINANCE_DEPOSIT_MAX_RATE_BPS = 10_000;
 export const FINANCE_DEPOSIT_WEEK_MS = 7 * 24 * 60 * 60 * 1_000;
+export const FINANCE_DEPOSIT_SETTLEMENT_BATCH_SIZE = 3;
 
 const MAX_JAVASCRIPT_DATE_MS = 8_640_000_000_000_000;
 
@@ -26,6 +27,10 @@ export class FinanceDepositRuleError extends Error {
     super(message);
     this.name = "FinanceDepositRuleError";
   }
+}
+
+export function financeDepositSettlementEnabled(url: string | URL) {
+  return new URL(url).searchParams.get("settleMatured") !== "0";
 }
 
 export type FinanceDepositProductInput = {

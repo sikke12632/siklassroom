@@ -1,5 +1,6 @@
 import { sha256 } from "./crypto";
 import { database } from "./database";
+import { financeWalletAvailability } from "./finance-available-balance";
 import {
   type FinanceContext,
   financeContextForRequest,
@@ -577,6 +578,7 @@ function mapDatabaseError(error: unknown): never {
     ["FINANCE_STOCK_HOLDING_LIMIT", 409, "한 학생이 보유할 수 있는 최대 수량을 넘습니다.", "FINANCE_STOCK_HOLDING_LIMIT"],
     ["FINANCE_STOCK_LEDGER_MISMATCH", 409, "주식과 지갑 기록이 맞지 않아 거래를 멈췄습니다.", "FINANCE_STOCK_LEDGER_MISMATCH"],
     ["FINANCE_STOCK_PROJECTION_MISMATCH", 409, "주식 보유 기록이 달라져 거래를 멈췄습니다.", "FINANCE_STOCK_PROJECTION_MISMATCH"],
+    ["FINANCE_INSUFFICIENT_AVAILABLE_BALANCE", 409, "출금 신청 금액을 빼면 주식을 살 수 있는 금액이 부족합니다.", "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE"],
     ["FINANCE_INSUFFICIENT_FUNDS", 409, "지갑 잔액이 부족합니다.", "FINANCE_INSUFFICIENT_FUNDS"],
     ["FINANCE_ACCOUNT_STALE", 409, "다른 거래가 먼저 반영되었습니다. 최신 잔액으로 다시 시도해 주세요.", "FINANCE_ACCOUNT_STALE"],
     ["FINANCE_ACCOUNT_NOT_ACTIVE", 409, "현재 사용할 수 없는 지갑입니다.", "FINANCE_ACCOUNT_NOT_ACTIVE"],
@@ -796,6 +798,13 @@ export async function financeStocksForRequest(request: Request) {
       events = (await latestStockEvents(db, context.classroom.id, 40)).results;
     }
   }
+  const walletAvailability = wallet
+    ? await financeWalletAvailability(db, {
+      classId: context.classroom.id,
+      walletAccountId: wallet.id,
+      balance: Number(wallet.balance),
+    })
+    : null;
 
   return {
     serverTime: now,
@@ -811,6 +820,8 @@ export async function financeStocksForRequest(request: Request) {
     wallet: wallet
       ? {
           balance: Number(wallet.balance),
+          pendingWithdrawalAmount: walletAvailability?.pendingWithdrawalAmount ?? 0,
+          availableBalance: walletAvailability?.availableBalance ?? Number(wallet.balance),
           revision: Number(wallet.revision),
           status: wallet.status,
         }
@@ -1479,6 +1490,20 @@ export async function tradeFinanceStock(
   }
   if (position.quote.walletChange < 0 && Number(accounts.wallet.balance) < -position.quote.walletChange) {
     throw new ApiError(409, "수수료를 포함한 결제금액보다 지갑 잔액이 적습니다.", "FINANCE_INSUFFICIENT_FUNDS");
+  }
+  if (position.quote.walletChange < 0) {
+    const walletAvailability = await financeWalletAvailability(db, {
+      classId: context.classroom.id,
+      walletAccountId: accounts.wallet.id,
+      balance: Number(accounts.wallet.balance),
+    });
+    if (walletAvailability.availableBalance < -position.quote.walletChange) {
+      throw new ApiError(
+        409,
+        "출금 신청 금액을 빼면 주식을 살 수 있는 금액이 부족합니다.",
+        "FINANCE_INSUFFICIENT_AVAILABLE_BALANCE",
+      );
+    }
   }
 
   const now = Date.now();
