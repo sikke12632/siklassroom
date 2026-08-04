@@ -53,6 +53,24 @@ test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CS
   assert.match(schema, /systemAdminAuditLogs/);
 });
 
+test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP 전체 한도를 둔다", async () => {
+  const [rateLimit, teacherLogin, adminLogin, signup, passwordRequest] = await Promise.all([
+    readFile(new URL("../lib/rate-limit.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/login/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/auth/login/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/signup/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/password/request/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(rateLimit, /ON CONFLICT\(key\) DO UPDATE/);
+  assert.match(rateLimit, /subjectThrottleKey/);
+  assert.doesNotMatch(rateLimit, /export async function recordFailure/);
+  assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
+  assert.match(adminLogin, /consumeRateLimit\(ipKey/);
+  assert.match(signup, /teacher-signup-ip/);
+  assert.match(signup, /windowMs: 60 \* 60 \* 1000/);
+  assert.match(passwordRequest, /teacher-password-reset-ip/);
+});
+
 test("이메일·초대코드·학교 상태를 분리하고 가입 단계를 안내한다", async () => {
   const [portal, schema, migration] = await Promise.all([
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),

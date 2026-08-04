@@ -81,7 +81,7 @@ export async function createGuardedTeacherSession(input: {
   passwordHash: string;
   credentialRevision: number;
   request: Request;
-  clearThrottleKey?: string;
+  clearThrottleKeys?: string[];
 }) {
   await ensureSchema();
   const session = await prepareSession({ actorType: "teacher", teacherId: input.teacherId }, input.request);
@@ -104,8 +104,8 @@ export async function createGuardedTeacherSession(input: {
       session.expiresAt, session.createdAt, session.createdAt,
     ),
   ];
-  if (input.clearThrottleKey) {
-    statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(input.clearThrottleKey));
+  for (const key of new Set(input.clearThrottleKeys ?? [])) {
+    statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(key));
   }
   statements.push(database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId));
   try {

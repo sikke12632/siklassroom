@@ -88,17 +88,24 @@ await request("/api/schools/select", {
   body: { schoolId: schools.data.schools[0].id },
 });
 
-const classCreated = await request("/api/classes", {
-  cookie: teacherCookie,
-  method: "POST",
-  body: {
-    schoolYear: 2040 + (runNumber % 60),
-    grade: 1 + (runNumber % 6),
-    classNumber: 1 + (runNumber % 30),
-    displayName: "재사용 QR 검증반",
-  },
-  expected: 201,
-});
+let classCreated;
+for (let attempt = 0; attempt < 30 && !classCreated; attempt += 1) {
+  const seed = (runNumber + attempt * 7919) % (60 * 6 * 30);
+  const response = await fetch(`${baseUrl}/api/classes`, {
+    method: "POST",
+    headers: { cookie: teacherCookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      schoolYear: 2040 + (seed % 60),
+      grade: 1 + (Math.floor(seed / 60) % 6),
+      classNumber: 1 + (Math.floor(seed / (60 * 6)) % 30),
+      displayName: "재사용 QR 검증반",
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 201) classCreated = { response, data };
+  else assert.equal(response.status, 409, `POST /api/classes: ${JSON.stringify(data)}`);
+}
+assert.ok(classCreated, "재사용 QR 검증용 빈 학급 조합을 찾는다");
 const classId = classCreated.data.class.id;
 const roster = await request(`/api/classes/${classId}/students`, {
   cookie: teacherCookie,
@@ -308,15 +315,42 @@ await request("/api/registration/complete", {
   method: "POST",
   body: { password: "1357" },
 });
+const distributedStudentLogins = await Promise.all(Array.from({ length: 8 }, (_, index) => fetch(
+  `${baseUrl}/api/student/login`,
+  {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `student-login-${runNumber}-${index}`,
+    },
+    body: JSON.stringify({
+      schoolName: classCreated.data.class.school_name,
+      schoolYear: classCreated.data.class.school_year,
+      grade: classCreated.data.class.grade,
+      classNumber: classCreated.data.class.class_number,
+      studentNumber: limitedStudent.student_number,
+      password: "9999",
+    }),
+  },
+)));
+assert.deepEqual(
+  distributedStudentLogins.map((response) => response.status).sort(),
+  [401, 401, 401, 401, 401, 401, 401, 429],
+  "여러 IP에서도 같은 학생 계정의 PIN 추측을 제한한다",
+);
 const limitedChallenges = [];
 for (let index = 0; index < 8; index += 1) {
   limitedChallenges.push(await verifyQr(limitedToken, "login"));
 }
-const parallelWrongPins = await Promise.all(limitedChallenges.map((challenge) => fetch(
+const parallelWrongPins = await Promise.all(limitedChallenges.map((challenge, index) => fetch(
   `${baseUrl}/api/registration/complete`,
   {
     method: "POST",
-    headers: { cookie: challenge.cookie, "content-type": "application/json" },
+    headers: {
+      cookie: challenge.cookie,
+      "content-type": "application/json",
+      "x-forwarded-for": `qr-pin-${runNumber}-${index}`,
+    },
     body: JSON.stringify({ password: "9999" }),
   },
 )));

@@ -1,6 +1,6 @@
 import { database, ensureSchema } from "./database";
 import { randomToken, sha256 } from "./crypto";
-import { consumeRateLimit, throttleKey } from "./rate-limit";
+import { consumeRateLimit, subjectThrottleKey } from "./rate-limit";
 import { ApiError } from "./responses";
 
 export const REGISTRATION_QR_LIFETIME_MS = 400 * 24 * 60 * 60 * 1000;
@@ -250,7 +250,7 @@ function exchangeMode(record: RegistrationRecord, grant: { id: string; expires_a
 export async function exchangeRegistrationToken(rawToken: string, request: Request) {
   const record = await registrationRecord(rawToken);
   assertUsableRegistration(record);
-  const exchangeKey = await throttleKey(request, "registration-qr-exchange", record!.student_id);
+  const exchangeKey = await subjectThrottleKey("registration-qr-exchange", record!.student_id);
   await consumeRateLimit(exchangeKey, { maxAttempts: 12 });
   const now = Date.now();
   const grant = await currentResetGrant(record!, now);

@@ -4,7 +4,7 @@ import { hashPassword, verifyPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { issueEmailVerification } from "@/lib/teacher-verification";
-import { assertNotBlocked, recordFailure, throttleKey } from "@/lib/rate-limit";
+import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function POST(request: Request) {
@@ -14,8 +14,14 @@ export async function POST(request: Request) {
     const password = String(body.password ?? "");
     if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 160) throw new ApiError(400, "사용할 이메일을 정확히 입력해 주세요.", "INVALID_EMAIL");
     if (password.length < 8 || password.length > 72) throw new ApiError(400, "비밀번호는 8~72자로 만들어 주세요.", "WEAK_PASSWORD");
-    const throttle = await throttleKey(request, "teacher-signup", email);
-    await assertNotBlocked(throttle);
+    const ipThrottle = await throttleKey(request, "teacher-signup-ip", "all");
+    const emailThrottle = await subjectThrottleKey("teacher-signup", email);
+    await consumeRateLimit(ipThrottle, {
+      maxAttempts: 20,
+      windowMs: 60 * 60 * 1000,
+      blockMs: 60 * 60 * 1000,
+    });
+    await consumeRateLimit(emailThrottle, { maxAttempts: 5 });
     await ensureSchema();
     const openRegistration = isOpenTeacherRegistration();
     const existing = await database().prepare(
@@ -46,7 +52,6 @@ export async function POST(request: Request) {
           credentialRevision: existing.credential_revision,
           request,
         });
-        await recordFailure(throttle);
         return json({
           teacher: {
             id: existing.id,
@@ -91,7 +96,6 @@ export async function POST(request: Request) {
       credentialRevision: 0,
       request,
     });
-    await recordFailure(throttle);
     return json({
       teacher: {
         id,

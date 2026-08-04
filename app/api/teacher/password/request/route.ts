@@ -2,16 +2,25 @@ import { audit, database, ensureSchema, runtimeEnv } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { sendTeacherPasswordReset } from "@/lib/email";
 import { normalizeEmail } from "@/lib/identity";
-import { assertNotBlocked, recordFailure, throttleKey } from "@/lib/rate-limit";
+import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request) {
   try {
     const body = await readJson<{ email?: string }>(request);
     const email = normalizeEmail(body.email);
-    const key = await throttleKey(request, "teacher-password-reset", email);
-    await assertNotBlocked(key);
-    await recordFailure(key);
+    const ipKey = await throttleKey(request, "teacher-password-reset-ip", "all");
+    const key = await subjectThrottleKey("teacher-password-reset", email);
+    await consumeRateLimit(ipKey, {
+      maxAttempts: 20,
+      windowMs: 60 * 60 * 1000,
+      blockMs: 60 * 60 * 1000,
+    });
+    await consumeRateLimit(key, {
+      maxAttempts: 5,
+      windowMs: 60 * 60 * 1000,
+      blockMs: 60 * 60 * 1000,
+    });
     await ensureSchema();
     const teacher = await database().prepare(`SELECT id FROM teachers WHERE email = ? AND status = 'active'`).bind(email).first<{ id: string }>();
     let developmentResetUrl: string | undefined;

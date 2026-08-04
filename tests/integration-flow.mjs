@@ -47,18 +47,21 @@ await request("/api/classes", { expected: 401 });
 await request("/ops/not-the-admin-path", { expected: 404 });
 await request(`/ops/${adminPath}`);
 await request("/api/admin/dashboard", { expected: 401 });
-for (let attempt = 0; attempt < 7; attempt += 1) {
-  await request("/api/admin/auth/login", {
+const parallelAdminFailures = await Promise.all(Array.from({ length: 8 }, (_, index) => (
+  fetch(`${baseUrl}/api/admin/auth/login`, {
     method: "POST",
-    body: { username: `blocked-${runId}`, password: "wrong-password" },
-    expected: 401,
-  });
-}
-await request("/api/admin/auth/login", {
-  method: "POST",
-  body: { username: `blocked-${runId}`, password: "wrong-password" },
-  expected: 429,
-});
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `admin-login-${runId}-${index}`,
+    },
+    body: JSON.stringify({ username: `blocked-${runId}`, password: "wrong-password" }),
+  })
+)));
+assert.deepEqual(
+  parallelAdminFailures.map((response) => response.status).sort(),
+  [401, 401, 401, 401, 401, 401, 401, 429],
+  "관리자 로그인 동시 요청도 원자적으로 제한한다",
+);
 const adminLogin = await request("/api/admin/auth/login", {
   method: "POST",
   body: { username: adminUsername, password: adminPassword },
@@ -100,6 +103,69 @@ const outsider = await request("/api/teacher/signup", {
   expected: 201,
 });
 let outsiderCookie = cookieFrom(outsider.response);
+const parallelSignupPasswordFailures = await Promise.all(Array.from({ length: 5 }, (_, index) => (
+  fetch(`${baseUrl}/api/teacher/signup`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `teacher-signup-subject-${runId}-${index}`,
+    },
+    body: JSON.stringify({ email: secondTeacherEmail, password: "wrong-password" }),
+  })
+)));
+assert.deepEqual(
+  parallelSignupPasswordFailures.map((response) => response.status).sort(),
+  [409, 409, 409, 409, 429],
+  "여러 IP에서도 같은 미인증 가입 이메일의 비밀번호 추측을 제한한다",
+);
+const parallelTeacherFailures = await Promise.all(Array.from({ length: 8 }, (_, index) => (
+  fetch(`${baseUrl}/api/teacher/login`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `teacher-login-${runId}-${index}`,
+    },
+    body: JSON.stringify({ email: secondTeacherEmail, password: "wrong-password" }),
+  })
+)));
+assert.deepEqual(
+  parallelTeacherFailures.map((response) => response.status).sort(),
+  [401, 401, 401, 401, 401, 401, 401, 429],
+  "교사 비밀번호 동시 추측도 원자적으로 제한한다",
+);
+const signupFlood = await Promise.all(Array.from({ length: 21 }, (_, index) => (
+  fetch(`${baseUrl}/api/teacher/signup`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `teacher-signup-${runId}`,
+    },
+    body: JSON.stringify({
+      email: `signup-limit-${index}-${runId}@example.test`,
+      password: firstPassword,
+    }),
+  })
+)));
+assert.deepEqual(
+  signupFlood.map((response) => response.status).sort(),
+  [...Array(20).fill(201), 429],
+  "이메일을 바꿔도 한 IP의 익명 가입 생성량을 제한한다",
+);
+const distributedPasswordRequests = await Promise.all(Array.from({ length: 6 }, (_, index) => (
+  fetch(`${baseUrl}/api/teacher/password/request`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `password-request-${runId}-${index}`,
+    },
+    body: JSON.stringify({ email: `password-limit-${runId}@example.test` }),
+  })
+)));
+assert.deepEqual(
+  distributedPasswordRequests.map((response) => response.status).sort(),
+  [200, 200, 200, 200, 200, 429],
+  "여러 IP에서도 같은 이메일의 비밀번호 재설정 요청을 제한한다",
+);
 const outsiderEmailToken = new URL(outsider.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",

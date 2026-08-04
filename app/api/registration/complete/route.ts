@@ -7,7 +7,7 @@ import {
   registrationClaimMarker,
   registrationResponseHeaders,
 } from "@/lib/registration";
-import { consumeRateLimit, throttleKey } from "@/lib/rate-limit";
+import { consumeRateLimit, subjectThrottleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 function guardCondition(mode: "activate" | "login" | "reset", hasGrant: boolean) {
@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     }
     const challenge = await registrationChallenge(request);
     if (challenge.challenge_mode === "login") {
-      throttle = await throttleKey(request, "registration-complete", challenge.student_id);
+      throttle = await subjectThrottleKey("registration-complete", challenge.student_id);
       await consumeRateLimit(throttle, { maxAttempts: 7 });
     }
 

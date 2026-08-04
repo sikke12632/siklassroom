@@ -2,7 +2,7 @@ import { prepareSession } from "@/lib/auth";
 import { database, ensureSchema, isOperationGuardFailure } from "@/lib/database";
 import { verifyPassword } from "@/lib/crypto";
 import { integerInRange, normalizeSchool } from "@/lib/identity";
-import { consumeRateLimit, throttleKey } from "@/lib/rate-limit";
+import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request) {
@@ -25,7 +25,9 @@ export async function POST(request: Request) {
       throw new ApiError(400, "학교·학년도·학년·반·번호·비밀번호를 모두 입력해 주세요.", "MISSING_LOGIN_FIELDS");
     }
     const identifier = `${schoolNormalized}|${schoolYear}|${grade}|${classNumber}|${studentNumber}`;
-    const key = await throttleKey(request, "student-login", identifier);
+    const ipKey = await throttleKey(request, "student-login-ip", "all");
+    const key = await subjectThrottleKey("student-login", identifier);
+    await consumeRateLimit(ipKey, { maxAttempts: 120 });
     await consumeRateLimit(key, { maxAttempts: 7 });
     await ensureSchema();
     const studentRows = await database().prepare(

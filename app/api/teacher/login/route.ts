@@ -2,7 +2,7 @@ import { createGuardedTeacherSession } from "@/lib/auth";
 import { database, ensureSchema } from "@/lib/database";
 import { verifyPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
-import { assertNotBlocked, recordFailure, throttleKey } from "@/lib/rate-limit";
+import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 import { teacherAccountIssue } from "@/lib/teacher-access-rules";
@@ -12,8 +12,10 @@ export async function POST(request: Request) {
     const body = await readJson<{ email?: string; password?: string }>(request);
     const email = normalizeEmail(body.email);
     const password = String(body.password ?? "");
-    const key = await throttleKey(request, "teacher-login", email);
-    await assertNotBlocked(key);
+    const ipKey = await throttleKey(request, "teacher-login-ip", "all");
+    const key = await subjectThrottleKey("teacher-login", email);
+    await consumeRateLimit(ipKey, { maxAttempts: 60 });
+    await consumeRateLimit(key, { maxAttempts: 7 });
     await ensureSchema();
     const teacher = await database().prepare(
       `SELECT id, email, password_hash, status, email_verified_at, teacher_access_status,
@@ -35,7 +37,6 @@ export async function POST(request: Request) {
       ? teacherAccountIssue(teacher.status, teacher.teacher_access_status)
       : "ACCOUNT_DISABLED";
     if (!teacher || accountIssue === "ACCOUNT_DISABLED" || !(await verifyPassword(password, teacher.password_hash))) {
-      await recordFailure(key);
       throw new ApiError(401, "이메일 또는 비밀번호를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
     await activateOpenTeacherRegistration(teacher.id);
@@ -50,7 +51,7 @@ export async function POST(request: Request) {
       passwordHash: teacher.password_hash,
       credentialRevision: teacher.credential_revision,
       request,
-      clearThrottleKey: key,
+      clearThrottleKeys: [key],
     });
     return json({
       teacher: {

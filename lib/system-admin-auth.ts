@@ -36,23 +36,29 @@ export async function verifySystemAdminCredentials(username: string, password: s
   return usernameMatches && passwordMatches;
 }
 
-export async function createSystemAdminSession(request: Request) {
+export async function createSystemAdminSession(request: Request, options: { clearThrottleKeys?: string[] } = {}) {
   await ensureSchema();
   const rawToken = randomToken(32);
   const csrfToken = randomToken(24);
   const now = Date.now();
-  await database().prepare(
-    `INSERT INTO system_admin_sessions
-     (id, token_hash, csrf_hash, admin_key, expires_at, created_at, last_seen_at)
-     VALUES (?, ?, ?, 'primary', ?, ?, ?)`,
-  ).bind(
-    crypto.randomUUID(),
-    await sha256(rawToken),
-    await sha256(csrfToken),
-    now + ADMIN_SESSION_MS,
-    now,
-    now,
-  ).run();
+  const statements: D1PreparedStatement[] = [
+    database().prepare(
+      `INSERT INTO system_admin_sessions
+       (id, token_hash, csrf_hash, admin_key, expires_at, created_at, last_seen_at)
+       VALUES (?, ?, ?, 'primary', ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      await sha256(rawToken),
+      await sha256(csrfToken),
+      now + ADMIN_SESSION_MS,
+      now,
+      now,
+    ),
+  ];
+  for (const key of new Set(options.clearThrottleKeys ?? [])) {
+    statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(key));
+  }
+  await database().batch(statements);
   return {
     cookie: cookie(ADMIN_SESSION_COOKIE, rawToken, Math.floor(ADMIN_SESSION_MS / 1000), request),
     csrfToken,
