@@ -1486,6 +1486,30 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_deposit_contracts(student_id, created_at)`,
   `CREATE INDEX IF NOT EXISTS finance_deposit_contracts_class_maturity_idx
     ON finance_deposit_contracts(class_id, matures_at)`,
+  `CREATE INDEX IF NOT EXISTS finance_deposit_contracts_maturity_idx
+    ON finance_deposit_contracts(matures_at, id)`,
+  `CREATE TABLE IF NOT EXISTS finance_deposit_maturity_retries (
+    contract_id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1,
+    next_attempt_at INTEGER NOT NULL, last_error_code TEXT NOT NULL,
+    last_failed_at INTEGER NOT NULL, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (contract_id, class_id)
+      REFERENCES finance_deposit_contracts(id, class_id),
+    CONSTRAINT finance_deposit_maturity_retries_attempt_ck
+      CHECK (attempt_count BETWEEN 1 AND 1000000),
+    CONSTRAINT finance_deposit_maturity_retries_timing_ck CHECK (
+      next_attempt_at >= last_failed_at AND last_failed_at >= 0
+      AND created_at >= 0 AND updated_at >= created_at
+    ),
+    CONSTRAINT finance_deposit_maturity_retries_error_ck
+      CHECK (LENGTH(TRIM(last_error_code)) BETWEEN 1 AND 100)
+  )`,
+  `CREATE INDEX IF NOT EXISTS finance_deposit_maturity_retries_next_attempt_idx
+    ON finance_deposit_maturity_retries(next_attempt_at, contract_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_deposit_maturity_retries_class_idx
+    ON finance_deposit_maturity_retries(class_id, next_attempt_at)`,
   `CREATE TABLE IF NOT EXISTS finance_deposit_settlements (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, contract_id TEXT NOT NULL,
     student_id TEXT NOT NULL, settlement_type TEXT NOT NULL,
@@ -1515,6 +1539,34 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_deposit_settlements(posted_transaction_id)`,
   `CREATE INDEX IF NOT EXISTS finance_deposit_settlements_class_created_idx
     ON finance_deposit_settlements(class_id, created_at)`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_retries_settlement_cleanup
+    AFTER INSERT ON finance_deposit_settlements
+    BEGIN
+      DELETE FROM finance_deposit_maturity_retries
+      WHERE contract_id = NEW.contract_id AND class_id = NEW.class_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_retries_insert_cleanup
+    AFTER INSERT ON finance_deposit_maturity_retries
+    WHEN EXISTS (
+      SELECT 1 FROM finance_deposit_settlements settlement
+      WHERE settlement.contract_id = NEW.contract_id
+        AND settlement.class_id = NEW.class_id
+    )
+    BEGIN
+      DELETE FROM finance_deposit_maturity_retries
+      WHERE contract_id = NEW.contract_id AND class_id = NEW.class_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_retries_update_cleanup
+    AFTER UPDATE ON finance_deposit_maturity_retries
+    WHEN EXISTS (
+      SELECT 1 FROM finance_deposit_settlements settlement
+      WHERE settlement.contract_id = NEW.contract_id
+        AND settlement.class_id = NEW.class_id
+    )
+    BEGIN
+      DELETE FROM finance_deposit_maturity_retries
+      WHERE contract_id = NEW.contract_id AND class_id = NEW.class_id;
+    END`,
   `CREATE TRIGGER IF NOT EXISTS finance_deposit_products_insert_guard
     BEFORE INSERT ON finance_deposit_products
     BEGIN

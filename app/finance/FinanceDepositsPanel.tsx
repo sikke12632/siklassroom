@@ -96,6 +96,8 @@ export type FinanceDepositsData = {
     due: number;
     settled: number;
     failed: number;
+    deferred: number;
+    retrySchedulingFailed: number;
   };
 };
 
@@ -591,6 +593,8 @@ export function normalizeDepositsResponse(value: unknown): FinanceDepositsData {
       due: numberValue(automationRaw.due),
       settled: numberValue(automationRaw.settled),
       failed: numberValue(automationRaw.failed),
+      deferred: numberValue(automationRaw.deferred),
+      retrySchedulingFailed: numberValue(automationRaw.retrySchedulingFailed),
     },
   };
 }
@@ -1241,12 +1245,15 @@ export function FinanceDepositsPanel({
 
       <StatusNotice notice={notice} />
 
-      {data.automation.failed > 0 && (
+      {(data.automation.failed > 0 || data.automation.deferred > 0) && (
         <div className="finance-action-notice warning" role="status">
           <CircleAlert aria-hidden="true" />
           <p>
             <b>만기 지급을 기다리는 예금이 있어요.</b>{" "}
             지갑이 잠겨 있거나 다른 거래가 처리 중일 수 있어 잠시 뒤 자동으로 다시 확인합니다.
+            {data.automation.deferred > 0
+              ? ` 재시도 대기 ${data.automation.deferred.toLocaleString("ko-KR")}건`
+              : ""}
           </p>
         </div>
       )}

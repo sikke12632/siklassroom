@@ -25,6 +25,13 @@ const settlementRetryConfigPath = path.join(
   "wrangler.deposit-settlement-retry.jsonc",
 );
 const settlementRetryWorkerPath = "tests/fixtures/deposit-settlement-retry-worker.ts";
+const maturityBackoffConfigPath = path.join(
+  projectRoot,
+  "tests",
+  "fixtures",
+  "wrangler.deposit-maturity-backoff.jsonc",
+);
+const maturityBackoffWorkerPath = "tests/fixtures/deposit-maturity-backoff-worker.ts";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
   let result;
@@ -1264,6 +1271,612 @@ test("pre-0017 settlement retries deduplicate without another ledger posting", {
          (SELECT revision FROM finance_accounts WHERE id = 'finance:class:class-legacy:issuance') AS issuance_revision;`,
     ));
     assert.deepEqual(after, before);
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("failed maturities back off so later contracts settle and retries clean up", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-deposit-maturity-backoff-d1-"),
+  );
+  let worker;
+  const dueNow = 604_900_000;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, created_at, updated_at
+      ) VALUES (
+        'teacher-maturity-backoff', 'teacher-maturity-backoff@test.local',
+        'hash', 'active', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES
+        ('class-maturity-floor', 'teacher-maturity-backoff',
+         'Test School', 'test school', 2099, 6, 10, 'active', 1, 1),
+        ('class-maturity-normal', 'teacher-maturity-backoff',
+         'Test School', 'test school', 2099, 6, 11, 'active', 1, 1);
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status,
+        created_at, updated_at
+      ) VALUES
+        ('student-maturity-a', 'class-maturity-floor', 1, 'Maturity A', 'active', 1, 1),
+        ('student-maturity-b', 'class-maturity-floor', 2, 'Maturity B', 'active', 1, 1),
+        ('student-maturity-c', 'class-maturity-normal', 1, 'Maturity C', 'active', 1, 1);
+
+      INSERT INTO finance_deposit_products (
+        id, class_id, name, description, term_weeks,
+        maturity_interest_bps, early_interest_bps, min_amount, max_amount,
+        is_open, revision, created_by_teacher_id, updated_by_teacher_id,
+        created_at, updated_at
+      ) VALUES
+        ('product-maturity-floor', 'class-maturity-floor', 'Floor Savings',
+         'Backoff test product', 1, 10000, 0, 100, 100,
+         1, 0, 'teacher-maturity-backoff', 'teacher-maturity-backoff', 100, 100),
+        ('product-maturity-normal', 'class-maturity-normal', 'Normal Savings',
+         'Later healthy maturity', 1, 10000, 0, 100, 100,
+         1, 0, 'teacher-maturity-backoff', 'teacher-maturity-backoff', 100, 100);
+      INSERT INTO finance_deposit_product_events (
+        id, class_id, product_id, revision, action,
+        idempotency_key, payload_hash, product_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES
+        ('product-event-maturity-floor', 'class-maturity-floor',
+         'product-maturity-floor', 0, 'issued', 'product:maturity:floor',
+         'hash:product:maturity:floor',
+         '{"name":"Floor Savings","revision":0,"isOpen":true}',
+         'teacher-maturity-backoff', 100),
+        ('product-event-maturity-normal', 'class-maturity-normal',
+         'product-maturity-normal', 0, 'issued', 'product:maturity:normal',
+         'hash:product:maturity:normal',
+         '{"name":"Normal Savings","revision":0,"isOpen":true}',
+         'teacher-maturity-backoff', 100);
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-fund-maturity-a', 'class-maturity-floor', 'pending',
+        'manual_credit', 'Fund maturity A', 'tx:fund:maturity:a',
+        'hash:fund:maturity:a', 'teacher', 'teacher-maturity-backoff',
+        'Teacher', 200
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-fund-maturity-a-wallet', 'tx-fund-maturity-a',
+         'class-maturity-floor', 'finance:student:student-maturity-a:wallet',
+         500000000, 500000000, 1, 200),
+        ('entry-fund-maturity-a-issuance', 'tx-fund-maturity-a',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         -500000000, -500000000, 1, 200);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 200
+      WHERE id = 'tx-fund-maturity-a';
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-fund-maturity-b', 'class-maturity-floor', 'pending',
+        'manual_credit', 'Fund maturity B', 'tx:fund:maturity:b',
+        'hash:fund:maturity:b', 'teacher', 'teacher-maturity-backoff',
+        'Teacher', 201
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-fund-maturity-b-wallet', 'tx-fund-maturity-b',
+         'class-maturity-floor', 'finance:student:student-maturity-b:wallet',
+         500000000, 500000000, 1, 201),
+        ('entry-fund-maturity-b-issuance', 'tx-fund-maturity-b',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         -500000000, -1000000000, 2, 201);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 201
+      WHERE id = 'tx-fund-maturity-b';
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-fund-maturity-c', 'class-maturity-normal', 'pending',
+        'manual_credit', 'Fund maturity C', 'tx:fund:maturity:c',
+        'hash:fund:maturity:c', 'teacher', 'teacher-maturity-backoff',
+        'Teacher', 202
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-fund-maturity-c-wallet', 'tx-fund-maturity-c',
+         'class-maturity-normal', 'finance:student:student-maturity-c:wallet',
+         1000, 1000, 1, 202),
+        ('entry-fund-maturity-c-issuance', 'tx-fund-maturity-c',
+         'class-maturity-normal', 'finance:class:class-maturity-normal:issuance',
+         -1000, -1000, 1, 202);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 202
+      WHERE id = 'tx-fund-maturity-c';
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, source_type, source_id,
+        actor_type, actor_label, created_at
+      ) VALUES
+        ('tx-open-maturity-a', 'class-maturity-floor', 'pending',
+         'deposit_open', 'Open maturity A', 'tx:open:maturity:a',
+         'hash:tx:open:maturity:a', 'deposit_contract', 'contract-maturity-a',
+         'system', 'Deposit automation', 1000),
+        ('tx-open-maturity-b', 'class-maturity-floor', 'pending',
+         'deposit_open', 'Open maturity B', 'tx:open:maturity:b',
+         'hash:tx:open:maturity:b', 'deposit_contract', 'contract-maturity-b',
+         'system', 'Deposit automation', 1000),
+        ('tx-open-maturity-c', 'class-maturity-normal', 'pending',
+         'deposit_open', 'Open maturity C', 'tx:open:maturity:c',
+         'hash:tx:open:maturity:c', 'deposit_contract', 'contract-maturity-c',
+         'system', 'Deposit automation', 1000);
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-open-maturity-a-wallet', 'tx-open-maturity-a',
+         'class-maturity-floor', 'finance:student:student-maturity-a:wallet',
+         -100, 499999900, 2, 1000),
+        ('entry-open-maturity-a-issuance', 'tx-open-maturity-a',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         100, -999999900, 3, 1000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 1000
+      WHERE id = 'tx-open-maturity-a';
+      INSERT INTO finance_deposit_contracts (
+        id, class_id, product_id, product_revision, student_id,
+        wallet_account_id, principal, product_name_snapshot,
+        term_weeks_snapshot, maturity_interest_bps_snapshot,
+        early_interest_bps_snapshot, maturity_interest, early_interest,
+        maturity_payout, early_payout, opened_at, matures_at,
+        idempotency_key, payload_hash, posted_transaction_id,
+        transaction_payload_hash, created_at
+      ) VALUES (
+        'contract-maturity-a', 'class-maturity-floor', 'product-maturity-floor',
+        0, 'student-maturity-a', 'finance:student:student-maturity-a:wallet',
+        100, 'Floor Savings', 1, 10000, 0, 100, 0, 200, 100,
+        999, 604800999, 'contract:maturity:a', 'hash:contract:maturity:a',
+        'tx-open-maturity-a', 'hash:tx:open:maturity:a', 1000
+      );
+
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-open-maturity-b-wallet', 'tx-open-maturity-b',
+         'class-maturity-floor', 'finance:student:student-maturity-b:wallet',
+         -100, 499999900, 2, 1000),
+        ('entry-open-maturity-b-issuance', 'tx-open-maturity-b',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         100, -999999800, 4, 1000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 1000
+      WHERE id = 'tx-open-maturity-b';
+      INSERT INTO finance_deposit_contracts (
+        id, class_id, product_id, product_revision, student_id,
+        wallet_account_id, principal, product_name_snapshot,
+        term_weeks_snapshot, maturity_interest_bps_snapshot,
+        early_interest_bps_snapshot, maturity_interest, early_interest,
+        maturity_payout, early_payout, opened_at, matures_at,
+        idempotency_key, payload_hash, posted_transaction_id,
+        transaction_payload_hash, created_at
+      ) VALUES (
+        'contract-maturity-b', 'class-maturity-floor', 'product-maturity-floor',
+        0, 'student-maturity-b', 'finance:student:student-maturity-b:wallet',
+        100, 'Floor Savings', 1, 10000, 0, 100, 0, 200, 100,
+        1000, 604801000, 'contract:maturity:b', 'hash:contract:maturity:b',
+        'tx-open-maturity-b', 'hash:tx:open:maturity:b', 1000
+      );
+
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-open-maturity-c-wallet', 'tx-open-maturity-c',
+         'class-maturity-normal', 'finance:student:student-maturity-c:wallet',
+         -100, 900, 2, 1000),
+        ('entry-open-maturity-c-issuance', 'tx-open-maturity-c',
+         'class-maturity-normal', 'finance:class:class-maturity-normal:issuance',
+         100, -900, 2, 1000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 1000
+      WHERE id = 'tx-open-maturity-c';
+      INSERT INTO finance_deposit_contracts (
+        id, class_id, product_id, product_revision, student_id,
+        wallet_account_id, principal, product_name_snapshot,
+        term_weeks_snapshot, maturity_interest_bps_snapshot,
+        early_interest_bps_snapshot, maturity_interest, early_interest,
+        maturity_payout, early_payout, opened_at, matures_at,
+        idempotency_key, payload_hash, posted_transaction_id,
+        transaction_payload_hash, created_at
+      ) VALUES (
+        'contract-maturity-c', 'class-maturity-normal', 'product-maturity-normal',
+        0, 'student-maturity-c', 'finance:student:student-maturity-c:wallet',
+        100, 'Normal Savings', 1, 10000, 0, 100, 0, 200, 100,
+        1000, 604801000, 'contract:maturity:c', 'hash:contract:maturity:c',
+        'tx-open-maturity-c', 'hash:tx:open:maturity:c', 1000
+      );
+
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-fill-issuance-floor', 'class-maturity-floor', 'pending',
+        'manual_credit', 'Fill issuance safety floor', 'tx:fill:issuance:floor',
+        'hash:fill:issuance:floor', 'teacher', 'teacher-maturity-backoff',
+        'Teacher', 2000
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-fill-floor-wallet', 'tx-fill-issuance-floor',
+         'class-maturity-floor', 'finance:student:student-maturity-a:wallet',
+         200, 500000100, 3, 2000),
+        ('entry-fill-floor-issuance', 'tx-fill-issuance-floor',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         -200, -1000000000, 5, 2000);
+      UPDATE finance_transactions SET status = 'posted', posted_at = 2000
+      WHERE id = 'tx-fill-issuance-floor';
+    `);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      maturityBackoffWorkerPath,
+      {
+        config: maturityBackoffConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    const runMaturities = async (now, limit = 2) => {
+      const response = await worker.fetch("http://test.local/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ now, limit }),
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+
+    assert.deepEqual(await runMaturities(dueNow), {
+      due: 2,
+      settled: 0,
+      failed: 2,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    const firstRetries = lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, class_id, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_deposit_maturity_retries ORDER BY contract_id;`,
+    ));
+    assert.deepEqual(firstRetries, [
+      {
+        contract_id: "contract-maturity-a",
+        class_id: "class-maturity-floor",
+        attempt_count: 1,
+        next_attempt_at: dueNow + 120_000,
+        last_error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT",
+        last_failed_at: dueNow,
+        created_at: dueNow,
+        updated_at: dueNow,
+      },
+      {
+        contract_id: "contract-maturity-b",
+        class_id: "class-maturity-floor",
+        attempt_count: 1,
+        next_attempt_at: dueNow + 120_000,
+        last_error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT",
+        last_failed_at: dueNow,
+        created_at: dueNow,
+        updated_at: dueNow,
+      },
+    ]);
+
+    assert.deepEqual(await runMaturities(dueNow + 60_000), {
+      due: 3,
+      settled: 1,
+      failed: 0,
+      deferred: 2,
+      retrySchedulingFailed: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, next_attempt_at
+       FROM finance_deposit_maturity_retries ORDER BY contract_id;`,
+    )), firstRetries.map(({ contract_id, attempt_count, next_attempt_at }) => ({
+      contract_id,
+      attempt_count,
+      next_attempt_at,
+    })));
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, settlement_type, payout
+       FROM finance_deposit_settlements ORDER BY contract_id;`,
+    )), [{
+      contract_id: "contract-maturity-c",
+      settlement_type: "maturity",
+      payout: 200,
+    }]);
+
+    assert.deepEqual(await runMaturities(dueNow + 119_999), {
+      due: 2,
+      settled: 0,
+      failed: 0,
+      deferred: 2,
+      retrySchedulingFailed: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, next_attempt_at
+       FROM finance_deposit_maturity_retries ORDER BY contract_id;`,
+    )), firstRetries.map(({ contract_id, attempt_count, next_attempt_at }) => ({
+      contract_id,
+      attempt_count,
+      next_attempt_at,
+    })));
+
+    const secondAttemptAt = dueNow + 120_000;
+    assert.deepEqual(await runMaturities(secondAttemptAt), {
+      due: 2,
+      settled: 0,
+      failed: 2,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    const secondRetries = lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_deposit_maturity_retries ORDER BY contract_id;`,
+    ));
+    assert.deepEqual(secondRetries, firstRetries.map((retry) => ({
+      contract_id: retry.contract_id,
+      attempt_count: 2,
+      next_attempt_at: secondAttemptAt + 240_000,
+      last_error_code: retry.last_error_code,
+      last_failed_at: secondAttemptAt,
+      created_at: dueNow,
+      updated_at: secondAttemptAt,
+    })));
+
+    const fairnessAt = secondAttemptAt + 240_000;
+    executeSql(persistPath, `
+      UPDATE finance_deposit_maturity_retries
+      SET next_attempt_at = ${fairnessAt - 1}
+      WHERE contract_id = 'contract-maturity-a';
+      UPDATE finance_deposit_maturity_retries
+      SET next_attempt_at = ${fairnessAt - 1000}
+      WHERE contract_id = 'contract-maturity-b';
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract.id, contract.matures_at, retry.next_attempt_at
+       FROM finance_deposit_contracts contract
+       JOIN finance_deposit_maturity_retries retry
+         ON retry.contract_id = contract.id
+       ORDER BY contract.matures_at, contract.id;`,
+    )), [
+      {
+        id: "contract-maturity-a",
+        matures_at: 604800999,
+        next_attempt_at: fairnessAt - 1,
+      },
+      {
+        id: "contract-maturity-b",
+        matures_at: 604801000,
+        next_attempt_at: fairnessAt - 1000,
+      },
+    ]);
+
+    const fairnessRestoreAt = fairnessAt - 1;
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-restore-issuance-headroom', 'class-maturity-floor', 'pending',
+        'manual_debit', 'Restore issuance headroom',
+        'tx:restore:issuance:headroom', 'hash:restore:issuance:headroom',
+        'teacher', 'teacher-maturity-backoff', 'Teacher', ${fairnessRestoreAt}
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-restore-headroom-wallet', 'tx-restore-issuance-headroom',
+         'class-maturity-floor', 'finance:student:student-maturity-a:wallet',
+         -300, 499999800, 4, ${fairnessRestoreAt}),
+        ('entry-restore-headroom-issuance', 'tx-restore-issuance-headroom',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         300, -999999700, 6, ${fairnessRestoreAt});
+      UPDATE finance_transactions
+      SET status = 'posted', posted_at = ${fairnessRestoreAt}
+      WHERE id = 'tx-restore-issuance-headroom';
+    `);
+
+    assert.deepEqual(await runMaturities(fairnessAt, 1), {
+      due: 1,
+      settled: 1,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id FROM finance_deposit_settlements
+       ORDER BY contract_id;`,
+    )), [
+      { contract_id: "contract-maturity-b" },
+      { contract_id: "contract-maturity-c" },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, next_attempt_at
+       FROM finance_deposit_maturity_retries;`,
+    )), [{
+      contract_id: "contract-maturity-a",
+      attempt_count: 2,
+      next_attempt_at: fairnessAt - 1,
+    }]);
+
+    const capAttemptAt = fairnessAt + 1;
+    executeSql(persistPath, `
+      UPDATE finance_deposit_maturity_retries
+      SET attempt_count = 5, next_attempt_at = ${capAttemptAt},
+          last_failed_at = ${fairnessAt}, updated_at = ${fairnessAt}
+      WHERE contract_id = 'contract-maturity-a';
+    `);
+    assert.deepEqual(await runMaturities(capAttemptAt, 1), {
+      due: 1,
+      settled: 0,
+      failed: 1,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    const finalAttemptAt = capAttemptAt + 60 * 60_000;
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, next_attempt_at,
+              last_error_code, last_failed_at, created_at, updated_at
+       FROM finance_deposit_maturity_retries;`,
+    )), [{
+      contract_id: "contract-maturity-a",
+      attempt_count: 6,
+      next_attempt_at: finalAttemptAt,
+      last_error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT",
+      last_failed_at: capAttemptAt,
+      created_at: dueNow,
+      updated_at: capAttemptAt,
+    }]);
+
+    const finalRestoreAt = finalAttemptAt - 1;
+    executeSql(persistPath, `
+      INSERT INTO finance_transactions (
+        id, class_id, status, transaction_type, description,
+        idempotency_key, payload_hash, actor_type, actor_teacher_id,
+        actor_label, created_at
+      ) VALUES (
+        'tx-restore-final-headroom', 'class-maturity-floor', 'pending',
+        'manual_debit', 'Restore final issuance headroom',
+        'tx:restore:final:headroom', 'hash:restore:final:headroom',
+        'teacher', 'teacher-maturity-backoff', 'Teacher', ${finalRestoreAt}
+      );
+      INSERT INTO finance_ledger_entries (
+        id, transaction_id, class_id, account_id, amount,
+        balance_after, account_revision_after, created_at
+      ) VALUES
+        ('entry-restore-final-wallet', 'tx-restore-final-headroom',
+         'class-maturity-floor', 'finance:student:student-maturity-a:wallet',
+         -1000, 499998800, 5, ${finalRestoreAt}),
+        ('entry-restore-final-issuance', 'tx-restore-final-headroom',
+         'class-maturity-floor', 'finance:class:class-maturity-floor:issuance',
+         1000, -999998900, 8, ${finalRestoreAt});
+      UPDATE finance_transactions
+      SET status = 'posted', posted_at = ${finalRestoreAt}
+      WHERE id = 'tx-restore-final-headroom';
+    `);
+
+    assert.deepEqual(await runMaturities(finalAttemptAt, 1), {
+      due: 1,
+      settled: 1,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_maturity_retries;`,
+    )), [{ count: 0 }]);
+    const finalSettlementState = lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_deposit_settlements) AS settlement_count,
+         (SELECT COUNT(*) FROM finance_transactions
+          WHERE transaction_type = 'deposit_maturity'
+            AND status = 'posted') AS maturity_transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries entry
+          JOIN finance_transactions transaction_row
+            ON transaction_row.id = entry.transaction_id
+          WHERE transaction_row.transaction_type = 'deposit_maturity'
+            AND transaction_row.status = 'posted') AS maturity_entry_count,
+         (SELECT COUNT(DISTINCT source_id) FROM finance_transactions
+          WHERE transaction_type = 'deposit_maturity'
+            AND status = 'posted') AS maturity_source_count;`,
+    ));
+    assert.deepEqual(finalSettlementState, [{
+      settlement_count: 3,
+      maturity_transaction_count: 3,
+      maturity_entry_count: 6,
+      maturity_source_count: 3,
+    }]);
+
+    assert.deepEqual(await runMaturities(finalAttemptAt + 10_000_000), {
+      due: 0,
+      settled: 0,
+      failed: 0,
+      deferred: 0,
+      retrySchedulingFailed: 0,
+    });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_deposit_settlements) AS settlement_count,
+         (SELECT COUNT(*) FROM finance_transactions
+          WHERE transaction_type = 'deposit_maturity'
+            AND status = 'posted') AS maturity_transaction_count,
+         (SELECT COUNT(*) FROM finance_ledger_entries entry
+          JOIN finance_transactions transaction_row
+            ON transaction_row.id = entry.transaction_id
+          WHERE transaction_row.transaction_type = 'deposit_maturity'
+            AND transaction_row.status = 'posted') AS maturity_entry_count,
+         (SELECT COUNT(DISTINCT source_id) FROM finance_transactions
+          WHERE transaction_type = 'deposit_maturity'
+            AND status = 'posted') AS maturity_source_count;`,
+    )), finalSettlementState);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_deposit_maturity_retries (
+        contract_id, class_id, attempt_count, next_attempt_at,
+        last_error_code, last_failed_at, created_at, updated_at
+      ) VALUES (
+        'contract-maturity-a', 'class-maturity-floor', 1,
+        ${finalAttemptAt + 120_000}, 'FINANCE_DEPOSIT_AUTOMATION_FAILED',
+        ${finalAttemptAt}, ${finalAttemptAt}, ${finalAttemptAt}
+      );
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_maturity_retries;`,
+    )), [{ count: 0 }]);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

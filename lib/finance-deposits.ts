@@ -1384,6 +1384,59 @@ export async function emergencySettleFinanceDepositForRequest(
   });
 }
 
+const FINANCE_DEPOSIT_RETRY_BASE_DELAY_MS = 2 * 60_000;
+const FINANCE_DEPOSIT_RETRY_MAX_DELAY_MS = 60 * 60_000;
+
+function depositMaturityFailureCode(error: unknown) {
+  const code = error instanceof ApiError
+    ? error.code
+    : String(error).match(/FINANCE_[A-Z0-9_]+/)?.[0];
+  return code && /^[A-Z0-9_]{1,100}$/.test(code)
+    ? code
+    : "FINANCE_DEPOSIT_AUTOMATION_FAILED";
+}
+
+async function deferFailedDepositMaturity(
+  db: D1Database,
+  input: {
+    contractId: string;
+    classId: string;
+    now: number;
+    error: unknown;
+  },
+) {
+  await db.prepare(
+    `INSERT INTO finance_deposit_maturity_retries (
+       contract_id, class_id, attempt_count, next_attempt_at,
+       last_error_code, last_failed_at, created_at, updated_at
+     ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+     ON CONFLICT(contract_id) DO UPDATE SET
+       attempt_count = MIN(1000000,
+         finance_deposit_maturity_retries.attempt_count + 1),
+       next_attempt_at = excluded.last_failed_at + CASE
+         WHEN finance_deposit_maturity_retries.attempt_count >= 5
+           THEN ?
+         ELSE ? * (1 << finance_deposit_maturity_retries.attempt_count)
+       END,
+       last_error_code = excluded.last_error_code,
+       last_failed_at = excluded.last_failed_at,
+       updated_at = excluded.updated_at
+     WHERE finance_deposit_maturity_retries.class_id = excluded.class_id
+       AND finance_deposit_maturity_retries.next_attempt_at
+         <= excluded.last_failed_at`,
+  ).bind(
+    input.contractId,
+    input.classId,
+    input.now + FINANCE_DEPOSIT_RETRY_BASE_DELAY_MS,
+    depositMaturityFailureCode(input.error),
+    input.now,
+    input.now,
+    input.now,
+    FINANCE_DEPOSIT_RETRY_MAX_DELAY_MS,
+    FINANCE_DEPOSIT_RETRY_BASE_DELAY_MS,
+  ).run();
+}
+
 export async function settleDueDepositContracts(
   db: D1Database,
   options: {
@@ -1422,23 +1475,44 @@ export async function settleDueDepositContracts(
      WHERE ${conditions.join(" AND ")}
        AND (wallet.status <> 'active' OR issuance.status <> 'active')`,
   ).bind(...bindings).first<{ count: number }>();
-  bindings.push(limit);
-  const rows = await db.prepare(
-    `SELECT contract.id
+  const deferred = await db.prepare(
+    `SELECT COUNT(*) AS count
      FROM finance_deposit_contracts contract
      JOIN classes classroom ON classroom.id = contract.class_id
      JOIN finance_accounts wallet ON wallet.id = contract.wallet_account_id
        AND wallet.class_id = contract.class_id AND wallet.status = 'active'
      JOIN finance_accounts issuance ON issuance.class_id = contract.class_id
        AND issuance.account_type = 'class_issuance' AND issuance.status = 'active'
+     JOIN finance_deposit_maturity_retries retry
+       ON retry.contract_id = contract.id AND retry.class_id = contract.class_id
      LEFT JOIN finance_deposit_settlements settlement
        ON settlement.contract_id = contract.id
      WHERE ${conditions.join(" AND ")}
-     ORDER BY contract.matures_at, contract.id
+       AND retry.next_attempt_at > ?`,
+  ).bind(...bindings, now).first<{ count: number }>();
+  const rows = await db.prepare(
+    `SELECT contract.id, contract.class_id
+     FROM finance_deposit_contracts contract
+     JOIN classes classroom ON classroom.id = contract.class_id
+     JOIN finance_accounts wallet ON wallet.id = contract.wallet_account_id
+       AND wallet.class_id = contract.class_id AND wallet.status = 'active'
+     JOIN finance_accounts issuance ON issuance.class_id = contract.class_id
+       AND issuance.account_type = 'class_issuance' AND issuance.status = 'active'
+     LEFT JOIN finance_deposit_maturity_retries retry
+       ON retry.contract_id = contract.id AND retry.class_id = contract.class_id
+     LEFT JOIN finance_deposit_settlements settlement
+       ON settlement.contract_id = contract.id
+     WHERE ${conditions.join(" AND ")}
+       AND (retry.contract_id IS NULL OR retry.next_attempt_at <= ?)
+     ORDER BY CASE WHEN retry.contract_id IS NULL THEN 0 ELSE 1 END,
+              CASE WHEN retry.contract_id IS NULL
+                THEN contract.matures_at ELSE retry.next_attempt_at END,
+              contract.matures_at, contract.id
      LIMIT ?`,
-  ).bind(...bindings).all<{ id: string }>();
+  ).bind(...bindings, now, limit).all<{ id: string; class_id: string }>();
   let settled = 0;
   let failed = Number(blocked?.count ?? 0);
+  let retrySchedulingFailed = 0;
   for (const row of rows.results) {
     try {
       await settleFinanceDepositContractWithDb(db, {
@@ -1453,13 +1527,27 @@ export async function settleDueDepositContracts(
         settled += 1;
       } else {
         failed += 1;
+        try {
+          await deferFailedDepositMaturity(db, {
+            contractId: row.id,
+            classId: row.class_id,
+            now,
+            error,
+          });
+        } catch {
+          retrySchedulingFailed += 1;
+        }
       }
     }
   }
   return {
-    due: rows.results.length + Number(blocked?.count ?? 0),
+    due: rows.results.length
+      + Number(blocked?.count ?? 0)
+      + Number(deferred?.count ?? 0),
     settled,
     failed,
+    deferred: Number(deferred?.count ?? 0),
+    retrySchedulingFailed,
   };
 }
 
@@ -1482,7 +1570,7 @@ export async function financeDepositsForRequest(request: Request) {
       classId: context.classroom.id,
       studentId: context.actor.type === "student" ? context.actor.id : undefined,
     })
-    : { due: 0, settled: 0, failed: 0 };
+    : { due: 0, settled: 0, failed: 0, deferred: 0, retrySchedulingFailed: 0 };
   const productWhere = context.actor.type === "teacher"
     ? "product.class_id = ?"
     : `product.class_id = ? AND (

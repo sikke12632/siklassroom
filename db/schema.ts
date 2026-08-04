@@ -1066,6 +1066,10 @@ export const financeDepositContracts = sqliteTable("finance_deposit_contracts", 
     table.classId,
     table.maturesAt,
   ),
+  index("finance_deposit_contracts_maturity_idx").on(
+    table.maturesAt,
+    table.id,
+  ),
   foreignKey({
     columns: [table.productId, table.classId],
     foreignColumns: [financeDepositProducts.id, financeDepositProducts.classId],
@@ -1099,6 +1103,50 @@ export const financeDepositContracts = sqliteTable("finance_deposit_contracts", 
       AND ${table.maturesAt} > ${table.openedAt}`,
   ),
 ]);
+
+export const financeDepositMaturityRetries = sqliteTable(
+  "finance_deposit_maturity_retries",
+  {
+    contractId: text("contract_id").primaryKey(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    attemptCount: integer("attempt_count").notNull().default(1),
+    nextAttemptAt: integer("next_attempt_at").notNull(),
+    lastErrorCode: text("last_error_code").notNull(),
+    lastFailedAt: integer("last_failed_at").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    index("finance_deposit_maturity_retries_next_attempt_idx").on(
+      table.nextAttemptAt,
+      table.contractId,
+    ),
+    index("finance_deposit_maturity_retries_class_idx").on(
+      table.classId,
+      table.nextAttemptAt,
+    ),
+    foreignKey({
+      columns: [table.contractId, table.classId],
+      foreignColumns: [financeDepositContracts.id, financeDepositContracts.classId],
+      name: "finance_deposit_maturity_retries_contract_class_fk",
+    }),
+    check(
+      "finance_deposit_maturity_retries_attempt_ck",
+      sql`${table.attemptCount} BETWEEN 1 AND 1000000`,
+    ),
+    check(
+      "finance_deposit_maturity_retries_timing_ck",
+      sql`${table.nextAttemptAt} >= ${table.lastFailedAt}
+        AND ${table.lastFailedAt} >= 0
+        AND ${table.createdAt} >= 0
+        AND ${table.updatedAt} >= ${table.createdAt}`,
+    ),
+    check(
+      "finance_deposit_maturity_retries_error_ck",
+      sql`LENGTH(TRIM(${table.lastErrorCode})) BETWEEN 1 AND 100`,
+    ),
+  ],
+);
 
 export const financeDepositSettlements = sqliteTable("finance_deposit_settlements", {
   id: text("id").primaryKey(),

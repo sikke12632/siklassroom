@@ -60,11 +60,17 @@ const worker = {
       ]).then(([depositResult, stockResult]) => {
         if (depositResult.status === "rejected") {
           console.error("finance deposit maturity processing failed", depositResult.reason);
-        } else if (depositResult.value.failed > 0) {
+        } else if (
+          depositResult.value.failed > 0
+          || depositResult.value.deferred > 0
+          || depositResult.value.retrySchedulingFailed > 0
+        ) {
           console.error("finance deposit maturity processing incomplete", {
             due: depositResult.value.due,
             settled: depositResult.value.settled,
             failed: depositResult.value.failed,
+            deferred: depositResult.value.deferred,
+            retrySchedulingFailed: depositResult.value.retrySchedulingFailed,
           });
         }
         if (stockResult.status === "rejected") {
