@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
@@ -50,6 +50,7 @@ const currentYear = new Date().getFullYear();
 const emptyDraft = (number = ""): DraftStudent => ({ key: crypto.randomUUID(), number, name: "" });
 
 export function TeacherPortal() {
+  const verificationStarted = useRef(false);
   const [loading, setLoading] = useState(true);
   const [actor, setActor] = useState<TeacherActor | null>(null);
   const [wrongEntrance, setWrongEntrance] = useState(false);
@@ -108,14 +109,23 @@ export function TeacherPortal() {
   }, [loadClasses]);
 
   useEffect(() => {
-    const token = new URLSearchParams(window.location.search).get("verifyEmailToken");
+    if (verificationStarted.current) return;
+    verificationStarted.current = true;
+    const current = new URL(window.location.href);
+    const token = new URLSearchParams(current.hash.replace(/^#/, "")).get("verifyEmailToken");
+    const legacyQueryToken = current.searchParams.has("verifyEmailToken");
+    current.searchParams.delete("verifyEmailToken");
+    if (token || legacyQueryToken) {
+      window.history.replaceState({}, "", `${current.pathname}${current.search}`);
+    }
     const verify = token
       ? postJson("/api/teacher/email-verification/confirm", { token })
         .then(() => {
           setAuthNotice("이메일 확인을 완료했어요. 다음 단계로 이어갈게요.");
-          window.history.replaceState({}, "", "/teacher");
         })
         .catch((reason) => setError((reason as Error).message))
+      : legacyQueryToken
+        ? Promise.resolve().then(() => setError("이전 인증 링크는 더 이상 사용할 수 없어요. 새 인증 메일을 받아 주세요."))
       : Promise.resolve();
     verify.then(() => loadActor())
       .catch(() => setError("접속 상태를 확인하지 못했어요. 새로고침해 주세요."))

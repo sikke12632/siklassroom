@@ -6,6 +6,7 @@ import { consumeRateLimit, subjectThrottleKey } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    const noStore = { "Cache-Control": "no-store" };
     assertSameOriginRequest(request);
     const { teacherId } = await requireTeacher(request);
     const key = await subjectThrottleKey("teacher-email-verification", teacherId);
@@ -17,10 +18,10 @@ export async function POST(request: Request) {
     const teacher = await database().prepare(
       `SELECT email, email_verified_at FROM teachers WHERE id = ?`,
     ).bind(teacherId).first<{ email: string; email_verified_at: number | null }>();
-    if (!teacher) return json({ ok: true });
-    if (teacher.email_verified_at) return json({ ok: true, alreadyVerified: true });
+    if (!teacher) return json({ ok: true }, 200, noStore);
+    if (teacher.email_verified_at) return json({ ok: true, alreadyVerified: true }, 200, noStore);
     const verification = await issueEmailVerification({ teacherId, email: teacher.email, request });
-    return json({ ok: true, verification });
+    return json({ ok: true, verification }, 200, noStore);
   } catch (error) {
     return apiFailure(error);
   }

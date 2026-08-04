@@ -28,6 +28,14 @@ function activationTokenFrom(url) {
     ?? parsed.searchParams.get("token");
 }
 
+function bearerTokenFromFragment(url, name) {
+  const parsed = new URL(url);
+  assert.equal(parsed.search, "", `${name} bearer token은 query string에 두지 않는다`);
+  const token = new URLSearchParams(parsed.hash.replace(/^#/, "")).get(name);
+  assert.ok(token, `${name} bearer token이 fragment에 있어야 한다`);
+  return token;
+}
+
 function capacityOf(jobs) {
   return jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
 }
@@ -100,6 +108,7 @@ const initialVerification = await request("/api/teacher/email-verification/reque
   method: "POST",
 });
 assert.ok(initialVerification.data.verification?.developmentUrl);
+assert.match(initialVerification.response.headers.get("cache-control") || "", /no-store/i);
 const secondaryPendingLogin = await request("/api/teacher/login", {
   method: "POST",
   body: { email: teacherEmail, password: firstPassword },
@@ -121,7 +130,7 @@ await request("/api/classes", {
   body: { schoolYear: 2099, grade: 5, classNumber: 9 },
   expected: 403,
 });
-const emailToken = new URL(initialVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const emailToken = bearerTokenFromFragment(initialVerification.data.verification.developmentUrl, "verifyEmailToken");
 const preEmailVerificationCookie = teacherCookie;
 const emailConfirmation = await request("/api/teacher/email-verification/confirm", {
   cookie: teacherCookie,
@@ -157,7 +166,7 @@ const outsiderVerification = await request("/api/teacher/email-verification/requ
   method: "POST",
 });
 assert.ok(outsiderVerification.data.verification?.developmentUrl);
-const outsiderEmailToken = new URL(outsiderVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const outsiderEmailToken = bearerTokenFromFragment(outsiderVerification.data.verification.developmentUrl, "verifyEmailToken");
 const preOutsiderVerificationCookie = outsiderCookie;
 const crossAccountConfirmation = await request("/api/teacher/email-verification/confirm", {
   cookie: teacherCookie,
@@ -347,7 +356,7 @@ const manualVerification = await request("/api/teacher/email-verification/reques
   cookie: manualCookie,
   method: "POST",
 });
-const manualEmailToken = new URL(manualVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const manualEmailToken = bearerTokenFromFragment(manualVerification.data.verification.developmentUrl, "verifyEmailToken");
 const manualConfirmation = await request("/api/teacher/email-verification/confirm", {
   cookie: manualCookie,
   method: "POST",
@@ -1128,6 +1137,7 @@ const recovery = await request("/api/teacher/password/request", {
 });
 assert.equal(recovery.data.emailConfigured, false);
 assert.ok(recovery.data.developmentResetUrl);
+assert.match(recovery.response.headers.get("cache-control") || "", /no-store/i);
 const missingRecovery = await request("/api/teacher/password/request", {
   method: "POST",
   body: { email: `missing-reset-${runId}@example.test` },
@@ -1137,13 +1147,13 @@ assert.equal(missingRecovery.data.ok, recovery.data.ok);
 assert.equal(missingRecovery.data.emailConfigured, recovery.data.emailConfigured);
 assert.deepEqual(Object.keys(missingRecovery.data).sort(), Object.keys(recovery.data).sort());
 assert.ok(missingRecovery.data.developmentResetUrl);
-const missingResetToken = new URL(missingRecovery.data.developmentResetUrl).searchParams.get("token");
+const missingResetToken = bearerTokenFromFragment(missingRecovery.data.developmentResetUrl, "token");
 await request("/api/teacher/password/reset", {
   method: "POST",
   body: { token: missingResetToken, password: "Missing!234" },
   expected: 410,
 });
-const teacherResetToken = new URL(recovery.data.developmentResetUrl).searchParams.get("token");
+const teacherResetToken = bearerTokenFromFragment(recovery.data.developmentResetUrl, "token");
 await request("/api/teacher/password/reset", {
   method: "POST",
   body: { token: teacherResetToken, password: nextPassword },
@@ -1153,7 +1163,7 @@ const raceRecovery = await request("/api/teacher/password/request", {
   method: "POST",
   body: { email: teacherEmail },
 });
-const raceResetToken = new URL(raceRecovery.data.developmentResetUrl).searchParams.get("token");
+const raceResetToken = bearerTokenFromFragment(raceRecovery.data.developmentResetUrl, "token");
 const [racingTeacherLogin, racingTeacherReset] = await Promise.all([
   fetch(`${baseUrl}/api/teacher/login`, {
     method: "POST",

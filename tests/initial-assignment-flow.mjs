@@ -9,6 +9,14 @@ const teacherEmail = `assignment-${runNumber}@example.test`;
 const password = "Teacher!234";
 let cookie = "";
 
+function bearerTokenFromFragment(url, name) {
+  const parsed = new URL(url);
+  assert.equal(parsed.search, "", `${name} bearer token은 query string에 두지 않는다`);
+  const token = new URLSearchParams(parsed.hash.replace(/^#/, "")).get(name);
+  assert.ok(token, `${name} bearer token이 fragment에 있어야 한다`);
+  return token;
+}
+
 async function request(path, { method = "GET", body, expected = 200 } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -40,7 +48,7 @@ const verification = await request("/api/teacher/email-verification/request", {
   body: {},
 });
 assert.ok(verification.verification?.developmentUrl);
-const emailToken = new URL(verification.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const emailToken = bearerTokenFromFragment(verification.verification.developmentUrl, "verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",
   body: { token: emailToken },

@@ -37,7 +37,9 @@ export async function POST(request: Request) {
          SELECT ?, id, ?, ?, ? FROM teachers WHERE id = ? AND status = 'active'`,
       ).bind(crypto.randomUUID(), tokenHash, now + 30 * 60 * 1000, now, teacherId),
     ]);
-    const url = new URL(`/teacher/reset?token=${encodeURIComponent(rawToken)}`, request.url).toString();
+    const resetUrl = new URL("/teacher/reset", request.url);
+    resetUrl.hash = new URLSearchParams({ token: rawToken }).toString();
+    const url = resetUrl.toString();
     await sendTeacherPasswordReset(email, url).catch(() => ({ sent: false }));
     const hostname = new URL(request.url).hostname;
     const developmentResetUrl = hostname === "localhost" || hostname === "127.0.0.1" ? url : undefined;
@@ -53,7 +55,7 @@ export async function POST(request: Request) {
       message: "가입된 이메일이라면 비밀번호 재설정 안내를 보냈습니다.",
       emailConfigured,
       ...(developmentResetUrl ? { developmentResetUrl } : {}),
-    });
+    }, 200, { "Cache-Control": "no-store" });
   } catch (error) {
     return apiFailure(error);
   }

@@ -90,6 +90,41 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(passwordRequest, /teacherId: teacher\?\.id \?\? null/);
 });
 
+test("이메일 인증과 비밀번호 재설정 토큰은 서버에 전송되지 않는 URL fragment로 전달한다", async () => {
+  const [passwordRequest, teacherPage, resetPage, resetPortal, verification, teacherPortal] = await Promise.all([
+    readFile(new URL("../app/api/teacher/password/request/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/reset/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/reset/TeacherReset.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/teacher-verification.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(passwordRequest, /resetUrl\.hash = new URLSearchParams/);
+  assert.doesNotMatch(passwordRequest, /reset\?token/);
+  assert.match(verification, /url\.hash = new URLSearchParams\(\{ verifyEmailToken/);
+  assert.doesNotMatch(verification, /searchParams\.set\("verifyEmailToken"/);
+  assert.match(teacherPage, /referrer: "no-referrer"/);
+  assert.match(resetPage, /referrer: "no-referrer"/);
+  assert.doesNotMatch(resetPage, /searchParams|token=/);
+  assert.match(resetPortal, /current\.hash/);
+  assert.match(resetPortal, /capturedToken\.current === null/);
+  assert.match(resetPortal, /window\.history\.replaceState/);
+  assert.ok(
+    resetPortal.indexOf("window.history.replaceState") < resetPortal.indexOf("setToken(resetToken)"),
+    "재설정 토큰은 화면 상태에 보관하기 전에 주소창에서 지운다",
+  );
+  assert.match(teacherPortal, /current\.hash/);
+  assert.match(teacherPortal, /if \(verificationStarted\.current\) return/);
+  assert.match(teacherPortal, /window\.history\.replaceState/);
+  assert.match(teacherPortal, /current\.searchParams\.delete\("verifyEmailToken"\)/);
+  assert.match(teacherPortal, /이전 인증 링크는 더 이상 사용할 수 없어요/);
+  assert.ok(
+    teacherPortal.indexOf("window.history.replaceState")
+      < teacherPortal.indexOf('postJson("/api/teacher/email-verification/confirm"'),
+    "이메일 인증 토큰은 네트워크 요청 전에 주소창에서 지운다",
+  );
+});
+
 test("본문이 없는 변경 요청도 같은 출처만 허용하고 외부 요청은 제한 횟수를 소모하지 않는다", async () => {
   const [
     responses,

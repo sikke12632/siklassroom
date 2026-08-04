@@ -52,7 +52,7 @@ export async function issueEmailVerification(input: {
   ]);
 
   const url = new URL("/teacher", input.request.url);
-  url.searchParams.set("verifyEmailToken", rawToken);
+  url.hash = new URLSearchParams({ verifyEmailToken: rawToken }).toString();
   let sent = false;
   try {
     sent = (await sendTeacherEmailVerification(input.email, url.toString())).sent;
