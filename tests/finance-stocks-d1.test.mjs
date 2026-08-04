@@ -2138,3 +2138,218 @@ test("overlapping automatic stock runs apply one due tick only once", {
     await rm(persistPath, { recursive: true, force: true });
   }
 });
+
+test("automatic stock tick keys survive an interval change at the same bucket", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-tick-interval-key-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, created_at, updated_at
+      ) VALUES (
+        'teacher-stock-interval', 'teacher-stock-interval@test.local', 'hash',
+        'active', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stock-interval', 'teacher-stock-interval',
+        'Test School', 'test school', 2099, 6, 12, 'active', 1, 1
+      );
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        'stock-interval', 'class-stock-interval', 'Interval Company', 'INTV',
+        'Automatic interval idempotency probe', 1000, 1000, 1000,
+        20, 20, 10, 'active', 0, 0, NULL,
+        'teacher-stock-interval', 'teacher', 'teacher-stock-interval', 10, 10
+      );
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, previous_snapshot_json,
+        stock_snapshot_json, actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-interval-issued', 'class-stock-interval', 'stock-interval',
+        0, 'issued', 'Initial issue', 'stock:interval:issued',
+        'hash:stock:interval:issued', NULL,
+        '{"price":1000,"availableShares":20}',
+        'teacher', 'teacher-stock-interval', 10
+      );
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 0, sell_fee_bps = 0,
+          buy_spread = 0, sell_spread = 0,
+          market_mood = 'surge', tick_interval_minutes = 15,
+          next_tick_at = 900000, revision = 1,
+          updated_by_teacher_id = 'teacher-stock-interval', updated_at = 20
+      WHERE class_id = 'class-stock-interval';
+      INSERT INTO finance_stock_market_events (
+        id, class_id, revision, action, idempotency_key, payload_hash,
+        previous_snapshot_json, market_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES (
+        'market-interval-opened', 'class-stock-interval', 1, 'opened',
+        'stock:interval:market:opened', 'hash:stock:interval:market:opened',
+        '{"isOpen":false,"revision":0}',
+        '{"isOpen":true,"tickIntervalMinutes":15,"nextTickAt":900000,"revision":1}',
+        'teacher-stock-interval', 20
+      );
+    `);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockTickRaceWorkerPath,
+      {
+        config: stockTickRaceConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    const runPlainTick = async (now) => {
+      const response = await worker.fetch("http://test.local/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "plain", now, limit: 1 }),
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+
+    const firstTick = await runPlainTick(900000);
+    assert.equal(firstTick.due, 1);
+    assert.equal(firstTick.failed, 0);
+    assert.equal(firstTick.ticked + firstTick.skipped, 1);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.revision AS stock_revision,
+              market.revision AS market_revision,
+              market.tick_interval_minutes, market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events event
+               WHERE event.stock_id = stock.id
+                 AND event.action IN ('automatic_tick', 'news_tick')) AS tick_event_count
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id = 'stock-interval';`,
+    )), [{
+      stock_revision: 1,
+      market_revision: 1,
+      tick_interval_minutes: 15,
+      next_tick_at: 1800000,
+      tick_event_count: 1,
+    }]);
+
+    assert.deepEqual(lastResults(executeSql(persistPath, `
+      UPDATE finance_stock_markets
+      SET tick_interval_minutes = 30, market_mood = 'bear',
+          next_tick_at = 900000, revision = revision + 1,
+          updated_by_teacher_id = 'teacher-stock-interval', updated_at = 900001
+      WHERE class_id = 'class-stock-interval' AND revision = 1
+        AND next_tick_at IS 900000;
+      SELECT changes() AS changed_rows;
+    `)), [{ changed_rows: 0 }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT revision, market_mood, tick_interval_minutes, next_tick_at
+       FROM finance_stock_markets WHERE class_id = 'class-stock-interval';`,
+    )), [{
+      revision: 1,
+      market_mood: "surge",
+      tick_interval_minutes: 15,
+      next_tick_at: 1800000,
+    }]);
+
+    assert.deepEqual(lastResults(executeSql(persistPath, `
+      UPDATE finance_stock_markets
+      SET tick_interval_minutes = 30, revision = 2,
+          updated_by_teacher_id = 'teacher-stock-interval', updated_at = 900001
+      WHERE class_id = 'class-stock-interval' AND revision = 1
+        AND next_tick_at IS 1800000;
+      SELECT changes() AS changed_rows;
+    `)), [{ changed_rows: 1 }]);
+    executeSql(persistPath, `
+      INSERT INTO finance_stock_market_events (
+        id, class_id, revision, action, idempotency_key, payload_hash,
+        previous_snapshot_json, market_snapshot_json,
+        actor_teacher_id, created_at
+      ) VALUES (
+        'market-interval-updated', 'class-stock-interval', 2, 'updated',
+        'stock:interval:market:updated', 'hash:stock:interval:market:updated',
+        '{"isOpen":true,"tickIntervalMinutes":15,"nextTickAt":1800000,"revision":1}',
+        '{"isOpen":true,"tickIntervalMinutes":30,"nextTickAt":1800000,"revision":2}',
+        'teacher-stock-interval', 900001
+      );
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT revision, tick_interval_minutes, next_tick_at
+       FROM finance_stock_markets WHERE class_id = 'class-stock-interval';`,
+    )), [{
+      revision: 2,
+      tick_interval_minutes: 30,
+      next_tick_at: 1800000,
+    }]);
+
+    const secondTick = await runPlainTick(1800000);
+    assert.equal(secondTick.due, 1);
+    assert.equal(secondTick.failed, 0);
+    assert.equal(secondTick.ticked + secondTick.skipped, 1);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.revision AS stock_revision,
+              market.revision AS market_revision,
+              market.tick_interval_minutes, market.next_tick_at,
+              (SELECT COUNT(*) FROM finance_stock_events event
+               WHERE event.stock_id = stock.id
+                 AND event.action IN ('automatic_tick', 'news_tick')) AS tick_event_count
+       FROM finance_stocks stock
+       JOIN finance_stock_markets market ON market.class_id = stock.class_id
+       WHERE stock.id = 'stock-interval';`,
+    )), [{
+      stock_revision: 2,
+      market_revision: 2,
+      tick_interval_minutes: 30,
+      next_tick_at: 3600000,
+      tick_event_count: 2,
+    }]);
+    const tickKeys = lastResults(executeSql(
+      persistPath,
+      `SELECT revision, idempotency_key
+       FROM finance_stock_events
+       WHERE stock_id = 'stock-interval'
+         AND action IN ('automatic_tick', 'news_tick')
+       ORDER BY revision;`,
+    ));
+    assert.equal(tickKeys.length, 2);
+    assert.notEqual(tickKeys[0].idempotency_key, tickKeys[1].idempotency_key);
+    assert.equal(
+      tickKeys[1].idempotency_key,
+      "stock-tick:v2:stock-interval:2:1800000",
+    );
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});

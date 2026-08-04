@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   FINANCE_STOCK_MAX_FEE_BPS,
@@ -30,6 +31,26 @@ function validQuote() {
     denominationStep: 100,
   };
 }
+
+test("teacher market updates compare the schedule changed by automatic ticks", async () => {
+  const source = await readFile(
+    new URL("../lib/finance-stocks.ts", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("export async function updateFinanceStockMarket");
+  const end = source.indexOf("export async function updateFinanceStock(", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const updateMarketSource = source.slice(start, end);
+  assert.match(
+    updateMarketSource,
+    /WHERE class_id = \? AND revision = \? AND next_tick_at IS \?/,
+  );
+  assert.match(
+    updateMarketSource,
+    /context\.classroom\.id,\s*values\.expectedRevision,\s*market\.next_tick_at,\s*\)/,
+  );
+});
 
 test("매수 수수료는 최소 권종 단위로 내리고 실제 지갑 출금액을 계산한다", () => {
   assert.deepEqual(

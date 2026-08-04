@@ -1614,7 +1614,7 @@ export async function updateFinanceStockMarket(
              buy_spread = ?, sell_spread = ?, market_mood = ?,
              tick_interval_minutes = ?, next_tick_at = ?,
              revision = revision + 1, updated_by_teacher_id = ?, updated_at = ?
-         WHERE class_id = ? AND revision = ?`,
+         WHERE class_id = ? AND revision = ? AND next_tick_at IS ?`,
       ).bind(
         next.is_open,
         next.buy_fee_bps,
@@ -1628,6 +1628,7 @@ export async function updateFinanceStockMarket(
         now,
         context.classroom.id,
         values.expectedRevision,
+        market.next_tick_at,
       ),
       db.prepare(
         `INSERT INTO finance_stock_market_events (
@@ -3590,15 +3591,16 @@ export async function processFinanceStockMarketTicks(
         || market.next_tick_at === null
         || Number(market.next_tick_at) > now
       ) continue;
-      const bucket = Math.floor(
-        Number(market.next_tick_at)
-          / (Number(market.tick_interval_minutes) * 60_000),
-      );
       const result = await tickStockWithDb(db, {
         market,
         stock,
         now,
-        idempotencyKey: `stock-tick:${stock.id}:${bucket}`,
+        idempotencyKey: [
+          "stock-tick:v2",
+          stock.id,
+          market.revision,
+          market.next_tick_at,
+        ].join(":"),
         actorType: "system",
         actorTeacherId: null,
         action: "automatic_tick",
