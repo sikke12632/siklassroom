@@ -470,6 +470,7 @@ function EmailVerificationGate({ actor, initialDelivery, onComplete, onLogout }:
   onLogout: () => void;
 }) {
   const [delivery, setDelivery] = useState<VerificationDelivery | null>(initialDelivery);
+  const [requested, setRequested] = useState(initialDelivery !== null);
   const [cooldown, setCooldown] = useState(initialDelivery?.retryAfterSeconds ?? 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -484,23 +485,28 @@ function EmailVerificationGate({ actor, initialDelivery, onComplete, onLogout }:
   async function resend() {
     setBusy(true); setError(""); setMessage("");
     try {
+      const wasRequested = requested;
       const data = await postJson<{ verification?: VerificationDelivery; alreadyVerified?: boolean }>("/api/teacher/email-verification/request", {});
       if (data.alreadyVerified) return void await onComplete();
       const next = data.verification ?? null;
       setDelivery(next);
+      setRequested(true);
       setCooldown(next?.retryAfterSeconds ?? 60);
-      setMessage(next?.sent ? "인증 메일을 다시 보냈어요." : "메일 발송 설정을 확인하고 있어요.");
+      setMessage(next?.sent ? (wasRequested ? "인증 메일을 다시 보냈어요." : "인증 메일을 보냈어요.") : "메일 발송 설정을 확인하고 있어요.");
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }
 
   return (
-    <OnboardingShell step={2} icon={<MailCheck />} title="이메일을 확인해 주세요" description={`${actor.email} 주소로 보낸 링크를 누르면 이메일 확인이 완료됩니다.`} onLogout={onLogout}>
-      <div className="verification-help"><b>메일이 보이지 않나요?</b><span>스팸함을 확인하고, 주소가 맞는지 살펴본 뒤 다시 보내 주세요.</span></div>
+    <OnboardingShell step={2} icon={<MailCheck />} title="이메일을 확인해 주세요" description={requested ? `${actor.email} 주소로 보낸 링크를 누르면 이메일 확인이 완료됩니다.` : `${actor.email} 주소로 인증 메일을 받은 뒤 링크를 눌러 주세요.`} onLogout={onLogout}>
+      <div className="verification-help">
+        <b>{requested ? "메일이 보이지 않나요?" : "인증 메일이 필요해요"}</b>
+        <span>{requested ? "스팸함을 확인하고, 주소가 맞는지 살펴본 뒤 다시 보내 주세요." : "아래 버튼을 누르면 입력한 주소로 인증 메일을 보내 드려요."}</span>
+      </div>
       <Notice message={error} tone="error" /><Notice message={message} tone="success" />
       {delivery?.developmentUrl && <a className="dev-reset-link" href={delivery.developmentUrl}>개발 환경 인증 링크 열기</a>}
       <div className="button-stack">
         <button className="button button-primary" disabled={busy || cooldown > 0} onClick={resend}>
-          {busy ? "보내는 중…" : cooldown > 0 ? `${cooldown}초 뒤 다시 보내기` : "인증 메일 다시 보내기"}
+          {busy ? "보내는 중…" : cooldown > 0 ? `${cooldown}초 뒤 다시 보내기` : requested ? "인증 메일 다시 보내기" : "인증 메일 받기"}
         </button>
         <button className="button button-light" onClick={() => onComplete()}>확인 완료 상태 새로고침</button>
       </div>
@@ -691,8 +697,19 @@ function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
         setDevelopmentUrl(data.developmentResetUrl || "");
       } else {
         if (mode === "signup" && password !== confirmPassword) throw new Error("비밀번호가 서로 달라요.");
-        const data = await postJson<{ teacher: TeacherActor; verification?: VerificationDelivery }>(`/api/teacher/${mode}`, { email, password });
-        onAuthenticated({ ...data.teacher, type: "teacher" }, data.verification);
+        if (mode === "signup") {
+          const data = await postJson<{
+            accepted: boolean;
+            message: string;
+          }>("/api/teacher/signup", { email, password });
+          setMessage(data.message);
+          setPassword("");
+          setConfirmPassword("");
+          setMode("login");
+        } else {
+          const data = await postJson<{ teacher: TeacherActor }>("/api/teacher/login", { email, password });
+          onAuthenticated({ ...data.teacher, type: "teacher" });
+        }
       }
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }

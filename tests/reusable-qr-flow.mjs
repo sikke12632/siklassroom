@@ -23,6 +23,7 @@ async function request(path, { cookie = "", method = "GET", body, expected = 200
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
+      "x-forwarded-for": `reusable-qr-${runNumber}`,
       ...(cookie ? { cookie } : {}),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...headers,
@@ -65,10 +66,19 @@ const invite = await request("/api/admin/invite-codes", {
 const signup = await request("/api/teacher/signup", {
   method: "POST",
   body: { email: teacherEmail, password: teacherPassword },
-  expected: 201,
+  expected: 202,
 });
-const teacherCookie = responseCookie(signup.response);
-const emailToken = new URL(signup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+assert.equal(responseCookie(signup.response), "");
+const teacherLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: teacherPassword },
+});
+const teacherCookie = responseCookie(teacherLogin.response);
+const verification = await request("/api/teacher/email-verification/request", {
+  cookie: teacherCookie,
+  method: "POST",
+});
+const emailToken = new URL(verification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",
   body: { token: emailToken },

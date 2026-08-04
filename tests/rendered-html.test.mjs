@@ -158,9 +158,11 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(openRegistration, /OPEN_TEACHER_REGISTRATION/);
   assert.match(openRegistration, /teacher_access_status != 'revoked'/);
   assert.match(openRegistration, /teacher_open_registration_activated/);
-  assert.match(signup, /openRegistration\s*\?\s*undefined/);
+  assert.match(signup, /INSERT OR IGNORE INTO teachers/);
   assert.match(signup, /openRegistration \? "invite_verified" : "pending"/);
-  assert.match(signup, /createGuardedTeacherSession/);
+  assert.match(signup, /accepted: true/);
+  assert.match(signup, /\}, 202\);/);
+  assert.doesNotMatch(signup, /EMAIL_EXISTS|Set-Cookie|createGuardedTeacherSession|issueEmailVerification|developmentVerificationUrl/);
   assert.doesNotMatch(signup, /createSession\(/);
   assert.match(login, /activateOpenTeacherRegistration/);
   assert.match(login, /accountIssue \|\| !passwordMatches/);
@@ -170,6 +172,8 @@ test("임시 공개 가입은 설정으로 켜고 권한 회수 계정은 우회
   assert.match(adminTeachers, /DELETE FROM sessions WHERE teacher_id = \?/);
   assert.match(session, /activateOpenTeacherRegistration/);
   assert.match(portal, /mode === "signup" \? "가입하기"/);
+  assert.match(portal, /setMode\("login"\)/);
+  assert.match(portal, /requested \? "인증 메일 다시 보내기" : "인증 메일 받기"/);
   assert.match(portal, /\["계정", "학교", "학급"\]/);
   assert.match(portal, /"3 \/ 3"/);
 });

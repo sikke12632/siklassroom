@@ -25,13 +25,22 @@ async function request(path, { method = "GET", body, expected = 200 } = {}) {
   return data;
 }
 
-const signup = await request("/api/teacher/signup", {
+await request("/api/teacher/signup", {
   method: "POST",
   body: { email: teacherEmail, password },
-  expected: 201,
+  expected: 202,
 });
-assert.ok(signup.verification?.developmentUrl);
-const emailToken = new URL(signup.verification.developmentUrl).searchParams.get("verifyEmailToken");
+assert.equal(cookie, "");
+await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password },
+});
+const verification = await request("/api/teacher/email-verification/request", {
+  method: "POST",
+  body: {},
+});
+assert.ok(verification.verification?.developmentUrl);
+const emailToken = new URL(verification.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",
   body: { token: emailToken },

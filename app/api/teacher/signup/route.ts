@@ -1,11 +1,9 @@
-import { createGuardedTeacherSession } from "@/lib/auth";
-import { audit, database, ensureSchema } from "@/lib/database";
-import { hashPassword, verifyPassword } from "@/lib/crypto";
+import { database, ensureSchema } from "@/lib/database";
+import { hashPassword } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
-import { issueEmailVerification } from "@/lib/teacher-verification";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
-import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
+import { isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function POST(request: Request) {
   try {
@@ -24,55 +22,11 @@ export async function POST(request: Request) {
     await consumeRateLimit(emailThrottle, { maxAttempts: 5 });
     await ensureSchema();
     const openRegistration = isOpenTeacherRegistration();
-    const existing = await database().prepare(
-      `SELECT id, password_hash, email_verified_at, teacher_access_status,
-              teacher_access_verified_at, school_id, manual_school_request_id, credential_revision
-       FROM teachers WHERE email = ?`,
-    ).bind(email).first<{
-      id: string;
-      password_hash: string;
-      email_verified_at: number | null;
-      teacher_access_status: string;
-      teacher_access_verified_at: number | null;
-      school_id: string | null;
-      manual_school_request_id: string | null;
-      credential_revision: number;
-    }>();
-    if (existing) {
-      if (!existing.email_verified_at && await verifyPassword(password, existing.password_hash)) {
-        await activateOpenTeacherRegistration(existing.id);
-        const now = Date.now();
-        const openAccess = openRegistration && existing.teacher_access_status !== "revoked";
-        const verification = openRegistration
-          ? undefined
-          : await issueEmailVerification({ teacherId: existing.id, email, request });
-        const session = await createGuardedTeacherSession({
-          teacherId: existing.id,
-          passwordHash: existing.password_hash,
-          credentialRevision: existing.credential_revision,
-          request,
-        });
-        return json({
-          teacher: {
-            id: existing.id,
-            email,
-            email_verified_at: openRegistration ? now : null,
-            teacher_access_status: openAccess ? "invite_verified" : existing.teacher_access_status,
-            teacher_access_verified_at: openAccess ? (existing.teacher_access_verified_at ?? now) : existing.teacher_access_verified_at,
-            school_id: existing.school_id,
-            manual_school_request_id: existing.manual_school_request_id,
-            registration_mode: openRegistration ? "open" : "verified",
-          },
-          verification,
-        }, 200, { "Set-Cookie": session.cookie });
-      }
-      throw new ApiError(409, "이미 가입한 이메일이에요. 로그인하거나 비밀번호를 다시 설정해 주세요.", "EMAIL_EXISTS");
-    }
     const id = crypto.randomUUID();
     const now = Date.now();
     const passwordHash = await hashPassword(password);
     await database().prepare(
-      `INSERT INTO teachers
+      `INSERT OR IGNORE INTO teachers
        (id, email, password_hash, status, email_verified_at, teacher_access_status,
         teacher_access_verified_at, created_at, updated_at)
        VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
@@ -86,29 +40,10 @@ export async function POST(request: Request) {
       now,
       now,
     ).run();
-    await audit({ action: "teacher_signup", teacherId: id });
-    const verification = openRegistration
-      ? undefined
-      : await issueEmailVerification({ teacherId: id, email, request });
-    const session = await createGuardedTeacherSession({
-      teacherId: id,
-      passwordHash,
-      credentialRevision: 0,
-      request,
-    });
     return json({
-      teacher: {
-        id,
-        email,
-        email_verified_at: openRegistration ? now : null,
-        teacher_access_status: openRegistration ? "invite_verified" : "pending",
-        teacher_access_verified_at: openRegistration ? now : null,
-        school_id: null,
-        manual_school_request_id: null,
-        registration_mode: openRegistration ? "open" : "verified",
-      },
-      verification,
-    }, 201, { "Set-Cookie": session.cookie });
+      accepted: true,
+      message: "가입 요청을 처리했어요. 같은 이메일과 비밀번호로 로그인해 주세요.",
+    }, 202);
   } catch (error) {
     return apiFailure(error);
   }

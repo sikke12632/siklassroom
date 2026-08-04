@@ -79,9 +79,15 @@ assert.ok(adminCsrf);
 const signup = await request("/api/teacher/signup", {
   method: "POST",
   body: { email: teacherEmail, password: firstPassword },
-  expected: 201,
+  expected: 202,
 });
-let teacherCookie = cookieFrom(signup.response);
+assert.equal(cookieFrom(signup.response), "");
+const initialTeacherLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: teacherEmail, password: firstPassword },
+});
+let teacherCookie = cookieFrom(initialTeacherLogin.response);
+const primaryTeacherId = initialTeacherLogin.data.teacher.id;
 assert.match(teacherCookie, /^job_classroom_session=/);
 await request("/api/teacher/email-verification/request", {
   cookie: teacherCookie,
@@ -89,6 +95,11 @@ await request("/api/teacher/email-verification/request", {
   headers: crossSiteHeaders,
   expected: 403,
 });
+const initialVerification = await request("/api/teacher/email-verification/request", {
+  cookie: teacherCookie,
+  method: "POST",
+});
+assert.ok(initialVerification.data.verification?.developmentUrl);
 await request("/api/session", {
   cookie: teacherCookie,
   method: "DELETE",
@@ -96,7 +107,7 @@ await request("/api/session", {
   expected: 403,
 });
 const sessionAfterBlockedLogout = await request("/api/session", { cookie: teacherCookie });
-assert.equal(sessionAfterBlockedLogout.data.actor.id, signup.data.teacher.id);
+assert.equal(sessionAfterBlockedLogout.data.actor.id, primaryTeacherId);
 
 await request("/api/classes", {
   cookie: teacherCookie,
@@ -104,8 +115,7 @@ await request("/api/classes", {
   body: { schoolYear: 2099, grade: 5, classNumber: 9 },
   expected: 403,
 });
-assert.ok(signup.data.verification.developmentUrl);
-const emailToken = new URL(signup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const emailToken = new URL(initialVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",
   body: { token: emailToken },
@@ -119,9 +129,19 @@ await request("/api/teacher/email-verification/confirm", {
 const outsider = await request("/api/teacher/signup", {
   method: "POST",
   body: { email: secondTeacherEmail, password: firstPassword },
-  expected: 201,
+  expected: 202,
 });
-let outsiderCookie = cookieFrom(outsider.response);
+assert.equal(cookieFrom(outsider.response), "");
+const outsiderLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: secondTeacherEmail, password: firstPassword },
+});
+let outsiderCookie = cookieFrom(outsiderLogin.response);
+const outsiderVerification = await request("/api/teacher/email-verification/request", {
+  cookie: outsiderCookie,
+  method: "POST",
+});
+assert.ok(outsiderVerification.data.verification?.developmentUrl);
 const parallelSignupPasswordFailures = await Promise.all(Array.from({ length: 5 }, (_, index) => (
   fetch(`${baseUrl}/api/teacher/signup`, {
     method: "POST",
@@ -134,9 +154,16 @@ const parallelSignupPasswordFailures = await Promise.all(Array.from({ length: 5 
 )));
 assert.deepEqual(
   parallelSignupPasswordFailures.map((response) => response.status).sort(),
-  [409, 409, 409, 409, 429],
+  [202, 202, 202, 202, 429],
   "여러 IP에서도 같은 미인증 가입 이메일의 비밀번호 추측을 제한한다",
 );
+for (const response of parallelSignupPasswordFailures.filter((item) => item.status === 202)) {
+  assert.equal(cookieFrom(response), "");
+  const duplicateBody = await response.json();
+  assert.equal(duplicateBody.accepted, outsider.data.accepted);
+  assert.equal(duplicateBody.message, outsider.data.message);
+  assert.deepEqual(Object.keys(duplicateBody).sort(), Object.keys(outsider.data).sort());
+}
 const parallelTeacherFailures = await Promise.all(Array.from({ length: 8 }, (_, index) => (
   fetch(`${baseUrl}/api/teacher/login`, {
     method: "POST",
@@ -167,7 +194,7 @@ const signupFlood = await Promise.all(Array.from({ length: 21 }, (_, index) => (
 )));
 assert.deepEqual(
   signupFlood.map((response) => response.status).sort(),
-  [...Array(20).fill(201), 429],
+  [...Array(20).fill(202), 429],
   "이메일을 바꿔도 한 IP의 익명 가입 생성량을 제한한다",
 );
 const distributedPasswordRequests = await Promise.all(Array.from({ length: 6 }, (_, index) => (
@@ -185,7 +212,7 @@ assert.deepEqual(
   [200, 200, 200, 200, 200, 429],
   "여러 IP에서도 같은 이메일의 비밀번호 재설정 요청을 제한한다",
 );
-const outsiderEmailToken = new URL(outsider.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+const outsiderEmailToken = new URL(outsiderVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", {
   method: "POST",
   body: { token: outsiderEmailToken },
@@ -252,10 +279,20 @@ await request("/api/schools/select", { cookie: outsiderCookie, method: "POST", b
 const manualSignup = await request("/api/teacher/signup", {
   method: "POST",
   body: { email: `manual-${runId}@example.test`, password: firstPassword },
-  expected: 201,
+  expected: 202,
 });
-const manualCookie = cookieFrom(manualSignup.response);
-const manualEmailToken = new URL(manualSignup.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
+assert.equal(cookieFrom(manualSignup.response), "");
+const manualEmail = `manual-${runId}@example.test`;
+const manualLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: manualEmail, password: firstPassword },
+});
+const manualCookie = cookieFrom(manualLogin.response);
+const manualVerification = await request("/api/teacher/email-verification/request", {
+  cookie: manualCookie,
+  method: "POST",
+});
+const manualEmailToken = new URL(manualVerification.data.verification.developmentUrl).searchParams.get("verifyEmailToken");
 await request("/api/teacher/email-verification/confirm", { method: "POST", body: { token: manualEmailToken } });
 const manualInvite = await request("/api/admin/invite-codes", {
   cookie: adminCookie,
@@ -1014,7 +1051,7 @@ await request("/api/admin/teachers", {
   cookie: adminCookie,
   method: "PATCH",
   headers: { "x-admin-csrf": adminCsrf },
-  body: { id: signup.data.teacher.id, action: "revoke", note: "통합 테스트 권한 회수" },
+  body: { id: primaryTeacherId, action: "revoke", note: "통합 테스트 권한 회수" },
 });
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
 const revokedLogin = await request("/api/teacher/login", {
@@ -1029,7 +1066,7 @@ await request("/api/admin/teachers", {
   cookie: adminCookie,
   method: "PATCH",
   headers: { "x-admin-csrf": adminCsrf },
-  body: { id: signup.data.teacher.id, action: "reapprove", note: "통합 테스트 재승인" },
+  body: { id: primaryTeacherId, action: "reapprove", note: "통합 테스트 재승인" },
 });
 await request("/api/classes", { cookie: teacherCookie, expected: 401 });
 const reapprovedLogin = await request("/api/teacher/login", {
