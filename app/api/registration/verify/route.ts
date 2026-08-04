@@ -3,10 +3,11 @@ import {
   registrationResponseHeaders,
 } from "@/lib/registration";
 import { consumeRateLimit, throttleKey } from "@/lib/rate-limit";
-import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
+import { ApiError, apiFailure, assertSameOriginRequest, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request) {
   try {
+    assertSameOriginRequest(request);
     const ipKey = await throttleKey(request, "registration-verify-ip", "all");
     await consumeRateLimit(ipKey, { maxAttempts: 120 });
     const body = await readJson<{ token?: string }>(request);

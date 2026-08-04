@@ -1,5 +1,5 @@
 import { clearSessionCookie, endSession, getSession } from "@/lib/auth";
-import { apiFailure, json } from "@/lib/responses";
+import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 import { database, ensureSchema } from "@/lib/database";
 import { activateOpenTeacherRegistration, isOpenTeacherRegistration } from "@/lib/open-registration";
 
@@ -47,6 +47,7 @@ export async function GET(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    assertSameOriginRequest(request);
     await endSession(request);
     return json({ ok: true }, 200, { "Set-Cookie": clearSessionCookie(request) });
   } catch (error) {

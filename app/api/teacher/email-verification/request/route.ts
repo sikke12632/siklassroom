@@ -1,11 +1,12 @@
 import { requireTeacher } from "@/lib/auth";
 import { database } from "@/lib/database";
-import { apiFailure, json } from "@/lib/responses";
+import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 import { issueEmailVerification } from "@/lib/teacher-verification";
 import { consumeRateLimit, subjectThrottleKey } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    assertSameOriginRequest(request);
     const { teacherId } = await requireTeacher(request);
     const key = await subjectThrottleKey("teacher-email-verification", teacherId);
     await consumeRateLimit(key, {

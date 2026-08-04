@@ -2,13 +2,14 @@ import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { audit } from "@/lib/database";
 import { removeInitialAssignment } from "@/lib/job-assignments";
-import { apiFailure, json } from "@/lib/responses";
+import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 
 export async function DELETE(
   request: Request,
   context: { params: Promise<{ classId: string; assignmentId: string }> },
 ) {
   try {
+    assertSameOriginRequest(request);
     const { teacherId } = await requireClassManagement(request);
     const { classId, assignmentId } = await context.params;
     await ownedClass(teacherId, classId);

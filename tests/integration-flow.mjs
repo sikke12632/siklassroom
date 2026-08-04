@@ -11,6 +11,10 @@ const finalPassword = "Teacher!890";
 const adminUsername = process.env.SYSTEM_ADMIN_USERNAME;
 const adminPassword = process.env.SYSTEM_ADMIN_PASSWORD;
 const adminPath = process.env.SYSTEM_ADMIN_PATH;
+const crossSiteHeaders = {
+  origin: "https://attacker.example",
+  "sec-fetch-site": "cross-site",
+};
 assert.ok(adminUsername && adminPassword && adminPath, "시스템 관리자 통합 테스트 환경 변수가 필요합니다.");
 
 function cookieFrom(response) {
@@ -79,6 +83,20 @@ const signup = await request("/api/teacher/signup", {
 });
 let teacherCookie = cookieFrom(signup.response);
 assert.match(teacherCookie, /^job_classroom_session=/);
+await request("/api/teacher/email-verification/request", {
+  cookie: teacherCookie,
+  method: "POST",
+  headers: crossSiteHeaders,
+  expected: 403,
+});
+await request("/api/session", {
+  cookie: teacherCookie,
+  method: "DELETE",
+  headers: crossSiteHeaders,
+  expected: 403,
+});
+const sessionAfterBlockedLogout = await request("/api/session", { cookie: teacherCookie });
+assert.equal(sessionAfterBlockedLogout.data.actor.id, signup.data.teacher.id);
 
 await request("/api/classes", {
   cookie: teacherCookie,
@@ -309,6 +327,37 @@ assert.equal(roster.data.students.length, 2);
 const student = roster.data.students[0];
 const activationToken = activationTokenFrom(student.activation_url);
 assert.ok(activationToken);
+await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "POST",
+  headers: crossSiteHeaders,
+  expected: 403,
+});
+await request(`/api/classes/${classId}/registration-tokens`, {
+  cookie: teacherCookie,
+  method: "POST",
+  headers: crossSiteHeaders,
+  expected: 403,
+});
+const qrCrossSiteIp = `qr-cross-site-${runId}`;
+const crossSiteQrAttempts = await Promise.all(Array.from({ length: 121 }, () => (
+  fetch(`${baseUrl}/api/registration/verify`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...crossSiteHeaders,
+      "x-forwarded-for": qrCrossSiteIp,
+    },
+    body: JSON.stringify({ token: "invalid" }),
+  })
+)));
+assert.ok(crossSiteQrAttempts.every((response) => response.status === 403));
+await request("/api/registration/verify", {
+  method: "POST",
+  headers: { "x-forwarded-for": qrCrossSiteIp },
+  body: { token: "invalid" },
+  expected: 400,
+});
 
 await request(`/api/classes/${classId}/students`, {
   cookie: teacherCookie,
@@ -510,6 +559,10 @@ await request(`/api/classes/${jobClassId}/job-assignments`, {
   cookie: outsiderCookie,
   expected: 404,
 });
+await request(
+  `/api/classes/${jobClassId}/job-assignments/${randomAssignment.data.assignment.assignmentId}`,
+  { cookie: teacherCookie, method: "DELETE", headers: crossSiteHeaders, expected: 403 },
+);
 await request(
   `/api/classes/${jobClassId}/job-assignments/${randomAssignment.data.assignment.assignmentId}`,
   { cookie: teacherCookie, method: "DELETE" },

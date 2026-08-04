@@ -14,13 +14,17 @@ export function apiFailure(error: unknown) {
   return json({ error: "잠시 문제가 생겼어요. 조금 뒤에 다시 시도해 주세요.", code: "INTERNAL_ERROR" }, 500);
 }
 
-export async function readJson<T>(request: Request): Promise<T> {
+export function assertSameOriginRequest(request: Request) {
   const origin = request.headers.get("origin");
   const targetOrigin = new URL(request.url).origin;
   const fetchSite = request.headers.get("sec-fetch-site");
   if ((origin && origin !== targetOrigin) || (fetchSite && fetchSite === "cross-site")) {
     throw new ApiError(403, "허용되지 않은 요청입니다.", "CROSS_SITE_REQUEST_BLOCKED");
   }
+}
+
+export async function readJson<T>(request: Request): Promise<T> {
+  assertSameOriginRequest(request);
   try {
     return await request.json() as T;
   } catch {

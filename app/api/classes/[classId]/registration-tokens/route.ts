@@ -2,10 +2,11 @@ import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { database } from "@/lib/database";
 import { issueRegistrationToken, registrationActivationUrl } from "@/lib/registration";
-import { apiFailure, json } from "@/lib/responses";
+import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
   try {
+    assertSameOriginRequest(request);
     const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
     await ownedClass(teacherId, classId);

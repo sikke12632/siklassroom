@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+async function routeFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(entries.map(async (entry) => {
+    const child = path.join(directory, entry.name);
+    if (entry.isDirectory()) return routeFiles(child);
+    return entry.isFile() && entry.name === "route.ts" ? [child] : [];
+  }));
+  return files.flat();
+}
 
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
@@ -69,6 +81,45 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(signup, /teacher-signup-ip/);
   assert.match(signup, /windowMs: 60 \* 60 \* 1000/);
   assert.match(passwordRequest, /teacher-password-reset-ip/);
+});
+
+test("본문이 없는 변경 요청도 같은 출처만 허용하고 외부 요청은 제한 횟수를 소모하지 않는다", async () => {
+  const [
+    responses,
+    logout,
+    emailRequest,
+    individualQr,
+    bulkQr,
+    assignmentDelete,
+    qrVerify,
+  ] = await Promise.all([
+    readFile(new URL("../lib/responses.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/session/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/teacher/email-verification/request/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/students/[studentId]/registration-token/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/registration-tokens/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/job-assignments/[assignmentId]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/registration/verify/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(responses, /export function assertSameOriginRequest/);
+  assert.match(responses, /assertSameOriginRequest\(request\);/);
+  for (const route of [logout, emailRequest, individualQr, bulkQr, assignmentDelete]) {
+    assert.match(route, /assertSameOriginRequest\(request\);/);
+  }
+  assert.ok(
+    qrVerify.indexOf("assertSameOriginRequest(request)")
+      < qrVerify.indexOf("await consumeRateLimit"),
+  );
+  const apiRoutes = await routeFiles(fileURLToPath(new URL("../app/api", import.meta.url)));
+  for (const routePath of apiRoutes) {
+    const source = await readFile(routePath, "utf8");
+    if (!/export async function (POST|PUT|PATCH|DELETE)/.test(source)) continue;
+    assert.match(
+      source,
+      /readJson|assertSameOriginRequest|requireSystemAdmin\(request, \{ csrf: true \}\)/,
+      `상태 변경 API에 동일 출처 또는 관리자 CSRF 검사가 필요합니다: ${routePath}`,
+    );
+  }
 });
 
 test("이메일·초대코드·학교 상태를 분리하고 가입 단계를 안내한다", async () => {
