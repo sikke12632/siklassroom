@@ -114,6 +114,23 @@ export async function PATCH(request: Request) {
            WHERE manual_school_request_id = ?`,
         ).bind(linkedSchoolId, now, id),
       );
+    } else if (action === "reject") {
+      statements.push(
+        database().prepare(
+          `DELETE FROM sessions
+           WHERE teacher_id = ? AND EXISTS (
+             SELECT 1 FROM teachers
+             WHERE id = ? AND manual_school_request_id = ?
+           )`,
+        ).bind(current.submitted_by_teacher_id, current.submitted_by_teacher_id, id),
+        database().prepare(
+          `UPDATE teachers
+           SET manual_school_request_id = NULL,
+               credential_revision = credential_revision + 1,
+               updated_at = ?
+           WHERE id = ? AND manual_school_request_id = ?`,
+        ).bind(now, current.submitted_by_teacher_id, id),
+      );
     }
     await database().batch(statements);
     await auditSystemAdmin({

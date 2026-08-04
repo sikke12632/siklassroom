@@ -404,6 +404,35 @@ await request("/api/admin/school-requests", {
 const manualSession = await request("/api/session", { cookie: manualCookie });
 assert.ok(manualSession.data.actor.school_id);
 assert.equal(manualSession.data.actor.manual_school_request_id, null);
+const requestToReject = await request("/api/schools/manual", {
+  cookie: manualCookie,
+  method: "POST",
+  body: {
+    enteredName: `거절학교${runId.slice(-4)}`,
+    provinceName: "서울특별시",
+    schoolLevel: "초등학교",
+    districtOrAddress: "확인불가",
+  },
+  expected: 201,
+});
+manualCookie = cookieFrom(requestToReject.response);
+await request("/api/classes", { cookie: manualCookie });
+await request("/api/admin/school-requests", {
+  cookie: adminCookie,
+  method: "PATCH",
+  headers: { "x-admin-csrf": adminCsrf },
+  body: { id: requestToReject.data.request.id, action: "reject", note: "통합 테스트 반려" },
+});
+await request("/api/classes", { cookie: manualCookie, expected: 401 });
+const rejectedTeacherLogin = await request("/api/teacher/login", {
+  method: "POST",
+  body: { email: manualEmail, password: firstPassword },
+});
+const rejectedTeacherCookie = cookieFrom(rejectedTeacherLogin.response);
+const rejectedTeacherSession = await request("/api/session", { cookie: rejectedTeacherCookie });
+assert.equal(rejectedTeacherSession.data.actor.school_id, null);
+assert.equal(rejectedTeacherSession.data.actor.manual_school_request_id, null);
+await request("/api/classes", { cookie: rejectedTeacherCookie, expected: 403 });
 
 const classCreated = await request("/api/classes", {
   cookie: teacherCookie,

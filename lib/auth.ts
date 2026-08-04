@@ -236,6 +236,15 @@ export async function requireClassManagement(request: Request): Promise<TeacherA
   if (!access.schoolId && !access.manualSchoolRequestId) {
     throw new ApiError(403, "학교를 먼저 선택하거나 직접 입력해 주세요.", "SCHOOL_SELECTION_REQUIRED");
   }
+  if (!access.schoolId && access.manualSchoolRequestId) {
+    const pendingRequest = await database().prepare(
+      `SELECT id FROM school_manual_requests
+       WHERE id = ? AND submitted_by_teacher_id = ? AND status = 'pending'`,
+    ).bind(access.manualSchoolRequestId, access.teacherId).first();
+    if (!pendingRequest) {
+      throw new ApiError(403, "학교를 다시 선택하거나 직접 입력해 주세요.", "SCHOOL_SELECTION_REQUIRED");
+    }
+  }
   return access;
 }
 

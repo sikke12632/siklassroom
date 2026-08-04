@@ -205,6 +205,18 @@ test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세
   }
 });
 
+test("수동 학교 요청이 거절되면 학교 연결과 기존 교사 세션을 함께 해제한다", async () => {
+  const [auth, schoolRequests] = await Promise.all([
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/school-requests/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /school_manual_requests[\s\S]*status = 'pending'/);
+  assert.match(schoolRequests, /action === "reject"/);
+  assert.match(schoolRequests, /DELETE FROM sessions[\s\S]*manual_school_request_id = \?/);
+  assert.match(schoolRequests, /manual_school_request_id = NULL/);
+  assert.match(schoolRequests, /credential_revision = credential_revision \+ 1/);
+});
+
 test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제공한다", async () => {
   const [database, schema, assignmentPage, calendarPage, winnerPage, assignmentApi, completeApi] = await Promise.all([
     readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
