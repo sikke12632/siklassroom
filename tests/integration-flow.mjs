@@ -922,6 +922,51 @@ assert.equal(monthlyStarted.data.session.orderMode, "shuffled");
 assert.equal(monthlyStarted.data.session.order.length, jobRoster.data.students.length);
 const monthlyReloaded = await request(monthlyBasePath, { cookie: teacherCookie });
 assert.deepEqual(monthlyReloaded.data.session.order, monthlyStarted.data.session.order);
+const currentJobBeforeFutureConfirmation = await request("/api/student/me", {
+  cookie: evaluationStudentCookie,
+});
+assert.ok(currentJobBeforeFutureConfirmation.data.student.current_job);
+let monthlyAssignmentIndex = 0;
+const futureMonthlyAssignments = monthlyStarted.data.jobs.flatMap((job) => (
+  Array.from({ length: job.capacity }, () => ({
+    studentId: monthlyStarted.data.session.order[monthlyAssignmentIndex++].studentId,
+    classJobId: job.id,
+  }))
+));
+assert.equal(futureMonthlyAssignments.length, monthlyStarted.data.session.order.length);
+await request(`${monthlyBasePath}/complete`, {
+  cookie: teacherCookie,
+  method: "POST",
+  expected: 201,
+  body: {
+    expectedRevision: monthlyStarted.data.session.revision,
+    expectedJobSetupRevision: monthlyStarted.data.session.jobSetupRevision,
+    requestId: crypto.randomUUID(),
+    assignments: futureMonthlyAssignments,
+  },
+});
+const currentJobAfterFutureConfirmation = await request("/api/student/me", {
+  cookie: evaluationStudentCookie,
+});
+assert.equal(
+  currentJobAfterFutureConfirmation.data.student.current_job.assignmentYear,
+  currentJobBeforeFutureConfirmation.data.student.current_job.assignmentYear,
+);
+assert.equal(
+  currentJobAfterFutureConfirmation.data.student.current_job.assignmentMonth,
+  currentJobBeforeFutureConfirmation.data.student.current_job.assignmentMonth,
+);
+assert.notDeepEqual(
+  {
+    year: currentJobAfterFutureConfirmation.data.student.current_job.assignmentYear,
+    month: currentJobAfterFutureConfirmation.data.student.current_job.assignmentMonth,
+  },
+  {
+    year: monthlyStarted.data.session.targetYear,
+    month: monthlyStarted.data.session.targetMonth,
+  },
+  "다음 달 확정 직업은 해당 월이 되기 전에 학생의 현재 직업을 바꾸지 않는다",
+);
 await request(`/api/classes/${jobClassId}/job-evaluation`, {
   cookie: outsiderCookie,
   expected: 404,

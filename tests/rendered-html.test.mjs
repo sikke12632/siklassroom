@@ -416,6 +416,14 @@ test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게
   assert.match(completeApi, /expectedJobSetupRevision/);
 });
 
+test("학생 화면은 서울 현재 월이 되기 전의 미래 확정 직업을 미리 보여 주지 않는다", async () => {
+  const studentMe = await readFile(new URL("../app/api/student/me/route.ts", import.meta.url), "utf8");
+  assert.match(studentMe, /const current = seoulServerTime\(\)/);
+  assert.match(studentMe, /p\.assignment_year < \?/);
+  assert.match(studentMe, /p\.assignment_month <= \?/);
+  assert.match(studentMe, /bind\(studentId, current\.year, current\.year, current\.month\)/);
+});
+
 test("학생 직업평가를 안전하게 모아 최종등급과 자동 무작위 순서에 연결한다", async () => {
   const [
     schema,

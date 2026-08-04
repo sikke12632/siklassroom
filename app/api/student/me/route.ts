@@ -1,10 +1,12 @@
 import { requireStudent } from "@/lib/auth";
 import { database } from "@/lib/database";
 import { apiFailure, json } from "@/lib/responses";
+import { seoulServerTime } from "@/lib/seoul-time";
 
 export async function GET(request: Request) {
   try {
     const { studentId } = await requireStudent(request);
+    const current = seoulServerTime();
     const student = await database().prepare(
       `SELECT s.id, s.official_name, s.student_number, c.id AS class_id, c.school_name, c.school_year,
               c.grade, c.class_number, c.display_name
@@ -19,8 +21,12 @@ export async function GET(request: Request) {
        JOIN class_jobs j ON j.id = a.class_job_id
        WHERE a.student_id = ? AND p.status = 'confirmed'
          AND p.assignment_type IN ('initial', 'monthly')
+         AND (
+           p.assignment_year < ?
+           OR (p.assignment_year = ? AND p.assignment_month <= ?)
+         )
        ORDER BY p.assignment_year DESC, p.assignment_month DESC, p.confirmed_at DESC LIMIT 1`,
-    ).bind(studentId).first<{
+    ).bind(studentId, current.year, current.year, current.month).first<{
       id: string;
       name: string;
       description: string;
