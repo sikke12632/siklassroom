@@ -554,3 +554,45 @@ test("unresolved cash requests block roster lifecycle changes without auto-cance
     /disabled=\{approveBlocked \|\| busyId !== null\}[\s\S]*disabled=\{rejectBlocked \|\| busyId !== null\}/,
   );
 });
+
+test("stock news publication and closure remain append-only audit events", async () => {
+  const [schema, migration, runtime, service, audit] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../drizzle/0028_stock_news_events.sql", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_stock_news_events/);
+    assert.match(source, /published/);
+    assert.match(source, /cancelled/);
+    assert.match(source, /expired/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_stock_news_events_insert_guard/);
+    assert.match(source, /finance_stock_news_events_update_guard/);
+    assert.match(source, /finance_stock_news_events_delete_guard/);
+    assert.match(source, /finance_stock_news_capture_publish_event/);
+    assert.match(source, /finance_stock_news_capture_transition_event/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_stock_news_events`?/);
+    assert.match(source, /FINANCE_STOCK_NEWS_EVENT_IMMUTABLE/);
+    assert.match(
+      source,
+      /NEW\.`?id`? != 'finance:stock-news-event:'[\s\S]*NEW\.`?news_id`?[\s\S]*NEW\.`?revision`?/,
+    );
+  }
+  assert.ok(
+    (service.match(/Number\(update\.meta\.changes \?\? 0\) === 1/g) ?? [])
+      .length >= 2,
+    "Cancellation and expiration must both verify that their guarded update won the race.",
+  );
+  assert.match(audit, /FROM finance_stock_news_events news_event/);
+  assert.match(audit, /'stock-news-event:' \|\| news_event\.id/);
+  assert.match(audit, /news_event\.reason/);
+  assert.doesNotMatch(audit, /FROM finance_stock_news news\b/);
+});

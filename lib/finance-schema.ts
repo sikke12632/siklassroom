@@ -2097,6 +2097,65 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     WHERE cancellation_idempotency_key IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS finance_stock_news_class_status_idx
     ON finance_stock_news(class_id, status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_news_events (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, news_id TEXT NOT NULL,
+    revision INTEGER NOT NULL, action TEXT NOT NULL,
+    title TEXT NOT NULL, content TEXT NOT NULL, impact_bps INTEGER NOT NULL,
+    reason TEXT NOT NULL, request_idempotency_key TEXT,
+    request_payload_hash TEXT, actor_type TEXT NOT NULL,
+    actor_teacher_id TEXT, expires_at INTEGER NOT NULL,
+    cancelled_at INTEGER, created_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (news_id) REFERENCES finance_stock_news(id),
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stock_news_events_text_ck CHECK (
+      LENGTH(TRIM(title)) BETWEEN 1 AND 80
+      AND LENGTH(TRIM(content)) BETWEEN 1 AND 500
+      AND LENGTH(TRIM(reason)) BETWEEN 1 AND 300
+    ),
+    CONSTRAINT finance_stock_news_events_impact_ck CHECK (
+      impact_bps BETWEEN -10000 AND 10000
+    ),
+    CONSTRAINT finance_stock_news_events_action_ck CHECK (
+      action IN ('published', 'cancelled', 'expired')
+    ),
+    CONSTRAINT finance_stock_news_events_revision_ck CHECK (
+      (action = 'published' AND revision = 0)
+      OR (action IN ('cancelled', 'expired') AND revision > 0)
+    ),
+    CONSTRAINT finance_stock_news_events_request_ck CHECK (
+      (action IN ('published', 'cancelled')
+        AND request_idempotency_key IS NOT NULL
+        AND request_payload_hash IS NOT NULL
+        AND LENGTH(TRIM(request_idempotency_key)) BETWEEN 8 AND 200
+        AND LENGTH(TRIM(request_payload_hash)) BETWEEN 8 AND 500)
+      OR (action = 'expired'
+        AND request_idempotency_key IS NULL
+        AND request_payload_hash IS NULL)
+    ),
+    CONSTRAINT finance_stock_news_events_actor_ck CHECK (
+      (action IN ('published', 'cancelled')
+        AND actor_type = 'teacher' AND actor_teacher_id IS NOT NULL)
+      OR (action = 'expired'
+        AND actor_type = 'system' AND actor_teacher_id IS NULL)
+    ),
+    CONSTRAINT finance_stock_news_events_timing_ck CHECK (
+      expires_at > 0 AND created_at >= 0
+      AND ((action = 'published' AND cancelled_at IS NULL
+          AND created_at < expires_at)
+        OR (action = 'cancelled' AND cancelled_at = created_at)
+        OR (action = 'expired' AND cancelled_at IS NULL
+          AND created_at >= expires_at))
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_news_events_news_revision_uq
+    ON finance_stock_news_events(news_id, revision)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_stock_news_events_class_action_request_uq
+    ON finance_stock_news_events(class_id, action, request_idempotency_key)
+    WHERE request_idempotency_key IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_news_events_class_created_idx
+    ON finance_stock_news_events(class_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS finance_stock_holdings (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
     student_id TEXT NOT NULL, wallet_account_id TEXT NOT NULL,
@@ -2851,6 +2910,141 @@ export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TRIGGER IF NOT EXISTS finance_stock_news_delete_guard
     BEFORE DELETE ON finance_stock_news
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_events_insert_guard
+    BEFORE INSERT ON finance_stock_news_events
+    BEGIN
+      SELECT CASE WHEN NEW.id != 'finance:stock-news-event:'
+          || NEW.news_id || ':' || NEW.revision
+        THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_INVALID') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_stock_news news
+        WHERE news.id = NEW.news_id AND news.class_id = NEW.class_id
+          AND news.title = NEW.title AND news.content = NEW.content
+          AND news.impact_bps = NEW.impact_bps
+          AND news.expires_at = NEW.expires_at
+          AND (
+            (NEW.action = 'published' AND NEW.revision = 0
+              AND NEW.reason = '주식 뉴스를 게시했습니다.'
+              AND NEW.request_idempotency_key = news.idempotency_key
+              AND NEW.request_payload_hash = news.payload_hash
+              AND NEW.actor_type = 'teacher'
+              AND NEW.actor_teacher_id = news.created_by_teacher_id
+              AND NEW.cancelled_at IS NULL
+              AND NEW.created_at = news.created_at)
+            OR (NEW.action = 'cancelled' AND news.status = 'cancelled'
+              AND NEW.revision = news.revision
+              AND NEW.reason = news.cancellation_reason
+              AND NEW.request_idempotency_key
+                = news.cancellation_idempotency_key
+              AND NEW.request_payload_hash = news.cancellation_payload_hash
+              AND NEW.actor_type = news.updated_by_actor_type
+              AND NEW.actor_teacher_id IS news.updated_by_teacher_id
+              AND NEW.cancelled_at = news.cancelled_at
+              AND NEW.created_at = news.updated_at)
+            OR (NEW.action = 'expired' AND news.status = 'expired'
+              AND NEW.revision = news.revision
+              AND NEW.reason = '설정한 공개 시간이 끝났습니다.'
+              AND NEW.request_idempotency_key IS NULL
+              AND NEW.request_payload_hash IS NULL
+              AND NEW.actor_type = 'system'
+              AND NEW.actor_teacher_id IS NULL
+              AND NEW.cancelled_at IS NULL
+              AND NEW.created_at = news.updated_at)
+          )
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_INVALID') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_events_update_guard
+    BEFORE UPDATE ON finance_stock_news_events
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_IMMUTABLE');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_events_delete_guard
+    BEFORE DELETE ON finance_stock_news_events
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_IMMUTABLE');
+    END`,
+  `INSERT OR IGNORE INTO finance_stock_news_events (
+    id, class_id, news_id, revision, action, title, content, impact_bps,
+    reason, request_idempotency_key, request_payload_hash,
+    actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+  )
+  SELECT
+    'finance:stock-news-event:' || news.id || ':0',
+    news.class_id, news.id, 0, 'published', news.title, news.content,
+    news.impact_bps, '주식 뉴스를 게시했습니다.',
+    news.idempotency_key, news.payload_hash,
+    'teacher', news.created_by_teacher_id, news.expires_at, NULL,
+    news.created_at
+  FROM finance_stock_news news`,
+  `INSERT OR IGNORE INTO finance_stock_news_events (
+    id, class_id, news_id, revision, action, title, content, impact_bps,
+    reason, request_idempotency_key, request_payload_hash,
+    actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+  )
+  SELECT
+    'finance:stock-news-event:' || news.id || ':' || news.revision,
+    news.class_id, news.id, news.revision, news.status,
+    news.title, news.content, news.impact_bps,
+    CASE news.status
+      WHEN 'cancelled' THEN news.cancellation_reason
+      ELSE '설정한 공개 시간이 끝났습니다.'
+    END,
+    CASE news.status
+      WHEN 'cancelled' THEN news.cancellation_idempotency_key
+      ELSE NULL
+    END,
+    CASE news.status
+      WHEN 'cancelled' THEN news.cancellation_payload_hash
+      ELSE NULL
+    END,
+    news.updated_by_actor_type, news.updated_by_teacher_id,
+    news.expires_at, news.cancelled_at, news.updated_at
+  FROM finance_stock_news news
+  WHERE news.status IN ('cancelled', 'expired')`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_capture_publish_event
+    AFTER INSERT ON finance_stock_news
+    BEGIN
+      INSERT INTO finance_stock_news_events (
+        id, class_id, news_id, revision, action, title, content, impact_bps,
+        reason, request_idempotency_key, request_payload_hash,
+        actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+      ) VALUES (
+        'finance:stock-news-event:' || NEW.id || ':0',
+        NEW.class_id, NEW.id, 0, 'published', NEW.title, NEW.content,
+        NEW.impact_bps, '주식 뉴스를 게시했습니다.',
+        NEW.idempotency_key, NEW.payload_hash,
+        'teacher', NEW.created_by_teacher_id, NEW.expires_at, NULL,
+        NEW.created_at
+      );
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_news_capture_transition_event
+    AFTER UPDATE OF status ON finance_stock_news
+    WHEN OLD.status = 'active' AND NEW.status IN ('cancelled', 'expired')
+    BEGIN
+      INSERT INTO finance_stock_news_events (
+        id, class_id, news_id, revision, action, title, content, impact_bps,
+        reason, request_idempotency_key, request_payload_hash,
+        actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+      ) VALUES (
+        'finance:stock-news-event:' || NEW.id || ':' || NEW.revision,
+        NEW.class_id, NEW.id, NEW.revision, NEW.status,
+        NEW.title, NEW.content, NEW.impact_bps,
+        CASE NEW.status
+          WHEN 'cancelled' THEN NEW.cancellation_reason
+          ELSE '설정한 공개 시간이 끝났습니다.'
+        END,
+        CASE NEW.status
+          WHEN 'cancelled' THEN NEW.cancellation_idempotency_key
+          ELSE NULL
+        END,
+        CASE NEW.status
+          WHEN 'cancelled' THEN NEW.cancellation_payload_hash
+          ELSE NULL
+        END,
+        NEW.updated_by_actor_type, NEW.updated_by_teacher_id,
+        NEW.expires_at, NEW.cancelled_at, NEW.updated_at
+      );
+    END`,
   `DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard`,
   `DROP TRIGGER IF EXISTS finance_stock_trades_initial_guard`,
   `DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_live_guard`,

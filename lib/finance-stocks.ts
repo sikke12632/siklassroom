@@ -3170,8 +3170,9 @@ export async function closeFinanceStockNews(
     throw new ApiError(409, "뉴스 상태가 다른 화면에서 바뀌었습니다.", "FINANCE_STOCK_NEWS_STALE");
   }
   const now = Date.now();
+  let changed = false;
   try {
-    await db.prepare(
+    const update = await db.prepare(
       `UPDATE finance_stock_news
        SET status = 'cancelled', revision = revision + 1,
            updated_by_actor_type = 'teacher', updated_by_teacher_id = ?,
@@ -3189,6 +3190,7 @@ export async function closeFinanceStockNews(
       context.classroom.id,
       revision,
     ).run();
+    changed = Number(update.meta.changes ?? 0) === 1;
   } catch (error) {
     const concurrent = await newsByCancellationKey(db, context.classroom.id, key);
     if (concurrent && concurrent.id === newsId && concurrent.cancellation_payload_hash === payloadHash) {
@@ -3196,8 +3198,41 @@ export async function closeFinanceStockNews(
     }
     mapDatabaseError(error);
   }
+  if (!changed) {
+    const concurrent = await newsByCancellationKey(db, context.classroom.id, key);
+    if (
+      concurrent
+      && concurrent.id === newsId
+      && concurrent.cancellation_payload_hash === payloadHash
+    ) {
+      return { news: serializeNews(concurrent, Date.now()), deduplicated: true };
+    }
+    const latest = await newsById(db, context.classroom.id, newsId);
+    if (!latest) {
+      throw new ApiError(404, "주식 뉴스를 찾지 못했습니다.", "FINANCE_STOCK_NEWS_NOT_FOUND");
+    }
+    if (latest.status !== "active") {
+      throw new ApiError(409, "이미 종료된 뉴스입니다.", "FINANCE_STOCK_NEWS_CLOSED");
+    }
+    throw new ApiError(
+      409,
+      "뉴스 상태가 다른 화면에서 바뀌었습니다.",
+      "FINANCE_STOCK_NEWS_STALE",
+    );
+  }
   const saved = await newsById(db, context.classroom.id, newsId);
-  if (!saved) throw new ApiError(500, "종료한 뉴스를 다시 확인하지 못했습니다.", "FINANCE_STOCK_NEWS_UNAVAILABLE");
+  if (
+    !saved
+    || saved.status !== "cancelled"
+    || saved.cancellation_idempotency_key !== key
+    || saved.cancellation_payload_hash !== payloadHash
+  ) {
+    throw new ApiError(
+      409,
+      "뉴스 상태가 다른 화면에서 바뀌었습니다.",
+      "FINANCE_STOCK_NEWS_STALE",
+    );
+  }
   return { news: serializeNews(saved, now), deduplicated: false };
 }
 
@@ -3212,18 +3247,18 @@ async function expireFinanceStockNews(db: D1Database, now: number, classId?: str
     id: string;
     class_id: string;
     revision: number;
-  }>();
+    }>();
   let expired = 0;
   for (const row of due.results) {
     try {
-      await db.prepare(
+      const update = await db.prepare(
         `UPDATE finance_stock_news
          SET status = 'expired', revision = revision + 1,
              updated_by_actor_type = 'system', updated_by_teacher_id = NULL,
              updated_at = ?
          WHERE id = ? AND class_id = ? AND revision = ? AND status = 'active'`,
       ).bind(now, row.id, row.class_id, row.revision).run();
-      expired += 1;
+      if (Number(update.meta.changes ?? 0) === 1) expired += 1;
     } catch {
       // Another request may have expired or cancelled the same news first.
     }

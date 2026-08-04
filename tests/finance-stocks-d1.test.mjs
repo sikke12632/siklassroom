@@ -2848,3 +2848,286 @@ test("failed automatic stock ticks back off without starving healthy classes", {
     await rm(persistPath, { recursive: true, force: true });
   }
 });
+
+test("stock news publication and closure stay in append-only history", async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-news-history-d1-"),
+  );
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, created_at, updated_at
+      ) VALUES (
+        'teacher-stock-news', 'teacher-stock-news@test.local', 'hash',
+        'active', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stock-news', 'teacher-stock-news', 'News School', 'news school',
+        2099, 6, 1, 'active', 1, 1
+      );
+      INSERT INTO finance_stock_news (
+        id, class_id, title, content, impact_bps, status, revision,
+        idempotency_key, payload_hash, created_by_teacher_id,
+        updated_by_actor_type, updated_by_teacher_id,
+        cancellation_reason, cancellation_idempotency_key,
+        cancellation_payload_hash, created_at, expires_at,
+        cancelled_at, updated_at
+      ) VALUES
+        (
+          'news-cancelled', 'class-stock-news', 'Cancelled news',
+          'This news is cancelled later.', 250, 'active', 0,
+          'stock-news-create:cancelled', 'hash:stock-news:create:cancelled',
+          'teacher-stock-news', 'teacher', 'teacher-stock-news',
+          NULL, NULL, NULL, 100, 10000, NULL, 100
+        ),
+        (
+          'news-expired', 'class-stock-news', 'Expired news',
+          'This news expires automatically.', -150, 'active', 0,
+          'stock-news-create:expired', 'hash:stock-news:create:expired',
+          'teacher-stock-news', 'teacher', 'teacher-stock-news',
+          NULL, NULL, NULL, 300, 400, NULL, 300
+        );
+      UPDATE finance_stock_news
+      SET status = 'cancelled', revision = 1,
+          updated_by_actor_type = 'teacher',
+          updated_by_teacher_id = 'teacher-stock-news',
+          cancellation_reason = 'Incorrect classroom announcement',
+          cancellation_idempotency_key = 'stock-news-cancel:cancelled',
+          cancellation_payload_hash = 'hash:stock-news:cancel:cancelled',
+          cancelled_at = 200, updated_at = 200
+      WHERE id = 'news-cancelled';
+      UPDATE finance_stock_news
+      SET status = 'expired', revision = 1,
+          updated_by_actor_type = 'system', updated_by_teacher_id = NULL,
+          updated_at = 500
+      WHERE id = 'news-expired';
+    `);
+
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT news_id, revision, action, title, content, impact_bps,
+              reason, request_idempotency_key, actor_type,
+              actor_teacher_id, expires_at, cancelled_at, created_at
+       FROM finance_stock_news_events
+       WHERE class_id = 'class-stock-news'
+       ORDER BY news_id, revision;`,
+    )), [
+      {
+        news_id: "news-cancelled",
+        revision: 0,
+        action: "published",
+        title: "Cancelled news",
+        content: "This news is cancelled later.",
+        impact_bps: 250,
+        reason: "주식 뉴스를 게시했습니다.",
+        request_idempotency_key: "stock-news-create:cancelled",
+        actor_type: "teacher",
+        actor_teacher_id: "teacher-stock-news",
+        expires_at: 10000,
+        cancelled_at: null,
+        created_at: 100,
+      },
+      {
+        news_id: "news-cancelled",
+        revision: 1,
+        action: "cancelled",
+        title: "Cancelled news",
+        content: "This news is cancelled later.",
+        impact_bps: 250,
+        reason: "Incorrect classroom announcement",
+        request_idempotency_key: "stock-news-cancel:cancelled",
+        actor_type: "teacher",
+        actor_teacher_id: "teacher-stock-news",
+        expires_at: 10000,
+        cancelled_at: 200,
+        created_at: 200,
+      },
+      {
+        news_id: "news-expired",
+        revision: 0,
+        action: "published",
+        title: "Expired news",
+        content: "This news expires automatically.",
+        impact_bps: -150,
+        reason: "주식 뉴스를 게시했습니다.",
+        request_idempotency_key: "stock-news-create:expired",
+        actor_type: "teacher",
+        actor_teacher_id: "teacher-stock-news",
+        expires_at: 400,
+        cancelled_at: null,
+        created_at: 300,
+      },
+      {
+        news_id: "news-expired",
+        revision: 1,
+        action: "expired",
+        title: "Expired news",
+        content: "This news expires automatically.",
+        impact_bps: -150,
+        reason: "설정한 공개 시간이 끝났습니다.",
+        request_idempotency_key: null,
+        actor_type: "system",
+        actor_teacher_id: null,
+        expires_at: 400,
+        cancelled_at: null,
+        created_at: 500,
+      },
+    ]);
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_stock_news_publish_event_failure
+      BEFORE INSERT ON finance_stock_news_events
+      WHEN NEW.news_id = 'news-publish-failure'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_STOCK_NEWS_PUBLISH_EVENT_FAILURE');
+      END;
+    `);
+    const publishFailure = executeSql(
+      persistPath,
+      `INSERT INTO finance_stock_news (
+         id, class_id, title, content, impact_bps, status, revision,
+         idempotency_key, payload_hash, created_by_teacher_id,
+         updated_by_actor_type, updated_by_teacher_id,
+         created_at, expires_at, updated_at
+       ) VALUES (
+         'news-publish-failure', 'class-stock-news', 'Rollback publication',
+         'The source row must roll back too.', 100, 'active', 0,
+         'stock-news-create:publish-failure',
+         'hash:stock-news:create:publish-failure',
+         'teacher-stock-news', 'teacher', 'teacher-stock-news',
+         600, 1000, 600
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      publishFailure.output,
+      /TEST_STOCK_NEWS_PUBLISH_EVENT_FAILURE/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM finance_stock_news
+          WHERE id = 'news-publish-failure') AS news_count,
+         (SELECT COUNT(*) FROM finance_stock_news_events
+          WHERE news_id = 'news-publish-failure') AS event_count;`,
+    )), [{ news_count: 0, event_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_stock_news_publish_event_failure;");
+
+    executeSql(persistPath, `
+      INSERT INTO finance_stock_news (
+        id, class_id, title, content, impact_bps, status, revision,
+        idempotency_key, payload_hash, created_by_teacher_id,
+        updated_by_actor_type, updated_by_teacher_id,
+        created_at, expires_at, updated_at
+      ) VALUES (
+        'news-transition-failure', 'class-stock-news', 'Rollback transition',
+        'A failed terminal event keeps this active.', 75, 'active', 0,
+        'stock-news-create:transition-failure',
+        'hash:stock-news:create:transition-failure',
+        'teacher-stock-news', 'teacher', 'teacher-stock-news',
+        700, 1100, 700
+      );
+      CREATE TRIGGER test_stock_news_transition_event_failure
+      BEFORE INSERT ON finance_stock_news_events
+      WHEN NEW.news_id = 'news-transition-failure'
+        AND NEW.action = 'cancelled'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_STOCK_NEWS_TRANSITION_EVENT_FAILURE');
+      END;
+    `);
+    const transitionFailure = executeSql(
+      persistPath,
+      `UPDATE finance_stock_news
+       SET status = 'cancelled', revision = 1,
+           updated_by_actor_type = 'teacher',
+           updated_by_teacher_id = 'teacher-stock-news',
+           cancellation_reason = 'This transition must roll back',
+           cancellation_idempotency_key = 'stock-news-cancel:transition-failure',
+           cancellation_payload_hash = 'hash:stock-news:cancel:transition-failure',
+           cancelled_at = 800, updated_at = 800
+       WHERE id = 'news-transition-failure';`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      transitionFailure.output,
+      /TEST_STOCK_NEWS_TRANSITION_EVENT_FAILURE/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT news.status, news.revision,
+              (SELECT COUNT(*) FROM finance_stock_news_events event
+               WHERE event.news_id = news.id) AS event_count
+       FROM finance_stock_news news
+       WHERE news.id = 'news-transition-failure';`,
+    )), [{ status: "active", revision: 0, event_count: 1 }]);
+    executeSql(persistPath, "DROP TRIGGER test_stock_news_transition_event_failure;");
+
+    const eventUpdate = executeSql(
+      persistPath,
+      `UPDATE finance_stock_news_events
+       SET reason = 'Changed history'
+       WHERE news_id = 'news-cancelled' AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(eventUpdate.output, /FINANCE_STOCK_NEWS_EVENT_IMMUTABLE/);
+    const eventDelete = executeSql(
+      persistPath,
+      `DELETE FROM finance_stock_news_events
+       WHERE news_id = 'news-cancelled' AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(eventDelete.output, /FINANCE_STOCK_NEWS_EVENT_IMMUTABLE/);
+
+    const eventReplace = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_stock_news_events (
+         id, class_id, news_id, revision, action, title, content, impact_bps,
+         reason, request_idempotency_key, request_payload_hash,
+         actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+       )
+       SELECT 'finance:stock-news-event:replaced', class_id, news_id,
+              revision, action, title, content, impact_bps, reason,
+              request_idempotency_key, request_payload_hash, actor_type,
+              actor_teacher_id, expires_at, cancelled_at, created_at
+       FROM finance_stock_news_events
+       WHERE news_id = 'news-cancelled' AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(eventReplace.output, /FINANCE_STOCK_NEWS_EVENT_INVALID/);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT id FROM finance_stock_news_events
+       WHERE news_id = 'news-cancelled' AND revision = 0;`,
+    )), [{ id: "finance:stock-news-event:news-cancelled:0" }]);
+
+    const forgedEvent = executeSql(
+      persistPath,
+      `INSERT INTO finance_stock_news_events (
+         id, class_id, news_id, revision, action, title, content, impact_bps,
+         reason, request_idempotency_key, request_payload_hash,
+         actor_type, actor_teacher_id, expires_at, cancelled_at, created_at
+       ) VALUES (
+         'finance:stock-news-event:forged', 'class-stock-news',
+         'news-cancelled', 2, 'expired', 'Cancelled news',
+         'This news is cancelled later.', 250,
+         '설정한 공개 시간이 끝났습니다.', NULL, NULL,
+         'system', NULL, 10000, NULL, 10001
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(forgedEvent.output, /FINANCE_STOCK_NEWS_EVENT_INVALID/);
+  } finally {
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});

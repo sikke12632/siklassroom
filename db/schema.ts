@@ -1516,6 +1516,92 @@ export const financeStockNews = sqliteTable("finance_stock_news", {
   ),
 ]);
 
+export const financeStockNewsEvents = sqliteTable(
+  "finance_stock_news_events",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    newsId: text("news_id").notNull().references(() => financeStockNews.id),
+    revision: integer("revision").notNull(),
+    action: text("action").notNull(),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    impactBps: integer("impact_bps").notNull(),
+    reason: text("reason").notNull(),
+    requestIdempotencyKey: text("request_idempotency_key"),
+    requestPayloadHash: text("request_payload_hash"),
+    actorType: text("actor_type").notNull(),
+    actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+    expiresAt: integer("expires_at").notNull(),
+    cancelledAt: integer("cancelled_at"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_news_events_news_revision_uq").on(
+      table.newsId,
+      table.revision,
+    ),
+    uniqueIndex("finance_stock_news_events_class_action_request_uq")
+      .on(table.classId, table.action, table.requestIdempotencyKey)
+      .where(sql`${table.requestIdempotencyKey} IS NOT NULL`),
+    index("finance_stock_news_events_class_created_idx").on(
+      table.classId,
+      table.createdAt,
+    ),
+    check(
+      "finance_stock_news_events_text_ck",
+      sql`LENGTH(TRIM(${table.title})) BETWEEN 1 AND 80
+        AND LENGTH(TRIM(${table.content})) BETWEEN 1 AND 500
+        AND LENGTH(TRIM(${table.reason})) BETWEEN 1 AND 300`,
+    ),
+    check(
+      "finance_stock_news_events_impact_ck",
+      sql`${table.impactBps} BETWEEN -10000 AND 10000`,
+    ),
+    check(
+      "finance_stock_news_events_action_ck",
+      sql`${table.action} IN ('published', 'cancelled', 'expired')`,
+    ),
+    check(
+      "finance_stock_news_events_revision_ck",
+      sql`(${table.action} = 'published' AND ${table.revision} = 0)
+        OR (${table.action} IN ('cancelled', 'expired') AND ${table.revision} > 0)`,
+    ),
+    check(
+      "finance_stock_news_events_request_ck",
+      sql`(${table.action} IN ('published', 'cancelled')
+          AND ${table.requestIdempotencyKey} IS NOT NULL
+          AND ${table.requestPayloadHash} IS NOT NULL
+          AND LENGTH(TRIM(${table.requestIdempotencyKey})) BETWEEN 8 AND 200
+          AND LENGTH(TRIM(${table.requestPayloadHash})) BETWEEN 8 AND 500)
+        OR (${table.action} = 'expired'
+          AND ${table.requestIdempotencyKey} IS NULL
+          AND ${table.requestPayloadHash} IS NULL)`,
+    ),
+    check(
+      "finance_stock_news_events_actor_ck",
+      sql`(${table.action} IN ('published', 'cancelled')
+          AND ${table.actorType} = 'teacher'
+          AND ${table.actorTeacherId} IS NOT NULL)
+        OR (${table.action} = 'expired'
+          AND ${table.actorType} = 'system'
+          AND ${table.actorTeacherId} IS NULL)`,
+    ),
+    check(
+      "finance_stock_news_events_timing_ck",
+      sql`${table.expiresAt} > 0 AND ${table.createdAt} >= 0
+        AND ((${table.action} = 'published'
+            AND ${table.cancelledAt} IS NULL
+            AND ${table.createdAt} < ${table.expiresAt})
+          OR (${table.action} = 'cancelled'
+            AND ${table.cancelledAt} = ${table.createdAt})
+          OR (${table.action} = 'expired'
+            AND ${table.cancelledAt} IS NULL
+            AND ${table.createdAt} >= ${table.expiresAt}))`,
+    ),
+  ],
+);
+
 export const financeStockHoldings = sqliteTable("finance_stock_holdings", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull(),

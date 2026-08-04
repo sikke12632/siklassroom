@@ -397,34 +397,35 @@ export async function financeAuditForRequest(request: Request) {
        UNION ALL
 
        SELECT
-         'stock-news:' || news.id || ':' || news.revision AS id,
-         news.class_id AS class_id,
+         'stock-news-event:' || news_event.id AS id,
+         news_event.class_id AS class_id,
          'stock' AS category,
-         'stock_news_' || news.status AS action,
-         CASE news.status
-           WHEN 'active' THEN '주식 뉴스 등록'
+         'stock_news_' || news_event.action AS action,
+         CASE news_event.action
+           WHEN 'published' THEN '주식 뉴스 등록'
            WHEN 'cancelled' THEN '주식 뉴스 취소'
            ELSE '주식 뉴스 종료'
          END AS title,
-         news.title || ' · ' || news.content AS detail,
-         CASE news.updated_by_actor_type
+         news_event.title || ' · ' || news_event.content
+           || CASE news_event.action
+             WHEN 'cancelled' THEN ' · 취소 이유: ' || news_event.reason
+             ELSE ''
+           END AS detail,
+         CASE news_event.actor_type
            WHEN 'teacher' THEN '담임교사'
            ELSE '주식 자동 시스템'
          END AS actor_label,
          NULL AS student_name,
          NULL AS amount,
-         CASE news.status
-           WHEN 'active' THEN news.created_at
-           ELSE news.updated_at
-         END AS occurred_at,
-         CASE news.status
+         news_event.created_at AS occurred_at,
+         CASE news_event.action
            WHEN 'cancelled' THEN 'cancelled'
            ELSE 'completed'
          END AS outcome,
-         news.id AS related_id,
+         news_event.news_id AS related_id,
          NULL AS previous_settings_json,
          NULL AS settings_json
-       FROM finance_stock_news news
+       FROM finance_stock_news_events news_event
      )
      SELECT id, category, action, title, detail, actor_label, student_name,
             amount, occurred_at, outcome, related_id,
