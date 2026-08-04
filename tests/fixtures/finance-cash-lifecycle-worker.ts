@@ -29,9 +29,52 @@ const lifecycleFixtures = {
 let rawDatabase: D1Database | null = null;
 let databaseWrapped = false;
 let injectionHook: InjectionHook | null = null;
+let archiveAfterClassReadHook: { matched: boolean } | null = null;
+let activateAfterClassReadHook: { matched: boolean } | null = null;
 
 function isUnresolvedCashRequestCount(query: string) {
   return query.includes("finance_cash_requests") && query.includes("COUNT");
+}
+
+function isOwnedClassRead(query: string) {
+  return query.includes("FROM classes WHERE id = ? AND teacher_id = ?");
+}
+
+async function archiveClassAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const now = Date.now();
+  await rawDatabase.batch([
+    rawDatabase.prepare(
+      `UPDATE classes SET status = 'archived', updated_at = ?
+       WHERE id = 'class-cash-archive' AND status = 'active'`,
+    ).bind(now),
+    rawDatabase.prepare(
+      `DELETE FROM sessions
+       WHERE student_id IN (
+         SELECT id FROM students WHERE class_id = 'class-cash-archive'
+       )`,
+    ),
+  ]);
+}
+
+async function activateClassAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  const now = Date.now();
+  await rawDatabase.batch([
+    rawDatabase.prepare(
+      `UPDATE classes SET status = 'active', updated_at = ?
+       WHERE id = 'class-cash-archive' AND status = 'archived'`,
+    ).bind(now),
+    rawDatabase.prepare(
+      `INSERT INTO sessions (
+         id, token_hash, actor_type, teacher_id, student_id,
+         expires_at, created_at, last_seen_at
+       ) VALUES (
+         'session-cash-reactivated-race', 'hash:session:cash:reactivated-race',
+         'student', NULL, 'student-cash-archive', 4102444800000, ?, ?
+       )`,
+    ).bind(now, now),
+  ]);
 }
 
 async function injectPendingCashRequest(scope: InjectionScope) {
@@ -96,6 +139,24 @@ function wrapPreparedStatement(
             ...firstArgs: unknown[]
           ) => Promise<unknown>;
           const result = await first.apply(target, args);
+          const archiveHook = archiveAfterClassReadHook;
+          if (
+            archiveHook
+            && !archiveHook.matched
+            && isOwnedClassRead(query)
+          ) {
+            archiveHook.matched = true;
+            await archiveClassAfterRead();
+          }
+          const activateHook = activateAfterClassReadHook;
+          if (
+            activateHook
+            && !activateHook.matched
+            && isOwnedClassRead(query)
+          ) {
+            activateHook.matched = true;
+            await activateClassAfterRead();
+          }
           const hook = injectionHook;
           if (
             hook
@@ -181,6 +242,12 @@ const financeCashLifecycleWorker = {
     const requestedScope = request.headers.get(
       "x-test-inject-pending-after-lifecycle-preflight",
     );
+    const archiveAfterClassRead = request.headers.get(
+      "x-test-archive-after-class-read",
+    );
+    const activateAfterClassRead = request.headers.get(
+      "x-test-activate-after-class-read",
+    );
     if (
       requestedScope !== null
       && requestedScope !== "class"
@@ -188,7 +255,13 @@ const financeCashLifecycleWorker = {
     ) {
       return Response.json({ error: "Unknown lifecycle scope." }, { status: 400 });
     }
-    if (injectionHook) {
+    if (archiveAfterClassRead !== null && archiveAfterClassRead !== "1") {
+      return Response.json({ error: "Unknown archive race hook." }, { status: 400 });
+    }
+    if (activateAfterClassRead !== null && activateAfterClassRead !== "1") {
+      return Response.json({ error: "Unknown activate race hook." }, { status: 400 });
+    }
+    if (injectionHook || archiveAfterClassReadHook || activateAfterClassReadHook) {
       return Response.json(
         { error: "A lifecycle injection hook is already active." },
         { status: 409 },
@@ -196,6 +269,12 @@ const financeCashLifecycleWorker = {
     }
     if (requestedScope) {
       injectionHook = { scope: requestedScope, matched: false };
+    }
+    if (archiveAfterClassRead === "1") {
+      archiveAfterClassReadHook = { matched: false };
+    }
+    if (activateAfterClassRead === "1") {
+      activateAfterClassReadHook = { matched: false };
     }
 
     try {
@@ -213,10 +292,14 @@ const financeCashLifecycleWorker = {
       }
       return responseWithInjectionStatus(
         response,
-        injectionHook?.matched ?? false,
+        (injectionHook?.matched ?? false)
+          || (archiveAfterClassReadHook?.matched ?? false)
+          || (activateAfterClassReadHook?.matched ?? false),
       );
     } finally {
       injectionHook = null;
+      archiveAfterClassReadHook = null;
+      activateAfterClassReadHook = null;
     }
   },
 };

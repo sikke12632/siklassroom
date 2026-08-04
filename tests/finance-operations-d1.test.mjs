@@ -827,6 +827,137 @@ test("unresolved cash requests atomically block class archive and student exclus
       resolution_count: 1,
     }]);
 
+    const archivedMetadataUpdate = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ displayName: "Archived lifecycle class" }),
+      },
+    );
+    const archivedMetadataBody = await archivedMetadataUpdate.text();
+    assert.equal(archivedMetadataUpdate.status, 200, archivedMetadataBody);
+    assert.deepEqual(classState(), [{
+      class_status: "archived",
+      student_status: "active",
+      wallet_status: "closed",
+      student_session_count: 0,
+      peer_session_count: 0,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT display_name FROM classes WHERE id = 'class-cash-archive';`,
+    )), [{ display_name: "Archived lifecycle class" }]);
+
+    const invalidClassStatus = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "paused" }),
+      },
+    );
+    const invalidClassStatusBody = await invalidClassStatus.json();
+    assert.equal(invalidClassStatus.status, 400, JSON.stringify(invalidClassStatusBody));
+    assert.equal(invalidClassStatusBody.code, "INVALID_CLASS_STATUS");
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT status FROM classes WHERE id = 'class-cash-archive';`,
+    ))[0]?.status, "archived");
+
+    const reactivateBeforeRace = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ status: "active" }),
+      },
+    );
+    const reactivateBeforeRaceBody = await reactivateBeforeRace.text();
+    assert.equal(reactivateBeforeRace.status, 200, reactivateBeforeRaceBody);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT status FROM classes WHERE id = 'class-cash-archive';`,
+    ))[0]?.status, "active");
+
+    const archivedMetadataRace = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-archive-after-class-read": "1",
+        },
+        body: JSON.stringify({ displayName: "Metadata after archive race" }),
+      },
+    );
+    const archivedMetadataRaceBody = await archivedMetadataRace.text();
+    assert.equal(
+      archivedMetadataRace.headers.get("x-test-injection-matched"),
+      "1",
+      archivedMetadataRaceBody,
+    );
+    assert.equal(archivedMetadataRace.status, 200, archivedMetadataRaceBody);
+    assert.deepEqual(classState(), [{
+      class_status: "archived",
+      student_status: "active",
+      wallet_status: "closed",
+      student_session_count: 0,
+      peer_session_count: 0,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS matching_count
+       FROM audit_logs
+       WHERE class_id = 'class-cash-archive'
+         AND action = 'class_updated'
+         AND json_extract(detail, '$.displayName') = 'Metadata after archive race'
+         AND json_type(detail, '$.status') IS NULL;`,
+    )), [{ matching_count: 1 }]);
+
+    const activatedMetadataRace = await worker.fetch(
+      "http://test.local/classes/class-cash-archive",
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-activate-after-class-read": "1",
+        },
+        body: JSON.stringify({ displayName: "Metadata after activate race" }),
+      },
+    );
+    const activatedMetadataRaceBody = await activatedMetadataRace.text();
+    assert.equal(
+      activatedMetadataRace.headers.get("x-test-injection-matched"),
+      "1",
+      activatedMetadataRaceBody,
+    );
+    assert.equal(activatedMetadataRace.status, 200, activatedMetadataRaceBody);
+    assert.deepEqual(classState(), [{
+      class_status: "active",
+      student_status: "active",
+      wallet_status: "active",
+      student_session_count: 1,
+      peer_session_count: 0,
+      request_count: 1,
+      resolution_count: 1,
+    }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS matching_count
+       FROM audit_logs
+       WHERE class_id = 'class-cash-archive'
+         AND action = 'class_updated'
+         AND json_extract(detail, '$.displayName') = 'Metadata after activate race'
+         AND json_type(detail, '$.status') IS NULL;`,
+    )), [{ matching_count: 1 }]);
+
     const excludeResponse = await worker.fetch(
       "http://test.local/students/student-cash-exclude",
       {
