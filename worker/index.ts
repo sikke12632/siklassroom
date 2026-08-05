@@ -39,10 +39,12 @@ function securedResponse(request: Request, response: Response) {
   headers.set("X-Frame-Options", "DENY");
   headers.set("X-Permitted-Cross-Domain-Policies", "none");
   headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
-  headers.set(
-    "Content-Security-Policy",
-    "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
-  );
+  if (!headers.has("Content-Security-Policy")) {
+    headers.set(
+      "Content-Security-Policy",
+      "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
+    );
+  }
   if (!headers.has("Referrer-Policy")) {
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   }

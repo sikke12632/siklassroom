@@ -126,6 +126,7 @@ test("Worker는 API 캐시와 외부 프레임을 막는 공통 보안 헤더를
   assert.match(worker, /X-Content-Type-Options/);
   assert.match(worker, /X-Frame-Options/);
   assert.match(worker, /Content-Security-Policy/);
+  assert.match(worker, /if \(!headers\.has\("Content-Security-Policy"\)\)/);
   assert.match(worker, /Permissions-Policy/);
   assert.match(worker, /Strict-Transport-Security/);
   assert.match(worker, /url\.pathname\.startsWith\("\/api\/"\)/);
