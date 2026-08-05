@@ -441,15 +441,66 @@ async function insertSingleAssignment(input: {
   return id;
 }
 
-export async function setAssignmentMode(classId: string, value: unknown) {
-  const mode = value === "random" || value === "manual" ? value : null;
+export async function setAssignmentMode(input: {
+  classId: string;
+  teacherId: string;
+  mode: unknown;
+}) {
+  const mode = input.mode === "random" || input.mode === "manual" ? input.mode : null;
   if (!mode) throw new ApiError(400, "배정 방식을 다시 선택해 주세요.", "INVALID_ASSIGNMENT_MODE");
-  const period = await requireReadyDraftPeriod(classId);
-  await database().prepare(
-    `UPDATE class_job_assignment_periods
-     SET mode = ?, revision = revision + 1, updated_at = ?
-     WHERE id = ? AND class_id = ? AND status = 'draft'`,
-  ).bind(mode, Date.now(), period.id, classId).run();
+  const period = await requireReadyDraftPeriod(input.classId);
+  const now = Date.now();
+  const guardId = crypto.randomUUID();
+  const db = database();
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE class_job_assignment_periods
+         SET mode = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?`,
+      ).bind(mode, now, period.id, input.classId, Number(period.revision)),
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM class_job_assignment_periods
+           WHERE id = ? AND class_id = ? AND status = 'draft'
+             AND revision = ? AND mode = ? AND updated_at = ?
+         ) THEN ? ELSE NULL END, 'job_assignment_mode_change', ?`,
+      ).bind(
+        period.id,
+        input.classId,
+        Number(period.revision) + 1,
+        mode,
+        now,
+        guardId,
+        now,
+      ),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         )
+         SELECT ?, ?, ?, NULL, 'job_assignment_mode_changed', ?, ?
+         WHERE EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({ mode, periodId: period.id }),
+        now,
+        guardId,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "배정 방식이 다른 화면에서 먼저 변경됐어요. 최신 화면을 다시 확인해 주세요.",
+        "ASSIGNMENT_CONFLICT",
+      );
+    }
+    throw error;
+  }
   return { mode, periodId: period.id };
 }
 

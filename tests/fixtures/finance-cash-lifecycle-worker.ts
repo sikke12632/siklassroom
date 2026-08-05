@@ -4,6 +4,7 @@ import { POST as addStudents } from "../../app/api/classes/[classId]/students/ro
 import { POST as completeJobSetup } from "../../app/api/classes/[classId]/job-setup/complete/route";
 import { PUT as saveJobSetupDraft } from "../../app/api/classes/[classId]/job-setup/draft/route";
 import { POST as createManualAssignments } from "../../app/api/classes/[classId]/job-assignments/manual/route";
+import { PUT as setAssignmentMode } from "../../app/api/classes/[classId]/job-assignments/mode/route";
 import { POST as completeInitialAssignments } from "../../app/api/classes/[classId]/job-assignments/complete/route";
 import { POST as completeMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/complete/route";
 import { POST as shuffleMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/shuffle/route";
@@ -487,6 +488,13 @@ const financeCashLifecycleWorker = {
         && request.method === "POST"
       ) {
         response = await createManualAssignments(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-assignments/mode"
+        && request.method === "PUT"
+      ) {
+        response = await setAssignmentMode(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (

@@ -1187,6 +1187,66 @@ test("unresolved cash requests atomically block class archive and student exclus
         SELECT RAISE(ABORT, 'TEST_MANUAL_ASSIGNMENT_AUDIT_INSERT_FAILURE');
       END;
     `);
+    const assignmentModeState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT period.mode, period.revision,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = period.class_id
+                 AND action = 'job_assignment_mode_changed') AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'job_assignment_mode_change') AS guard_count
+       FROM class_job_assignment_periods period
+       WHERE period.id = 'period-manual-atomic';`,
+    ));
+    executeSql(persistPath, `
+      CREATE TRIGGER test_assignment_mode_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_assignment_mode_changed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_ASSIGNMENT_MODE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const assignmentModeAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/mode",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ mode: "random" }),
+      },
+    );
+    const assignmentModeAuditFailureBody = await assignmentModeAuditFailure.text();
+    assert.equal(assignmentModeAuditFailure.status, 500, assignmentModeAuditFailureBody);
+    assert.deepEqual(assignmentModeState(), [{
+      mode: "manual",
+      revision: 0,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_assignment_mode_audit_insert_failure;");
+
+    const assignmentModeSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/mode",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ mode: "random" }),
+      },
+    );
+    const assignmentModeSuccessBody = await assignmentModeSuccess.json();
+    assert.equal(assignmentModeSuccess.status, 200, JSON.stringify(assignmentModeSuccessBody));
+    assert.equal(assignmentModeSuccessBody.mode, "random");
+    assert.deepEqual(assignmentModeState(), [{
+      mode: "random",
+      revision: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, `
+      UPDATE class_job_assignment_periods
+      SET mode = 'manual', revision = 0, updated_at = 1
+      WHERE id = 'period-manual-atomic';
+    `);
     assert.deepEqual(manualAssignmentState(), [{
       revision: 0,
       assignment_count: 0,
