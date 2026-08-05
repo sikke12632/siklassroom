@@ -381,8 +381,8 @@ export async function financeAuditForRequest(request: Request) {
   ).all<AuditRow>();
 
   // D1 limits the number of UNION terms in one statement. Keep the general,
-  // deposit-failure, and stock lifecycle sources separate, then apply the same
-  // stable global ordering after all bounded queries return.
+  // automation-failure, and stock lifecycle sources separate, then apply the
+  // same stable global ordering after all bounded queries return.
   const stockResultPromise = database().prepare(
     `WITH finance_events AS (
        SELECT
@@ -589,51 +589,81 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
-  const depositFailureResultPromise = database().prepare(
-    `SELECT
-       'deposit-maturity-attempt:' || attempt.id AS id,
-       attempt.class_id AS class_id,
-       'deposit' AS category,
-       'deposit_maturity_retry_scheduled' AS action,
-       '예금 만기 자동 지급 재시도' AS title,
-       contract.product_name_snapshot || ' · ' || attempt.attempt_count
-         || '차 실패 후 재시도 예약 · 오류 코드 ' || attempt.error_code
-         || CASE attempt.capture_status
-           WHEN 'legacy_latest' THEN ' · 과거 최신 실패 상태만 복원'
-           ELSE ''
-         END AS detail,
-       '예금 자동화 시스템' AS actor_label,
-       student.official_name AS student_name,
-       contract.maturity_payout AS amount,
-       attempt.failed_at AS occurred_at,
-       'failed' AS outcome,
-       attempt.contract_id AS related_id,
-       NULL AS previous_settings_json,
-       NULL AS settings_json
-     FROM finance_deposit_maturity_attempts attempt
-     JOIN finance_deposit_contracts contract
-       ON contract.id = attempt.contract_id
-      AND contract.class_id = attempt.class_id
-     JOIN students student
-       ON student.id = contract.student_id
-      AND student.class_id = contract.class_id
-     WHERE attempt.class_id = ?
-       AND (? = '' OR 'deposit' = ?)
+  const automationFailureResultPromise = database().prepare(
+    `WITH automation_failures AS (
+       SELECT
+         'deposit-maturity-attempt:' || attempt.id AS id,
+         attempt.class_id AS class_id,
+         'deposit' AS category,
+         'deposit_maturity_retry_scheduled' AS action,
+         '예금 만기 자동 지급 재시도' AS title,
+         contract.product_name_snapshot || ' · ' || attempt.attempt_count
+           || '차 실패 후 재시도 예약 · 오류 코드 ' || attempt.error_code
+           || CASE attempt.capture_status
+             WHEN 'legacy_latest' THEN ' · 과거 최신 실패 상태만 복원'
+             ELSE ''
+           END AS detail,
+         '예금 자동화 시스템' AS actor_label,
+         student.official_name AS student_name,
+         contract.maturity_payout AS amount,
+         attempt.failed_at AS occurred_at,
+         'failed' AS outcome,
+         attempt.contract_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_deposit_maturity_attempts attempt
+       JOIN finance_deposit_contracts contract
+         ON contract.id = attempt.contract_id
+        AND contract.class_id = attempt.class_id
+       JOIN students student
+         ON student.id = contract.student_id
+        AND student.class_id = contract.class_id
+
+       UNION ALL
+
+       SELECT
+         'stock-tick-attempt:' || attempt.id AS id,
+         attempt.class_id AS class_id,
+         'stock' AS category,
+         'stock_tick_retry_scheduled' AS action,
+         '주식 자동 시세 갱신 재시도' AS title,
+         stock.name || ' (' || stock.symbol || ') · ' || attempt.attempt_count
+           || '차 실패 후 재시도 예약 · 오류 코드 ' || attempt.error_code
+           || CASE attempt.capture_status
+             WHEN 'legacy_latest' THEN ' · 과거 최신 실패 상태만 복원'
+             ELSE ''
+           END AS detail,
+         '주식 자동화 시스템' AS actor_label,
+         NULL AS student_name,
+         attempt.stock_price_snapshot AS amount,
+         attempt.failed_at AS occurred_at,
+         'failed' AS outcome,
+         attempt.stock_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_tick_attempts attempt
+       JOIN finance_stocks stock
+         ON stock.id = attempt.stock_id
+        AND stock.class_id = attempt.class_id
+     )
+     SELECT id, category, action, title, detail, actor_label, student_name,
+            amount, occurred_at, outcome, related_id,
+            previous_settings_json, settings_json
+     FROM automation_failures
+     WHERE class_id = ?
+       AND (? = '' OR category = ?)
        AND (
          ? = ''
-         OR LOWER('예금 만기 자동 지급 재시도') LIKE ? ESCAPE '!'
-         OR LOWER(
-           contract.product_name_snapshot || ' ' || attempt.error_code
-         ) LIKE ? ESCAPE '!'
-         OR LOWER('예금 자동화 시스템') LIKE ? ESCAPE '!'
-         OR LOWER(student.official_name) LIKE ? ESCAPE '!'
+         OR LOWER(title) LIKE ? ESCAPE '!'
+         OR LOWER(detail) LIKE ? ESCAPE '!'
+         OR LOWER(actor_label) LIKE ? ESCAPE '!'
+         OR LOWER(COALESCE(student_name, '')) LIKE ? ESCAPE '!'
        )
        AND (
-         attempt.failed_at < ?
-         OR (attempt.failed_at = ?
-           AND 'deposit-maturity-attempt:' || attempt.id < ?)
+         occurred_at < ?
+         OR (occurred_at = ? AND id < ?)
        )
-     ORDER BY attempt.failed_at DESC, id DESC
+     ORDER BY occurred_at DESC, id DESC
      LIMIT ?`,
   ).bind(
     context.classroom.id,
@@ -650,15 +680,15 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
-  const [generalResult, stockResult, depositFailureResult] = await Promise.all([
+  const [generalResult, stockResult, automationFailureResult] = await Promise.all([
     generalResultPromise,
     stockResultPromise,
-    depositFailureResultPromise,
+    automationFailureResultPromise,
   ]);
   const mergedResults = [
     ...generalResult.results,
     ...stockResult.results,
-    ...depositFailureResult.results,
+    ...automationFailureResult.results,
   ].sort((left, right) => {
     const timeDifference = Number(right.occurred_at) - Number(left.occurred_at);
     if (timeDifference !== 0) return timeDifference;

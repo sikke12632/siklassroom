@@ -733,6 +733,54 @@ test("deposit maturity failures remain immutable after retry success", async () 
   assert.match(migrationTest, /PRAGMA foreign_key_check/);
 });
 
+test("stock tick failures remain immutable after automatic recovery", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationName = (await readdir(migrationDirectory))
+    .find((name) => /^0033_.+\.sql$/u.test(name));
+  assert.ok(migrationName, "The stock-tick attempt migration must exist.");
+  const [schema, migration, runtime, service, audit, d1Test, migrationTest] =
+    await Promise.all([
+      readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+      readFile(new URL(migrationName, migrationDirectory), "utf8"),
+      readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+      readFile(new URL("../tests/finance-stocks-d1.test.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../tests/finance-stock-tick-attempts-migration-d1.test.mjs",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_stock_tick_attempts/);
+    assert.match(source, /legacy_latest/);
+    assert.match(source, /stock_price_snapshot/);
+    assert.match(source, /scheduled_tick_at/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_stock_tick_attempts_insert_guard/);
+    assert.match(source, /finance_stock_tick_attempts_update_guard/);
+    assert.match(source, /finance_stock_tick_attempts_delete_guard/);
+    assert.match(source, /finance_stock_tick_capture_first_attempt/);
+    assert.match(source, /finance_stock_tick_capture_later_attempt/);
+    assert.match(source, /FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_stock_tick_attempts`?/);
+  }
+  assert.match(service, /deferFailedFinanceStockTick/);
+  assert.match(service, /ON CONFLICT\([\s\S]*scheduled_tick_at[\s\S]*\) DO UPDATE SET/);
+  assert.match(audit, /FROM finance_stock_tick_attempts attempt/);
+  assert.match(audit, /stock_tick_retry_scheduled/);
+  assert.match(audit, /attempt\.stock_price_snapshot AS amount/);
+  assert.match(d1Test, /TEST_STOCK_TICK_ATTEMPT_FAILURE/);
+  assert.match(d1Test, /FINANCE_STOCK_TICK_ATTEMPT_INVALID/);
+  assert.match(migrationTest, /legacy_latest/);
+  assert.match(migrationTest, /PRAGMA foreign_key_check/);
+});
+
 test("teacher liquidation progress and cancellation remain searchable audit events", async () => {
   const migrationDirectory = new URL("../drizzle/", import.meta.url);
   const migrationName = (await readdir(migrationDirectory))

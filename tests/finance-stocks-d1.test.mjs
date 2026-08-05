@@ -24,15 +24,26 @@ const stockPositionLimitWorkerPath = "tests/fixtures/stock-position-limit-worker
 const stockPositionLimitConfigPath = "tests/fixtures/wrangler.stock-position-limit.jsonc";
 const stockTickRaceWorkerPath = "tests/fixtures/stock-tick-race-worker.ts";
 const stockTickRaceConfigPath = "tests/fixtures/wrangler.stock-tick-race.jsonc";
+const stockTickAuditWorkerPath = "tests/fixtures/stock-tick-audit-worker.ts";
+const stockTickAuditConfigPath = "tests/fixtures/wrangler.stock-tick-audit.jsonc";
 
 function runWrangler(args, { expectSuccess = true } = {}) {
-  const result = spawnSync(process.execPath, [wranglerPath, ...args], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: process.env,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  let result;
+  let output = "";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    result = spawnSync(process.execPath, [wranglerPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    if (
+      result.status === 0
+      || (!output.includes("bad port") && !output.includes("fetch failed"))
+    ) break;
+  }
+  assert.ok(result, "Wrangler did not start.");
   if (expectSuccess) {
     assert.equal(
       result.status,
@@ -2648,6 +2659,10 @@ test("failed automatic stock ticks back off without starving healthy classes", {
   );
   const dueNow = 1_000_000;
   const tickIntervalMs = 120 * 60_000;
+  const auditSessionToken = "teacher-stock-tick-attempt-audit-token";
+  const auditSessionHash = createHash("sha256")
+    .update(auditSessionToken)
+    .digest("base64url");
   let worker;
   try {
     runWrangler([
@@ -2661,10 +2676,12 @@ test("failed automatic stock ticks back off without starving healthy classes", {
 
     executeSql(persistPath, `
       INSERT INTO teachers (
-        id, email, password_hash, status, created_at, updated_at
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
       ) VALUES (
         'teacher-stock-backoff', 'teacher-stock-backoff@test.local', 'hash',
-        'active', 1, 1
+        'active', 1, 'invite_verified', 1, 'school-stock-backoff', 1, 1
       );
       INSERT INTO classes (
         id, teacher_id, school_name, school_normalized,
@@ -2676,6 +2693,13 @@ test("failed automatic stock ticks back off without starving healthy classes", {
          'Test School', 'test school', 2099, 6, 14, 'active', 1, 1),
         ('class-stock-backoff-c', 'teacher-stock-backoff',
          'Test School', 'test school', 2099, 6, 15, 'active', 1, 1);
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES (
+        'session-stock-backoff', '${auditSessionHash}', 'teacher',
+        'teacher-stock-backoff', NULL, 9999999999999, 1, 1
+      );
       INSERT INTO finance_stocks (
         id, class_id, name, symbol, description,
         initial_price, current_price, previous_price,
@@ -2761,6 +2785,34 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       END;
     `);
 
+    executeSql(persistPath, `
+      CREATE TRIGGER test_stock_tick_attempt_capture_failure
+      BEFORE INSERT ON finance_stock_tick_attempts
+      WHEN NEW.stock_id = 'stock-backoff-a'
+      BEGIN SELECT RAISE(ABORT, 'TEST_STOCK_TICK_ATTEMPT_FAILURE'); END;
+    `);
+    const attemptCaptureFailure = executeSql(
+      persistPath,
+      `INSERT INTO finance_stock_tick_retries (
+         id, class_id, stock_id, stock_revision, market_revision,
+         scheduled_tick_at, attempt_count, next_attempt_at,
+         last_error_code, last_failed_at, created_at, updated_at
+       ) VALUES (
+         'stock-retry-attempt-capture-failure', 'class-stock-backoff-a',
+         'stock-backoff-a', 0, 1, ${dueNow - 3}, 1, ${dueNow + 120_000},
+         'FINANCE_STOCK_TEST_TICK_FAILURE', ${dueNow}, ${dueNow}, ${dueNow}
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(attemptCaptureFailure.output, /TEST_STOCK_TICK_ATTEMPT_FAILURE/);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS retry_count,
+              (SELECT COUNT(*) FROM finance_stock_tick_attempts) AS attempt_count
+       FROM finance_stock_tick_retries;`,
+    )), [{ retry_count: 0, attempt_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_stock_tick_attempt_capture_failure;");
+
     worker = await (await import("wrangler")).unstable_dev(
       stockTickRaceWorkerPath,
       {
@@ -2776,11 +2828,26 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       },
     );
     const runPlainTick = async (now, limit = 2) => {
-      const response = await worker.fetch("http://test.local/run", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: "plain", now, limit }),
-      });
+      let response = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          response = await worker.fetch("http://test.local/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ mode: "plain", now, limit }),
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      }
+      if (!response) {
+        throw new Error(`Stock tick worker failed at ${now}.`, { cause: lastError });
+      }
       assert.equal(response.status, 200);
       return response.json();
     };
@@ -2844,6 +2911,32 @@ test("failed automatic stock ticks back off without starving healthy classes", {
         last_failed_at: dueNow,
         created_at: dueNow,
         updated_at: dueNow,
+      },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, attempt_count, stock_price_snapshot, error_code,
+              failed_at, next_attempt_at, capture_status
+       FROM finance_stock_tick_attempts
+       ORDER BY stock_id, attempt_count;`,
+    )), [
+      {
+        stock_id: "stock-backoff-a",
+        attempt_count: 1,
+        stock_price_snapshot: 1000,
+        error_code: "FINANCE_STOCK_TEST_TICK_FAILURE",
+        failed_at: dueNow,
+        next_attempt_at: dueNow + 120_000,
+        capture_status: "exact",
+      },
+      {
+        stock_id: "stock-backoff-b",
+        attempt_count: 1,
+        stock_price_snapshot: 1000,
+        error_code: "FINANCE_STOCK_TEST_TICK_FAILURE",
+        failed_at: dueNow,
+        next_attempt_at: dueNow + 120_000,
+        capture_status: "exact",
       },
     ]);
 
@@ -2913,6 +3006,11 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       created_at: dueNow,
       updated_at: secondAttemptAt,
     })));
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_stock_tick_attempts
+       WHERE attempt_count IN (1, 2) AND capture_status = 'exact';`,
+    ))[0].count, 4);
 
     const fairnessAt = secondAttemptAt + 240_000;
     executeSql(persistPath, `
@@ -2977,6 +3075,14 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       attempt_count: 2,
       next_attempt_at: fairnessAt - 1,
     }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT attempt_count, error_code FROM finance_stock_tick_attempts
+       WHERE stock_id = 'stock-backoff-b' ORDER BY attempt_count;`,
+    )), [
+      { attempt_count: 1, error_code: "FINANCE_STOCK_TEST_TICK_FAILURE" },
+      { attempt_count: 2, error_code: "FINANCE_STOCK_TEST_TICK_FAILURE" },
+    ]);
 
     const freshResult = await runPlainTick(fairnessAt, 1);
     assert.equal(freshResult.due, 1);
@@ -3035,6 +3141,37 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       persistPath,
       "SELECT COUNT(*) AS count FROM finance_stock_tick_retries;",
     )), [{ count: 0 }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock_id, GROUP_CONCAT(attempt_count, ',') AS attempts
+       FROM (
+         SELECT stock_id, attempt_count FROM finance_stock_tick_attempts
+         ORDER BY stock_id, attempt_count
+       )
+       GROUP BY stock_id ORDER BY stock_id;`,
+    )), [
+      { stock_id: "stock-backoff-a", attempts: "1,2,5,6" },
+      { stock_id: "stock-backoff-b", attempts: "1,2" },
+    ]);
+    const immutableAttempt = executeSql(
+      persistPath,
+      `DELETE FROM finance_stock_tick_attempts
+       WHERE stock_id = 'stock-backoff-a' AND attempt_count = 1;`,
+      { expectSuccess: false },
+    );
+    assert.match(immutableAttempt.output, /FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE/);
+    const forgedAttempt = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_stock_tick_attempts
+       SELECT id, class_id, retry_id, stock_id, stock_revision,
+              market_revision, scheduled_tick_at, stock_price_snapshot,
+              attempt_count, 'FORGED_ERROR', failed_at, next_attempt_at,
+              capture_status
+       FROM finance_stock_tick_attempts
+       WHERE stock_id = 'stock-backoff-a' AND attempt_count = 6;`,
+      { expectSuccess: false },
+    );
+    assert.match(forgedAttempt.output, /FINANCE_STOCK_TICK_ATTEMPT_INVALID/);
 
     executeSql(persistPath, `
       INSERT INTO finance_stock_tick_retries (
@@ -3052,6 +3189,10 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       persistPath,
       "SELECT COUNT(*) AS count FROM finance_stock_tick_retries;",
     )), [{ count: 0 }]);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      "SELECT COUNT(*) AS count FROM finance_stock_tick_attempts;",
+    ))[0].count, 6);
 
     assert.deepEqual(await runPlainTick(recoveryAt, 2), {
       due: 0,
@@ -3063,6 +3204,45 @@ test("failed automatic stock ticks back off without starving healthy classes", {
       expiredNews: 0,
     });
     assert.deepEqual(marketState(), finalState);
+
+    await worker.stop();
+    worker = await (await import("wrangler")).unstable_dev(
+      stockTickAuditWorkerPath,
+      {
+        config: stockTickAuditConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+
+    let auditResponse;
+    try {
+      auditResponse = await worker.fetch(
+        "http://test.local/audit?classId=class-stock-backoff-a&category=stock&query=FINANCE_STOCK_TEST_TICK_FAILURE",
+        { headers: { cookie: `job_classroom_session=${auditSessionToken}` } },
+      );
+    } catch (error) {
+      throw new Error("Stock tick audit worker request failed.", { cause: error });
+    }
+    const auditBody = await auditResponse.json();
+    assert.equal(auditResponse.status, 200, JSON.stringify(auditBody));
+    assert.deepEqual(auditBody.events.map((event) => ({
+      action: event.action,
+      amount: event.amount,
+      outcome: event.outcome,
+    })), [
+      { action: "stock_tick_retry_scheduled", amount: 1000, outcome: "failed" },
+      { action: "stock_tick_retry_scheduled", amount: 1000, outcome: "failed" },
+      { action: "stock_tick_retry_scheduled", amount: 1000, outcome: "failed" },
+      { action: "stock_tick_retry_scheduled", amount: 1000, outcome: "failed" },
+    ]);
+
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

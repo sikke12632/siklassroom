@@ -1491,6 +1491,57 @@ export const financeStockTickRetries = sqliteTable(
   ],
 );
 
+export const financeStockTickAttempts = sqliteTable(
+  "finance_stock_tick_attempts",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull(),
+    retryId: text("retry_id").notNull(),
+    stockId: text("stock_id").notNull(),
+    stockRevision: integer("stock_revision").notNull(),
+    marketRevision: integer("market_revision").notNull(),
+    scheduledTickAt: integer("scheduled_tick_at").notNull(),
+    stockPriceSnapshot: integer("stock_price_snapshot").notNull(),
+    attemptCount: integer("attempt_count").notNull(),
+    errorCode: text("error_code").notNull(),
+    failedAt: integer("failed_at").notNull(),
+    nextAttemptAt: integer("next_attempt_at").notNull(),
+    captureStatus: text("capture_status").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_tick_attempts_retry_attempt_uq").on(
+      table.retryId,
+      table.attemptCount,
+    ),
+    index("finance_stock_tick_attempts_class_failed_idx").on(
+      table.classId,
+      table.failedAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.stockId, table.classId],
+      foreignColumns: [financeStocks.id, financeStocks.classId],
+      name: "finance_stock_tick_attempts_stock_class_fk",
+    }),
+    check(
+      "finance_stock_tick_attempts_id_ck",
+      sql`${table.id} = 'finance:stock-tick-attempt:'
+        || ${table.retryId} || ':' || ${table.attemptCount}`,
+    ),
+    check(
+      "finance_stock_tick_attempts_state_ck",
+      sql`${table.stockRevision} >= 0 AND ${table.marketRevision} >= 0
+        AND ${table.scheduledTickAt} >= 0
+        AND ${table.stockPriceSnapshot} BETWEEN 1 AND 1000000000
+        AND ${table.attemptCount} BETWEEN 1 AND 1000000
+        AND LENGTH(TRIM(${table.errorCode})) BETWEEN 1 AND 100
+        AND ${table.failedAt} >= ${table.scheduledTickAt}
+        AND ${table.nextAttemptAt} >= ${table.failedAt}
+        AND ${table.captureStatus} IN ('exact', 'legacy_latest')`,
+    ),
+  ],
+);
+
 export const financeStockEvents = sqliteTable("finance_stock_events", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull(),
