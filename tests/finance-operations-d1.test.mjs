@@ -1247,6 +1247,110 @@ test("unresolved cash requests atomically block class archive and student exclus
       SET mode = 'manual', revision = 0, updated_at = 1
       WHERE id = 'period-manual-atomic';
     `);
+    const randomAssignmentState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT period.revision,
+              (SELECT COUNT(*) FROM student_job_assignments assignment
+               WHERE assignment.period_id = period.id) AS assignment_count,
+              (SELECT COUNT(*) FROM job_assignment_candidates candidate
+               WHERE candidate.period_id = period.id) AS candidate_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = period.class_id
+                 AND action = 'job_assignment_random') AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation LIKE 'job_assignment_random%') AS guard_count
+       FROM class_job_assignment_periods period
+       WHERE period.id = 'period-manual-atomic';`,
+    ));
+    executeSql(persistPath, `
+      INSERT INTO job_assignment_candidates (
+        id, period_id, class_job_id, student_id, created_at, updated_at
+      ) VALUES (
+        'candidate-random-atomic', 'period-manual-atomic',
+        'class-cash-archive:custom:atomic-job', 'student-cash-archive-peer', 1, 1
+      );
+      CREATE TRIGGER test_random_assignment_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_assignment_random'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_RANDOM_ASSIGNMENT_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const randomAssignmentPayload = {
+      classJobId: "class-cash-archive:custom:atomic-job",
+      candidateStudentIds: ["student-cash-archive-peer"],
+      requestId: "random-assignment-atomic-request",
+    };
+    const randomAssignmentAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/random",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(randomAssignmentPayload),
+      },
+    );
+    const randomAssignmentAuditFailureBody = await randomAssignmentAuditFailure.text();
+    assert.equal(randomAssignmentAuditFailure.status, 500, randomAssignmentAuditFailureBody);
+    assert.deepEqual(randomAssignmentState(), [{
+      revision: 0,
+      assignment_count: 0,
+      candidate_count: 2,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_random_assignment_audit_insert_failure;");
+
+    const randomAssignmentSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/random",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(randomAssignmentPayload),
+      },
+    );
+    const randomAssignmentSuccessBody = await randomAssignmentSuccess.json();
+    assert.equal(randomAssignmentSuccess.status, 201, JSON.stringify(randomAssignmentSuccessBody));
+    assert.equal(randomAssignmentSuccessBody.assignment.idempotent, false);
+    assert.equal(randomAssignmentSuccessBody.assignment.student.id, "student-cash-archive-peer");
+    assert.deepEqual(randomAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const randomAssignmentRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/random",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(randomAssignmentPayload),
+      },
+    );
+    const randomAssignmentRetryBody = await randomAssignmentRetry.json();
+    assert.equal(randomAssignmentRetry.status, 200, JSON.stringify(randomAssignmentRetryBody));
+    assert.equal(randomAssignmentRetryBody.assignment.idempotent, true);
+    assert.equal(
+      randomAssignmentRetryBody.assignment.assignmentId,
+      randomAssignmentSuccessBody.assignment.assignmentId,
+    );
+    assert.deepEqual(randomAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, `
+      DELETE FROM student_job_assignments
+      WHERE period_id = 'period-manual-atomic'
+        AND request_id = 'random-assignment-atomic-request';
+      UPDATE class_job_assignment_periods
+      SET revision = 0, updated_at = 1
+      WHERE id = 'period-manual-atomic';
+    `);
     assert.deepEqual(manualAssignmentState(), [{
       revision: 0,
       assignment_count: 0,
