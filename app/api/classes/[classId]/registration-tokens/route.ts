@@ -1,7 +1,7 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedActiveClass } from "@/lib/authorization";
 import { database } from "@/lib/database";
-import { issueRegistrationToken, registrationActivationUrl } from "@/lib/registration";
+import { issueRegistrationTokens, registrationActivationUrl } from "@/lib/registration";
 import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 
 export async function POST(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -15,17 +15,18 @@ export async function POST(request: Request, context: { params: Promise<{ classI
        WHERE class_id = ? AND status IN ('pending','reset_required') ORDER BY student_number`,
     ).bind(classId).all<{ id: string; student_number: number; official_name: string; status: string }>();
     const origin = new URL(request.url).origin;
-    const cards = [];
-    for (const student of result.results) {
-      const rawToken = await issueRegistrationToken({ studentId: student.id, teacherId, classId });
-      cards.push({
+    const issued = await issueRegistrationTokens({
+      studentIds: result.results.map((student) => student.id),
+      teacherId,
+      classId,
+    });
+    const cards = result.results.map((student, index) => ({
         id: student.id,
         student_number: student.student_number,
         official_name: student.official_name,
         purpose: "activate",
-        activation_url: registrationActivationUrl(origin, rawToken),
-      });
-    }
+        activation_url: registrationActivationUrl(origin, issued[index].rawToken),
+      }));
     return json({ cards });
   } catch (error) {
     return apiFailure(error);

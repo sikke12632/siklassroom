@@ -820,3 +820,17 @@ test("연속 월 평가 상태와 학생 로컬 초안을 최신 서버 상태�
   assert.match(studentPanel, /이 점수로 확인하고 다음/);
   assert.match(css, /@media \(max-width: 420px\)[\s\S]*student-score-options[\s\S]*repeat\(3/);
 });
+
+test("여러 학생 QR은 한 번의 원자적 D1 배치로 발급한다", async () => {
+  const [registration, bulkQr] = await Promise.all([
+    readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/registration-tokens/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(registration, /export async function issueRegistrationTokens/);
+  assert.match(registration, /const statements = issued\.flatMap/);
+  assert.match(registration, /await db\.batch\(statements\)/);
+  assert.match(registration, /new Set\(input\.studentIds\)\.size/);
+  assert.match(bulkQr, /await issueRegistrationTokens/);
+  assert.doesNotMatch(bulkQr, /for \(const student[\s\S]*issueRegistrationToken/);
+});

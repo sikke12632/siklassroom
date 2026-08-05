@@ -93,19 +93,48 @@ export async function issueRegistrationToken(input: {
   teacherId: string;
   classId: string;
 }) {
+  const [issued] = await issueRegistrationTokens({
+    studentIds: [input.studentId],
+    teacherId: input.teacherId,
+    classId: input.classId,
+  });
+  return issued.rawToken;
+}
+
+export async function issueRegistrationTokens(input: {
+  studentIds: string[];
+  teacherId: string;
+  classId: string;
+}) {
   await ensureSchema();
-  const student = await database().prepare(
-    `SELECT qr_generation, status FROM students WHERE id = ? AND class_id = ?`,
-  ).bind(input.studentId, input.classId).first<{ qr_generation: number; status: string }>();
-  if (!student) throw new ApiError(404, "학생을 찾을 수 없습니다.", "STUDENT_NOT_FOUND");
+  if (!input.studentIds.length) return [];
+  if (new Set(input.studentIds).size !== input.studentIds.length) {
+    throw new ApiError(400, "같은 학생의 QR을 한 번에 두 번 발급할 수 없습니다.", "DUPLICATE_STUDENT_ID");
+  }
+  const db = database();
+  const placeholders = input.studentIds.map(() => "?").join(", ");
+  const result = await db.prepare(
+    `SELECT id, qr_generation FROM students WHERE class_id = ? AND id IN (${placeholders})`,
+  ).bind(input.classId, ...input.studentIds).all<{ id: string; qr_generation: number }>();
+  const students = new Map(result.results.map((student) => [student.id, student]));
+  if (students.size !== input.studentIds.length) {
+    throw new ApiError(404, "학생을 찾을 수 없습니다.", "STUDENT_NOT_FOUND");
+  }
   const now = Date.now();
-  const generation = student.qr_generation + 1;
-  const rawToken = randomToken(32);
-  const tokenHash = await sha256(rawToken);
-  const guardId = crypto.randomUUID();
-  try {
-    await database().batch([
-    database().prepare(
+  const issued = await Promise.all(input.studentIds.map(async (studentId) => {
+    const student = students.get(studentId)!;
+    const rawToken = randomToken(32);
+    return {
+      studentId,
+      previousGeneration: student.qr_generation,
+      generation: student.qr_generation + 1,
+      rawToken,
+      tokenHash: await sha256(rawToken),
+      guardId: crypto.randomUUID(),
+    };
+  }));
+  const statements = issued.flatMap((item) => [
+    db.prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        VALUES (
          CASE WHEN EXISTS (
@@ -117,40 +146,42 @@ export async function issueRegistrationToken(input: {
          ) THEN ? ELSE NULL END,
          'issue_qr', ?
        )`,
-    ).bind(input.studentId, input.classId, student.qr_generation, input.teacherId, guardId, now),
-    database().prepare(
+    ).bind(item.studentId, input.classId, item.previousGeneration, input.teacherId, item.guardId, now),
+    db.prepare(
       `UPDATE registration_tokens SET revoked_at = ? WHERE student_id = ? AND revoked_at IS NULL`,
-    ).bind(now, input.studentId),
-    database().prepare(
+    ).bind(now, item.studentId),
+    db.prepare(
       `UPDATE registration_challenges SET revoked_at = ? WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
-    ).bind(now, input.studentId),
-    database().prepare(
+    ).bind(now, item.studentId),
+    db.prepare(
       `UPDATE student_qr_reset_grants SET revoked_at = ? WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
-    ).bind(now, input.studentId),
-    database().prepare(`DELETE FROM sessions WHERE student_id = ?`).bind(input.studentId),
-    database().prepare(`UPDATE students SET qr_generation = ?, updated_at = ? WHERE id = ? AND qr_generation = ?`).bind(
-      generation, now, input.studentId, student.qr_generation,
+    ).bind(now, item.studentId),
+    db.prepare(`DELETE FROM sessions WHERE student_id = ?`).bind(item.studentId),
+    db.prepare(`UPDATE students SET qr_generation = ?, updated_at = ? WHERE id = ? AND qr_generation = ?`).bind(
+      item.generation, now, item.studentId, item.previousGeneration,
     ),
-    database().prepare(
+    db.prepare(
       `INSERT INTO registration_tokens (id, student_id, token_hash, purpose, generation, expires_at, created_at)
        VALUES (?, ?, ?, 'activate', ?, ?, ?)`,
-    ).bind(crypto.randomUUID(), input.studentId, tokenHash, generation, now + REGISTRATION_QR_LIFETIME_MS, now),
-    database().prepare(
+    ).bind(crypto.randomUUID(), item.studentId, item.tokenHash, item.generation, now + REGISTRATION_QR_LIFETIME_MS, now),
+    db.prepare(
       `INSERT INTO audit_logs (id, teacher_id, class_id, student_id, action, detail, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
-      crypto.randomUUID(), input.teacherId, input.classId, input.studentId,
-      "student_qr_issued", JSON.stringify({ generation, purpose: "identity" }), now,
+      crypto.randomUUID(), input.teacherId, input.classId, item.studentId,
+      "student_qr_issued", JSON.stringify({ generation: item.generation, purpose: "identity" }), now,
     ),
-    database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
-    ]);
+    db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(item.guardId),
+  ]);
+  try {
+    await db.batch(statements);
   } catch (error) {
     if (isOperationGuardFailure(error)) {
       throw new ApiError(409, "학생 또는 학급 상태가 바뀌었어요. 새로고침 후 다시 발급해 주세요.", "QR_ISSUE_STALE");
     }
     throw error;
   }
-  return rawToken;
+  return issued.map(({ studentId, rawToken }) => ({ studentId, rawToken }));
 }
 
 export async function issueStudentQrResetGrant(input: {
