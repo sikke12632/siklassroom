@@ -1134,6 +1134,177 @@ test("unresolved cash requests atomically block class archive and student exclus
     assert.equal(staleCompleteResponse.status, 409, JSON.stringify(staleCompleteBody));
     assert.equal(staleCompleteBody.code, "JOB_SETUP_STALE");
 
+    const manualAssignmentState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         period.revision,
+         (SELECT COUNT(*) FROM student_job_assignments assignment
+          WHERE assignment.period_id = period.id) AS assignment_count,
+         (SELECT COUNT(*) FROM job_assignment_candidates candidate
+          WHERE candidate.period_id = period.id) AS candidate_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = period.class_id
+            AND action = 'job_assignment_manual') AS audit_count,
+         (SELECT COUNT(*) FROM registration_operation_guards
+          WHERE operation LIKE 'job_assignment_manual%') AS guard_count
+       FROM class_job_assignment_periods period
+       WHERE period.class_id = 'class-cash-archive'
+         AND period.assignment_type = 'initial';`,
+    ));
+    const manualAssignmentRequest = {
+      classJobId: "class-cash-archive:custom:atomic-job",
+      studentIds: ["student-cash-archive"],
+      requestId: "manual-assignment-atomic-request",
+    };
+    executeSql(persistPath, `
+      INSERT INTO class_job_assignment_periods (
+        id, class_id, assignment_year, assignment_month, assignment_type,
+        mode, status, calendar_revision, first_job_start_date, first_job_end_date,
+        revision, created_at, updated_at
+      ) VALUES (
+        'period-manual-atomic', 'class-cash-archive', 2098, 1, 'initial',
+        'manual', 'draft', 2, '2098-01-02', '2098-01-04', 0, 1, 1
+      );
+      INSERT INTO job_assignment_candidates (
+        id, period_id, class_job_id, student_id, created_at, updated_at
+      )
+      SELECT 'candidate-manual-atomic', period.id,
+             'class-cash-archive:custom:atomic-job',
+             'student-cash-archive', 1, 1
+      FROM class_job_assignment_periods period
+      WHERE period.class_id = 'class-cash-archive'
+        AND period.assignment_type = 'initial';
+      CREATE TRIGGER test_manual_assignment_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_assignment_manual'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_MANUAL_ASSIGNMENT_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 0,
+      assignment_count: 0,
+      candidate_count: 1,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    const manualAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/manual",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(manualAssignmentRequest),
+      },
+    );
+    const manualAuditFailureBody = await manualAuditFailure.text();
+    assert.equal(manualAuditFailure.status, 500, manualAuditFailureBody);
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 0,
+      assignment_count: 0,
+      candidate_count: 1,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_manual_assignment_audit_insert_failure;");
+
+    const manualSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/manual",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(manualAssignmentRequest),
+      },
+    );
+    const manualSuccessBody = await manualSuccess.json();
+    assert.equal(manualSuccess.status, 201, JSON.stringify(manualSuccessBody));
+    assert.equal(manualSuccessBody.assignment.idempotent, false);
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const manualRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/manual",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(manualAssignmentRequest),
+      },
+    );
+    const manualRetryBody = await manualRetry.json();
+    assert.equal(manualRetry.status, 200, JSON.stringify(manualRetryBody));
+    assert.equal(manualRetryBody.assignment.idempotent, true);
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const reusedManualRequest = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/manual",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...manualAssignmentRequest,
+          studentIds: ["student-cash-archive-peer"],
+        }),
+      },
+    );
+    const reusedManualRequestBody = await reusedManualRequest.json();
+    assert.equal(reusedManualRequest.status, 409, JSON.stringify(reusedManualRequestBody));
+    assert.equal(reusedManualRequestBody.code, "ASSIGNMENT_REQUEST_REUSED");
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    executeSql(persistPath, `
+      INSERT INTO job_assignment_candidates (
+        id, period_id, class_job_id, student_id, created_at, updated_at
+      )
+      SELECT 'candidate-manual-conflict', period.id,
+             'class-cash-archive:custom:atomic-job',
+             'student-cash-archive', 2, 2
+      FROM class_job_assignment_periods period
+      WHERE period.class_id = 'class-cash-archive'
+        AND period.assignment_type = 'initial';
+    `);
+    const conflictingManualRequest = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/manual",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...manualAssignmentRequest,
+          requestId: "manual-assignment-conflict-request",
+        }),
+      },
+    );
+    const conflictingManualRequestBody = await conflictingManualRequest.json();
+    assert.equal(
+      conflictingManualRequest.status,
+      409,
+      JSON.stringify(conflictingManualRequestBody),
+    );
+    assert.equal(conflictingManualRequestBody.code, "ASSIGNMENT_CONFLICT");
+    assert.deepEqual(manualAssignmentState(), [{
+      revision: 1,
+      assignment_count: 1,
+      candidate_count: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

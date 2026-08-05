@@ -3,6 +3,7 @@ import { PUT as saveCalendar } from "../../app/api/classes/[classId]/calendar/ro
 import { POST as addStudents } from "../../app/api/classes/[classId]/students/route";
 import { POST as completeJobSetup } from "../../app/api/classes/[classId]/job-setup/complete/route";
 import { PUT as saveJobSetupDraft } from "../../app/api/classes/[classId]/job-setup/draft/route";
+import { POST as createManualAssignments } from "../../app/api/classes/[classId]/job-assignments/manual/route";
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
@@ -470,6 +471,13 @@ const financeCashLifecycleWorker = {
         && request.method === "POST"
       ) {
         response = await completeJobSetup(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-assignments/manual"
+        && request.method === "POST"
+      ) {
+        response = await createManualAssignments(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (url.pathname === "/classes/class-cash-archive") {

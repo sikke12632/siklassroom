@@ -1,5 +1,5 @@
 import { loadClassCalendar, requireSavedClassCalendar } from "./class-calendar";
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { activeClassJobs, loadJobSetup } from "./job-storage";
 import { cleanDisplayText } from "./identity";
 import { randomCandidate } from "./seoul-time";
@@ -45,6 +45,13 @@ type AssignmentRow = {
   job_name: string;
   student_number: number;
   student_name: string;
+};
+
+type ManualRequestAssignmentRow = {
+  class_job_id: string;
+  student_id: string;
+  assignment_method: string;
+  request_id: string;
 };
 
 function periodKey(firstJobStartDate: string) {
@@ -316,6 +323,34 @@ function requestId(value: unknown) {
   return id;
 }
 
+async function manualRequestAssignments(periodId: string, id: string) {
+  const result = await database().prepare(
+    `SELECT class_job_id, student_id, assignment_method, request_id
+     FROM student_job_assignments
+     WHERE period_id = ?
+       AND request_id IS NOT NULL
+       AND substr(request_id, 1, length(?) + 1) = ? || ':'
+     ORDER BY student_id`,
+  ).bind(periodId, id, id).all<ManualRequestAssignmentRow>();
+  return result.results;
+}
+
+function isExactManualRequest(input: {
+  rows: ManualRequestAssignmentRow[];
+  id: string;
+  classJobId: string;
+  studentIds: string[];
+}) {
+  if (input.rows.length !== input.studentIds.length) return false;
+  const selected = new Set(input.studentIds);
+  return input.rows.every((row) => (
+    row.class_job_id === input.classJobId
+    && row.assignment_method === "manual"
+    && selected.has(row.student_id)
+    && row.request_id === `${input.id}:${row.student_id}`
+  ));
+}
+
 async function existingRequestAssignment(periodId: string, id: string) {
   return database().prepare(
     `SELECT a.id, a.period_id, a.class_job_id, a.student_id, a.assignment_method,
@@ -448,6 +483,7 @@ export async function saveJobCandidates(input: {
 }
 
 export async function createManualAssignments(input: {
+  teacherId: string;
   classId: string;
   classJobId: unknown;
   studentIds: unknown;
@@ -460,16 +496,35 @@ export async function createManualAssignments(input: {
   }
   const students = await eligibleStudents(input.classId, input.studentIds.map(String));
   const id = requestId(input.requestId);
-  const existing = await database().prepare(
-    `SELECT COUNT(*) AS count FROM student_job_assignments
-     WHERE period_id = ? AND request_id LIKE ?`,
-  ).bind(period.id, `${id}:%`).first<{ count: number }>();
-  if (Number(existing?.count ?? 0) === students.length) {
-    return { job, students, assignmentCount: students.length, idempotent: true };
+  if (id.includes(":")) {
+    throw new ApiError(
+      400,
+      "요청 식별값 형식이 올바르지 않습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+      "INVALID_REQUEST_ID",
+    );
+  }
+  const selectedStudentIds = students.map((student) => student.id);
+  const existing = await manualRequestAssignments(period.id, id);
+  if (existing.length) {
+    if (isExactManualRequest({
+      rows: existing,
+      id,
+      classJobId: job.id,
+      studentIds: selectedStudentIds,
+    })) {
+      return { job, students, assignmentCount: students.length, idempotent: true };
+    }
+    throw new ApiError(
+      409,
+      "같은 요청 식별값이 다른 배정에 이미 사용되었습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+      "ASSIGNMENT_REQUEST_REUSED",
+    );
   }
   const now = Date.now();
   const db = database();
-  const selectedJson = JSON.stringify(students.map((student) => student.id));
+  const selectedJson = JSON.stringify(selectedStudentIds);
+  const reservationGuardId = crypto.randomUUID();
+  const completionGuardId = crypto.randomUUID();
   const insert = db.prepare(
     `WITH selected(student_id) AS (
        SELECT CAST(value AS TEXT) FROM json_each(?)
@@ -524,23 +579,127 @@ export async function createManualAssignments(input: {
     input.classId,
   );
   const placeholders = students.map(() => "?").join(", ");
-  const results = await db.batch([
-    insert,
-    db.prepare(
-      `DELETE FROM job_assignment_candidates
-       WHERE period_id = ? AND student_id IN (${placeholders})`,
-    ).bind(period.id, ...students.map((student) => student.id)),
-    db.prepare(
-      `UPDATE class_job_assignment_periods
-       SET revision = revision + 1, updated_at = ? WHERE id = ? AND status = 'draft'`,
-    ).bind(now, period.id),
-  ]);
-  if (Number(results[0].meta.changes) !== students.length) {
-    throw new ApiError(
-      409,
-      "정원이 부족하거나 다른 화면에서 먼저 배정된 학생이 있어요. 아무도 부분 저장하지 않았습니다.",
-      "ASSIGNMENT_CONFLICT",
-    );
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN
+           EXISTS (
+             SELECT 1 FROM class_job_assignment_periods
+             WHERE id = ? AND class_id = ? AND status = 'draft'
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM student_job_assignments
+             WHERE period_id = ? AND request_id IS NOT NULL
+               AND substr(request_id, 1, length(?) + 1) = ? || ':'
+           )
+         THEN ? ELSE NULL END, 'job_assignment_manual_reserve', ?`,
+      ).bind(
+        period.id,
+        input.classId,
+        period.id,
+        id,
+        id,
+        reservationGuardId,
+        now,
+      ),
+      insert,
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN
+           EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)
+           AND (
+             SELECT COUNT(*) FROM student_job_assignments
+             WHERE period_id = ? AND request_id IS NOT NULL
+               AND substr(request_id, 1, length(?) + 1) = ? || ':'
+           ) = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM json_each(?) selected
+             WHERE NOT EXISTS (
+               SELECT 1 FROM student_job_assignments assignment
+               WHERE assignment.period_id = ?
+                 AND assignment.student_id = CAST(selected.value AS TEXT)
+                 AND assignment.class_job_id = ?
+                 AND assignment.assignment_method = 'manual'
+                 AND assignment.request_id = ? || ':' || CAST(selected.value AS TEXT)
+             )
+           )
+         THEN ? ELSE NULL END, 'job_assignment_manual_complete', ?`,
+      ).bind(
+        reservationGuardId,
+        period.id,
+        id,
+        id,
+        students.length,
+        selectedJson,
+        period.id,
+        job.id,
+        id,
+        completionGuardId,
+        now,
+      ),
+      db.prepare(
+        `DELETE FROM job_assignment_candidates
+         WHERE period_id = ? AND student_id IN (${placeholders})`,
+      ).bind(period.id, ...selectedStudentIds),
+      db.prepare(
+        `UPDATE class_job_assignment_periods
+         SET revision = revision + 1, updated_at = ? WHERE id = ? AND status = 'draft'`,
+      ).bind(now, period.id),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'job_assignment_manual', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({
+          classJobId: job.id,
+          studentIds: selectedStudentIds,
+          assignmentCount: students.length,
+          requestId: id,
+          idempotent: false,
+        }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(completionGuardId),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(reservationGuardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      const latest = await manualRequestAssignments(period.id, id);
+      if (isExactManualRequest({
+        rows: latest,
+        id,
+        classJobId: job.id,
+        studentIds: selectedStudentIds,
+      })) {
+        return { job, students, assignmentCount: students.length, idempotent: true };
+      }
+      if (latest.length) {
+        throw new ApiError(
+          409,
+          "같은 요청 식별값이 다른 배정에 이미 사용되었습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+          "ASSIGNMENT_REQUEST_REUSED",
+        );
+      }
+      throw new ApiError(
+        409,
+        "정원이 부족하거나 다른 화면에서 먼저 배정된 학생이 있어 아무 내용도 저장하지 않았습니다.",
+        "ASSIGNMENT_CONFLICT",
+      );
+    }
+    const latest = await manualRequestAssignments(period.id, id);
+    if (isExactManualRequest({
+      rows: latest,
+      id,
+      classJobId: job.id,
+      studentIds: selectedStudentIds,
+    })) {
+      return { job, students, assignmentCount: students.length, idempotent: true };
+    }
+    throw error;
   }
   return { job, students, assignmentCount: students.length, idempotent: false };
 }
