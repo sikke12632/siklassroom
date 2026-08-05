@@ -1439,6 +1439,152 @@ test("unresolved cash requests atomically block class archive and student exclus
       guard_count: 0,
     }]);
 
+    const monthlyOrder = JSON.stringify([
+      {
+        studentId: "student-cash-archive",
+        studentNumber: 1,
+        studentName: "Archive Request Student",
+        previousJobName: "Atomic Job",
+        previousGrade: "A",
+      },
+      {
+        studentId: "student-cash-archive-peer",
+        studentNumber: 2,
+        studentName: "Archive Peer Student",
+        previousJobName: "Atomic Job",
+        previousGrade: "B",
+      },
+    ]);
+    executeSql(persistPath, `
+      UPDATE class_job_assignment_periods
+      SET assignment_year = 2026, assignment_month = 7
+      WHERE id = 'period-manual-atomic';
+      INSERT INTO class_job_month_closures (
+        id, class_id, source_period_id, source_year, source_month, status,
+        closed_by_teacher_id, closed_at, created_at
+      ) VALUES (
+        'closure-monthly-atomic', 'class-cash-archive', 'period-manual-atomic',
+        2026, 7, 'closed', 'teacher-cash-lifecycle', 3, 3
+      );
+      INSERT INTO class_job_month_results (
+        id, closure_id, class_id, student_id, student_number, student_name,
+        class_job_id, job_name, job_grade, created_at
+      ) VALUES
+        ('result-monthly-atomic-1', 'closure-monthly-atomic', 'class-cash-archive',
+         'student-cash-archive', 1, 'Archive Request Student',
+         'class-cash-archive:custom:atomic-job', 'Atomic Job', 'A', 3),
+        ('result-monthly-atomic-2', 'closure-monthly-atomic', 'class-cash-archive',
+         'student-cash-archive-peer', 2, 'Archive Peer Student',
+         'class-cash-archive:custom:atomic-job', 'Atomic Job', 'B', 3);
+      INSERT INTO class_job_choice_sessions (
+        id, class_id, closure_id, target_year, target_month, status, order_mode,
+        order_json, student_count_snapshot, job_setup_revision, revision,
+        created_at, updated_at
+      ) VALUES (
+        'session-monthly-atomic', 'class-cash-archive', 'closure-monthly-atomic',
+        2026, 8, 'draft', 'shuffled', '${monthlyOrder.replaceAll("'", "''")}',
+        2, 2, 0, 3, 3
+      );
+    `);
+    const monthlyCompletionState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT session.status AS session_status, session.revision AS session_revision,
+              session.confirmed_period_id,
+              (SELECT COUNT(*) FROM class_job_assignment_periods period
+               WHERE period.class_id = session.class_id
+                 AND period.assignment_year = 2026 AND period.assignment_month = 8
+                 AND period.assignment_type = 'monthly') AS period_count,
+              (SELECT COUNT(*) FROM student_job_assignments assignment
+               JOIN class_job_assignment_periods period ON period.id = assignment.period_id
+               WHERE period.class_id = session.class_id
+                 AND period.assignment_year = 2026 AND period.assignment_month = 8
+                 AND period.assignment_type = 'monthly') AS assignment_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = session.class_id
+                 AND action = 'monthly_job_choice_confirmed') AS audit_count
+       FROM class_job_choice_sessions session
+       WHERE session.id = 'session-monthly-atomic';`,
+    ));
+    const monthlyCompletionPayload = {
+      expectedRevision: 0,
+      expectedJobSetupRevision: 2,
+      requestId: "monthly-assignment-completion-request",
+      assignments: [
+        {
+          classJobId: "class-cash-archive:custom:atomic-job",
+          studentId: "student-cash-archive",
+        },
+        {
+          classJobId: "class-cash-archive:custom:atomic-job",
+          studentId: "student-cash-archive-peer",
+        },
+      ],
+    };
+    const monthlyStateBefore = monthlyCompletionState();
+    executeSql(persistPath, `
+      CREATE TRIGGER test_monthly_completion_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'monthly_job_choice_confirmed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_MONTHLY_COMPLETION_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const monthlyAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyCompletionPayload),
+      },
+    );
+    const monthlyAuditFailureBody = await monthlyAuditFailure.text();
+    assert.equal(monthlyAuditFailure.status, 500, monthlyAuditFailureBody);
+    assert.deepEqual(monthlyCompletionState(), monthlyStateBefore);
+    executeSql(persistPath, "DROP TRIGGER test_monthly_completion_audit_insert_failure;");
+
+    const monthlySuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyCompletionPayload),
+      },
+    );
+    const monthlySuccessBody = await monthlySuccess.json();
+    assert.equal(monthlySuccess.status, 201, JSON.stringify(monthlySuccessBody));
+    assert.equal(monthlySuccessBody.idempotent, false);
+    const confirmedMonthlyPeriodId = monthlySuccessBody.periodId;
+    assert.deepEqual(monthlyCompletionState(), [{
+      session_status: "confirmed",
+      session_revision: 1,
+      confirmed_period_id: confirmedMonthlyPeriodId,
+      period_count: 1,
+      assignment_count: 2,
+      audit_count: 1,
+    }]);
+
+    const monthlyRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyCompletionPayload),
+      },
+    );
+    const monthlyRetryBody = await monthlyRetry.json();
+    assert.equal(monthlyRetry.status, 200, JSON.stringify(monthlyRetryBody));
+    assert.equal(monthlyRetryBody.idempotent, true);
+    assert.equal(monthlyRetryBody.periodId, confirmedMonthlyPeriodId);
+    assert.deepEqual(monthlyCompletionState(), [{
+      session_status: "confirmed",
+      session_revision: 1,
+      confirmed_period_id: confirmedMonthlyPeriodId,
+      period_count: 1,
+      assignment_count: 2,
+      audit_count: 1,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

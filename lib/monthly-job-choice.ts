@@ -139,6 +139,7 @@ type ConfirmedAssignmentRow = {
   class_job_id: string;
   job_name: string;
   assignment_sequence: number;
+  request_id: string | null;
 };
 
 type GradePreviewItem = {
@@ -333,7 +334,7 @@ async function latestConfirmedChoiceSession(classId: string) {
 async function confirmedAssignments(periodId: string) {
   const result = await database().prepare(
     `SELECT a.student_id, s.student_number, s.official_name AS student_name,
-            a.class_job_id, j.name AS job_name, a.assignment_sequence
+            a.class_job_id, j.name AS job_name, a.assignment_sequence, a.request_id
      FROM student_job_assignments a
      JOIN students s ON s.id = a.student_id
      JOIN class_jobs j ON j.id = a.class_job_id
@@ -1037,6 +1038,41 @@ function parseSubmittedAssignments(
   return parsed;
 }
 
+function confirmedMonthlyRequestState(input: {
+  context: MonthlyContext;
+  assignments: SubmittedAssignment[];
+  requestId: string;
+  expectedRevision: number;
+  expectedJobSetupRevision: number;
+}) {
+  const session = input.context.latestConfirmedSession;
+  if (!session?.confirmed_period_id) return { exact: false, reused: false, session: null };
+  const prefix = `${input.requestId}:`;
+  const requestRows = input.context.confirmedAssignments.filter(
+    (row) => row.request_id?.startsWith(prefix),
+  );
+  if (!requestRows.length) return { exact: false, reused: false, session };
+  const byStudent = new Map(requestRows.map((row) => [row.student_id, row]));
+  const exact = requestRows.length === input.assignments.length
+    && Number(session.revision) === input.expectedRevision + 1
+    && Number(session.job_setup_revision) === input.expectedJobSetupRevision
+    && input.assignments.every((assignment) => {
+      const stored = byStudent.get(assignment.studentId);
+      return stored?.class_job_id === assignment.classJobId
+        && stored.request_id === `${input.requestId}:${assignment.studentId}`;
+    });
+  return { exact, reused: true, session };
+}
+
+function monthlyChoiceWriteConflict(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("NOT NULL constraint failed: class_job_assignment_periods.status")
+    || message.includes("NOT NULL constraint failed: class_job_choice_sessions.status")
+    || message.includes("UNIQUE constraint failed: class_job_assignment_periods")
+    || message.includes("UNIQUE constraint failed: student_job_assignments")
+    || message.includes("UNIQUE constraint failed: class_job_choice_sessions");
+}
+
 export async function completeMonthlyJobChoice(input: {
   classId: string;
   teacherId: string;
@@ -1056,7 +1092,41 @@ export async function completeMonthlyJobChoice(input: {
     "INVALID_REQUEST_ID",
     100,
   );
+  if (requestId.includes(":")) {
+    throw new ApiError(
+      400,
+      "확정 요청 번호 형식이 올바르지 않아요. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+      "INVALID_REQUEST_ID",
+    );
+  }
   const context = await loadContext(input.classId);
+  const assignments = parseSubmittedAssignments(input.assignments, context.students, context.jobs);
+  const confirmedRequest = confirmedMonthlyRequestState({
+    context,
+    assignments,
+    requestId,
+    expectedRevision,
+    expectedJobSetupRevision,
+  });
+  if (confirmedRequest.exact && confirmedRequest.session) {
+    return {
+      periodId: confirmedRequest.session.confirmed_period_id!,
+      sessionId: confirmedRequest.session.id,
+      confirmedAt: Number(confirmedRequest.session.confirmed_at),
+      assignmentCount: assignments.length,
+      targetYear: Number(confirmedRequest.session.target_year),
+      targetMonth: Number(confirmedRequest.session.target_month),
+      idempotent: true,
+      board: serializeBoard(context),
+    };
+  }
+  if (confirmedRequest.reused) {
+    throw new ApiError(
+      409,
+      "같은 요청 번호가 다른 다음 달 배정에 이미 사용되었어요. 최신 결과를 확인해 주세요.",
+      "MONTHLY_CHOICE_REQUEST_REUSED",
+    );
+  }
   const session = requireFreshDraftSession(context);
   if (
     Number(session.revision) !== expectedRevision
@@ -1069,7 +1139,6 @@ export async function completeMonthlyJobChoice(input: {
       "MONTHLY_CHOICE_STALE",
     );
   }
-  const assignments = parseSubmittedAssignments(input.assignments, context.students, context.jobs);
   const orderIndex = new Map(context.order.map((item, index) => [item.studentId, index]));
   assignments.sort(
     (left, right) => (orderIndex.get(left.studentId) ?? 0) - (orderIndex.get(right.studentId) ?? 0),
@@ -1291,15 +1360,57 @@ export async function completeMonthlyJobChoice(input: {
       session.id,
       input.classId,
     ),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       ) VALUES (?, ?, ?, NULL, 'monthly_job_choice_confirmed', ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      input.teacherId,
+      input.classId,
+      JSON.stringify({
+        sessionId: session.id,
+        periodId,
+        targetYear: Number(session.target_year),
+        targetMonth: Number(session.target_month),
+        assignmentCount: assignments.length,
+        requestId,
+        idempotent: false,
+      }),
+      now,
+    ),
   ];
   try {
     await db.batch(statements);
-  } catch {
-    throw new ApiError(
-      409,
-      "확정 직전에 학생·직업·선택 순서가 바뀌었어요. 로컬 선택은 유지했으니 최신 정보를 확인해 주세요.",
-      "MONTHLY_CHOICE_STALE",
-    );
+  } catch (error) {
+    const latestContext = await loadContext(input.classId);
+    const latestRequest = confirmedMonthlyRequestState({
+      context: latestContext,
+      assignments,
+      requestId,
+      expectedRevision,
+      expectedJobSetupRevision,
+    });
+    if (latestRequest.exact && latestRequest.session) {
+      return {
+        periodId: latestRequest.session.confirmed_period_id!,
+        sessionId: latestRequest.session.id,
+        confirmedAt: Number(latestRequest.session.confirmed_at),
+        assignmentCount: assignments.length,
+        targetYear: Number(latestRequest.session.target_year),
+        targetMonth: Number(latestRequest.session.target_month),
+        idempotent: true,
+        board: serializeBoard(latestContext),
+      };
+    }
+    if (monthlyChoiceWriteConflict(error)) {
+      throw new ApiError(
+        409,
+        "확정 직전에 학생·직업·선택 순서가 바뀌었어요. 로컬 선택은 유지했으니 최신 정보를 확인해 주세요.",
+        "MONTHLY_CHOICE_STALE",
+      );
+    }
+    throw error;
   }
   return {
     periodId,
@@ -1308,6 +1419,7 @@ export async function completeMonthlyJobChoice(input: {
     assignmentCount: assignments.length,
     targetYear: Number(session.target_year),
     targetMonth: Number(session.target_month),
+    idempotent: false,
     board: serializeBoard(await loadContext(input.classId)),
   };
 }

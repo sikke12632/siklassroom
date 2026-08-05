@@ -1,6 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit } from "@/lib/database";
 import { completeMonthlyJobChoice } from "@/lib/monthly-job-choice";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
@@ -23,19 +22,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       requestId: body.requestId,
       assignments: body.assignments,
     });
-    await audit({
-      action: "monthly_job_choice_confirmed",
-      teacherId,
-      classId,
-      detail: {
-        sessionId: result.sessionId,
-        periodId: result.periodId,
-        targetYear: result.targetYear,
-        targetMonth: result.targetMonth,
-        assignmentCount: result.assignmentCount,
-      },
-    });
-    return json({ completed: true, ...result }, 201);
+    return json({ completed: true, ...result }, result.idempotent ? 200 : 201);
   } catch (error) {
     return apiFailure(error);
   }
