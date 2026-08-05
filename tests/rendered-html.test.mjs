@@ -121,6 +121,13 @@ test("failed initial assignment confirmation preserves the local draft", async (
   assert.doesNotMatch(failure, /await load\(\)/);
 });
 
+test("QR printing waits until every card image is ready", async () => {
+  const printCards = await readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8");
+  assert.match(printCards, /cards\.every\(\(card\) => Boolean\(images\[card\.id\]\)\)/);
+  assert.match(printCards, /disabled=\{!printReady\}/);
+  assert.match(printCards, /printReady \? "A4 인쇄" : "QR 준비 중…"/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

@@ -14,6 +14,7 @@ export type RegistrationCard = {
 
 export function PrintCards({ cards, classLabel, onClose }: { cards: RegistrationCard[]; classLabel: string; onClose: () => void }) {
   const [images, setImages] = useState<Record<string, string>>({});
+  const printReady = cards.length > 0 && cards.every((card) => Boolean(images[card.id]));
 
   useEffect(() => {
     document.body.classList.add("qr-printing");
@@ -39,7 +40,9 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
         <div><strong>QR 카드 인쇄 미리보기</strong><span>{cards.length}장 · 같은 카드는 계속 로그인에 쓰고, 분실했을 때만 새로 발급하세요.</span></div>
         <div className="button-row">
           <button className="button button-light" onClick={onClose}>닫기</button>
-          <button className="button button-primary" onClick={() => window.print()}>A4 인쇄</button>
+          <button className="button button-primary" disabled={!printReady} onClick={() => window.print()}>
+            {printReady ? "A4 인쇄" : "QR 준비 중…"}
+          </button>
         </div>
       </div>
       <main className="print-sheet">
