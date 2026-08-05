@@ -1,5 +1,5 @@
 import { getSession, prepareTeacherSessionRotation } from "./auth";
-import { audit, database, ensureSchema, isOperationGuardFailure } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { sendTeacherEmailVerification } from "./email";
 import { ApiError } from "./responses";
@@ -49,6 +49,10 @@ export async function issueEmailVerification(input: {
       `INSERT INTO teacher_email_verifications
        (id, teacher_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
     ).bind(crypto.randomUUID(), input.teacherId, tokenHash, now + EMAIL_TOKEN_MS, now),
+    database().prepare(
+      `INSERT INTO audit_logs (id, teacher_id, action, detail, created_at)
+       VALUES (?, ?, 'teacher_email_verification_requested', NULL, ?)`,
+    ).bind(crypto.randomUUID(), input.teacherId, now),
   ]);
 
   const url = new URL("/teacher", input.request.url);
@@ -59,7 +63,6 @@ export async function issueEmailVerification(input: {
   } catch {
     sent = false;
   }
-  await audit({ action: "teacher_email_verification_requested", teacherId: input.teacherId });
   return {
     sent,
     retryAfterSeconds: 60,

@@ -19,6 +19,7 @@ import { POST as submitStudentJobEvaluation } from "../../app/api/student/job-ev
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
+import { issueEmailVerification } from "../../lib/teacher-verification";
 
 type TestEnvironment = {
   DB: D1Database;
@@ -455,7 +456,13 @@ const financeCashLifecycleWorker = {
 
     try {
       let response: Response;
-      if (url.pathname === "/classes" && request.method === "POST") {
+      if (url.pathname === "/test/teacher-email-verification" && request.method === "POST") {
+        response = Response.json(await issueEmailVerification({
+          teacherId: "teacher-cash-lifecycle",
+          email: "teacher-cash-lifecycle@test.local",
+          request,
+        }));
+      } else if (url.pathname === "/classes" && request.method === "POST") {
         response = await createClass(request);
       } else if (
         url.pathname === "/classes/class-cash-archive/students"

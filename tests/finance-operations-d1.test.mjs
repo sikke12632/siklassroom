@@ -783,6 +783,43 @@ test("unresolved cash requests atomically block class archive and student exclus
       },
     });
 
+    const emailVerificationState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM teacher_email_verifications
+          WHERE teacher_id = 'teacher-cash-lifecycle') AS token_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE teacher_id = 'teacher-cash-lifecycle'
+            AND action = 'teacher_email_verification_requested') AS audit_count;`,
+    ));
+    executeSql(persistPath, `
+      CREATE TRIGGER test_email_verification_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'teacher_email_verification_requested'
+        AND NEW.teacher_id = 'teacher-cash-lifecycle'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_EMAIL_VERIFICATION_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const emailVerificationAuditFailure = await worker.fetch(
+      "http://localhost/test/teacher-email-verification",
+      { method: "POST" },
+    );
+    const emailVerificationAuditFailureBody = await emailVerificationAuditFailure.text();
+    assert.equal(emailVerificationAuditFailure.status, 500, emailVerificationAuditFailureBody);
+    assert.deepEqual(emailVerificationState(), [{ token_count: 0, audit_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_email_verification_audit_insert_failure;");
+
+    const emailVerificationSuccess = await worker.fetch(
+      "http://localhost/test/teacher-email-verification",
+      { method: "POST" },
+    );
+    const emailVerificationSuccessBody = await emailVerificationSuccess.json();
+    assert.equal(emailVerificationSuccess.status, 200, JSON.stringify(emailVerificationSuccessBody));
+    assert.equal(emailVerificationSuccessBody.sent, false);
+    assert.match(emailVerificationSuccessBody.developmentUrl, /verifyEmailToken=/);
+    assert.deepEqual(emailVerificationState(), [{ token_count: 1, audit_count: 1 }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_create_audit_insert_failure
       BEFORE INSERT ON audit_logs
