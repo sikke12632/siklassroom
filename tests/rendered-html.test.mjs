@@ -281,6 +281,19 @@ test("관리자 공지 변경은 동시 수정과 감사 누락을 막는다", a
   assert.doesNotMatch(route, /auditSystemAdmin\(/);
 });
 
+test("관리자 초대코드 발급과 폐기는 감사 기록과 함께 저장한다", async () => {
+  const [route, verification] = await Promise.all([
+    readFile(new URL("../app/api/admin/invite-codes/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/teacher-verification.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(verification, /export async function prepareInviteCode/);
+  assert.match(route, /prepared\.statement/);
+  assert.match(route, /admin_invite_code_revoke/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /systemAdminAuditStatement/);
+  assert.doesNotMatch(route, /auditSystemAdmin\(/);
+});
+
 test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
   const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),

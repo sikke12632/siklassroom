@@ -186,23 +186,34 @@ export async function redeemInviteCode(teacherId: string, value: unknown, reques
   return { cookie: rotation.cookie };
 }
 
-export async function createInviteCode(input: { expiresAt: number; issuedBy?: string; memo?: string | null }) {
+export async function prepareInviteCode(input: { expiresAt: number; issuedBy?: string; memo?: string | null }) {
   const now = Date.now();
   if (!Number.isFinite(input.expiresAt) || input.expiresAt <= now + 60_000 || input.expiresAt > now + 365 * 24 * 60 * 60 * 1000) {
     throw new ApiError(400, "초대코드 만료일을 다시 확인해 주세요.", "INVALID_INVITE_EXPIRY");
   }
   const rawCode = generateInviteCode();
-  await database().prepare(
-    `INSERT INTO teacher_invite_codes
-     (id, code_hash, status, issued_by, expires_at, created_at, memo)
-     VALUES (?, ?, 'active', ?, ?, ?, ?)`,
-  ).bind(
-    crypto.randomUUID(),
-    await sha256(normalizeInviteCode(rawCode)),
-    input.issuedBy ?? "system-admin",
-    input.expiresAt,
-    now,
-    input.memo ?? null,
-  ).run();
-  return rawCode;
+  const id = crypto.randomUUID();
+  return {
+    id,
+    code: rawCode,
+    createdAt: now,
+    statement: database().prepare(
+      `INSERT INTO teacher_invite_codes
+       (id, code_hash, status, issued_by, expires_at, created_at, memo)
+       VALUES (?, ?, 'active', ?, ?, ?, ?)`,
+    ).bind(
+      id,
+      await sha256(normalizeInviteCode(rawCode)),
+      input.issuedBy ?? "system-admin",
+      input.expiresAt,
+      now,
+      input.memo ?? null,
+    ),
+  };
+}
+
+export async function createInviteCode(input: { expiresAt: number; issuedBy?: string; memo?: string | null }) {
+  const prepared = await prepareInviteCode(input);
+  await prepared.statement.run();
+  return prepared.code;
 }
