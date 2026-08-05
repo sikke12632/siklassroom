@@ -853,6 +853,126 @@ test("unresolved cash requests atomically block class archive and student exclus
     )), [{ student_count: 0, audit_count: 0 }]);
     executeSql(persistPath, "DROP TRIGGER test_roster_create_audit_insert_failure;");
 
+    const initialCalendarPayload = {
+      expectedRevision: 0,
+      schoolYear: 2098,
+      classStartDate: "2098-01-01",
+      firstJobStartDate: "2098-01-02",
+      firstJobEndDate: "2098-01-03",
+      days: [{ date: "2098-01-01", dayType: "class", memo: "Initial calendar" }],
+    };
+    const initialCalendarResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/calendar",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(initialCalendarPayload),
+      },
+    );
+    const initialCalendarBody = await initialCalendarResponse.json();
+    assert.equal(initialCalendarResponse.status, 200, JSON.stringify(initialCalendarBody));
+    assert.equal(initialCalendarBody.calendar.revision, 1);
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_calendar_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'class_calendar_saved'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_CALENDAR_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const calendarAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/calendar",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...initialCalendarPayload,
+          expectedRevision: 1,
+          schoolYear: 2097,
+          firstJobEndDate: "2098-01-05",
+          days: [{ date: "2098-01-01", dayType: "off", memo: "Must roll back" }],
+        }),
+      },
+    );
+    const calendarAuditFailureBody = await calendarAuditFailure.text();
+    assert.equal(calendarAuditFailure.status, 500, calendarAuditFailureBody);
+    executeSql(persistPath, "DROP TRIGGER test_calendar_audit_insert_failure;");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT calendar.school_year, calendar.first_job_end_date,
+              calendar.revision, day.day_type, day.memo,
+              classroom.school_year AS class_school_year,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE action = 'class_calendar_saved'
+                 AND class_id = calendar.class_id) AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'class_calendar_save') AS guard_count
+       FROM class_calendars calendar
+       JOIN class_calendar_days day ON day.class_id = calendar.class_id
+        AND day.calendar_date = '2098-01-01'
+       JOIN classes classroom ON classroom.id = calendar.class_id
+       WHERE calendar.class_id = 'class-cash-archive';`,
+    )), [{
+      school_year: 2098,
+      first_job_end_date: "2098-01-03",
+      revision: 1,
+      day_type: "class",
+      memo: "Initial calendar",
+      class_school_year: 2098,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const staleCalendarResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/calendar",
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-calendar-after-read": "1",
+        },
+        body: JSON.stringify({
+          ...initialCalendarPayload,
+          expectedRevision: 1,
+          schoolYear: 2096,
+          firstJobEndDate: "2098-01-06",
+          days: [{ date: "2098-01-01", dayType: "off", memo: "Stale calendar" }],
+        }),
+      },
+    );
+    const staleCalendarBody = await staleCalendarResponse.json();
+    assert.equal(staleCalendarResponse.headers.get("x-test-injection-matched"), "1");
+    assert.equal(staleCalendarResponse.status, 409, JSON.stringify(staleCalendarBody));
+    assert.equal(staleCalendarBody.code, "CALENDAR_STALE");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT calendar.school_year, calendar.first_job_end_date,
+              calendar.revision, day.day_type, day.memo,
+              classroom.school_year AS class_school_year,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE action = 'class_calendar_saved'
+                 AND class_id = calendar.class_id) AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'class_calendar_save') AS guard_count
+       FROM class_calendars calendar
+       JOIN class_calendar_days day ON day.class_id = calendar.class_id
+        AND day.calendar_date = '2098-01-01'
+       JOIN classes classroom ON classroom.id = calendar.class_id
+       WHERE calendar.class_id = 'class-cash-archive';`,
+    )), [{
+      school_year: 2098,
+      first_job_end_date: "2098-01-04",
+      revision: 2,
+      day_type: "class",
+      memo: "Initial calendar",
+      class_school_year: 2098,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

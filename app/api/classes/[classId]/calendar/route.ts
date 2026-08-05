@@ -1,7 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
 import { loadClassCalendar, saveClassCalendar } from "@/lib/class-calendar";
-import { audit } from "@/lib/database";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
 export async function GET(request: Request, context: { params: Promise<{ classId: string }> }) {
@@ -32,23 +31,13 @@ export async function PUT(request: Request, context: { params: Promise<{ classId
     }>(request);
     const calendar = await saveClassCalendar({
       classId,
+      teacherId,
       expectedRevision: body.expectedRevision,
       schoolYear: body.schoolYear,
       classStartDate: body.classStartDate,
       firstJobStartDate: body.firstJobStartDate,
       firstJobEndDate: body.firstJobEndDate,
       days: body.days,
-    });
-    await audit({
-      action: "class_calendar_saved",
-      teacherId,
-      classId,
-      detail: {
-        revision: calendar.revision,
-        classStartDate: calendar.classStartDate,
-        firstJobStartDate: calendar.firstJobStartDate,
-        firstJobEndDate: calendar.firstJobEndDate,
-      },
     });
     return json({ calendar });
   } catch (error) {

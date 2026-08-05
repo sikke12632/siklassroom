@@ -1,4 +1,5 @@
 import { PATCH as patchClass } from "../../app/api/classes/[classId]/route";
+import { PUT as saveCalendar } from "../../app/api/classes/[classId]/calendar/route";
 import { POST as addStudents } from "../../app/api/classes/[classId]/students/route";
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
@@ -39,6 +40,7 @@ let studentFieldAfterReadHook: {
   field: "number" | "name";
   matched: boolean;
 } | null = null;
+let calendarAfterReadHook: { matched: boolean } | null = null;
 
 function isUnresolvedCashRequestCount(query: string) {
   return query.includes("finance_cash_requests") && query.includes("COUNT");
@@ -51,6 +53,20 @@ function isOwnedClassRead(query: string) {
 function isOwnedStudentRead(query: string) {
   return query.includes("FROM students s JOIN classes c ON c.id = s.class_id")
     && query.includes("WHERE s.id = ? AND c.teacher_id = ?");
+}
+
+function isCalendarRead(query: string) {
+  return query.includes("FROM class_calendars WHERE class_id = ?");
+}
+
+async function updateCalendarAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  await rawDatabase.prepare(
+    `UPDATE class_calendars
+     SET revision = revision + 1, first_job_end_date = '2098-01-04',
+         updated_at = updated_at + 1
+     WHERE class_id = 'class-cash-archive'`,
+  ).run();
 }
 
 async function archiveClassAfterRead() {
@@ -247,6 +263,15 @@ function wrapPreparedStatement(
             studentFieldHook.matched = true;
             await updateStudentFieldAfterRead(studentFieldHook.field);
           }
+          const calendarHook = calendarAfterReadHook;
+          if (
+            calendarHook
+            && !calendarHook.matched
+            && isCalendarRead(query)
+          ) {
+            calendarHook.matched = true;
+            await updateCalendarAfterRead();
+          }
           const hook = injectionHook;
           if (
             hook
@@ -347,6 +372,7 @@ const financeCashLifecycleWorker = {
     const studentFieldAfterRead = request.headers.get(
       "x-test-student-field-after-read",
     );
+    const calendarAfterRead = request.headers.get("x-test-calendar-after-read");
     if (
       requestedScope !== null
       && requestedScope !== "class"
@@ -373,6 +399,9 @@ const financeCashLifecycleWorker = {
     ) {
       return Response.json({ error: "Unknown student field race hook." }, { status: 400 });
     }
+    if (calendarAfterRead !== null && calendarAfterRead !== "1") {
+      return Response.json({ error: "Unknown calendar race hook." }, { status: 400 });
+    }
     if (
       injectionHook
       || archiveAfterClassReadHook
@@ -380,6 +409,7 @@ const financeCashLifecycleWorker = {
       || excludeAfterStudentReadHook
       || activateAfterStudentReadHook
       || studentFieldAfterReadHook
+      || calendarAfterReadHook
     ) {
       return Response.json(
         { error: "A lifecycle injection hook is already active." },
@@ -404,6 +434,9 @@ const financeCashLifecycleWorker = {
     if (studentFieldAfterRead === "number" || studentFieldAfterRead === "name") {
       studentFieldAfterReadHook = { field: studentFieldAfterRead, matched: false };
     }
+    if (calendarAfterRead === "1") {
+      calendarAfterReadHook = { matched: false };
+    }
 
     try {
       let response: Response;
@@ -414,6 +447,13 @@ const financeCashLifecycleWorker = {
         && request.method === "POST"
       ) {
         response = await addStudents(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/calendar"
+        && request.method === "PUT"
+      ) {
+        response = await saveCalendar(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (url.pathname === "/classes/class-cash-archive") {
@@ -434,7 +474,8 @@ const financeCashLifecycleWorker = {
           || (activateAfterClassReadHook?.matched ?? false)
           || (excludeAfterStudentReadHook?.matched ?? false)
           || (activateAfterStudentReadHook?.matched ?? false)
-          || (studentFieldAfterReadHook?.matched ?? false),
+          || (studentFieldAfterReadHook?.matched ?? false)
+          || (calendarAfterReadHook?.matched ?? false),
       );
     } finally {
       injectionHook = null;
@@ -443,6 +484,7 @@ const financeCashLifecycleWorker = {
       excludeAfterStudentReadHook = null;
       activateAfterStudentReadHook = null;
       studentFieldAfterReadHook = null;
+      calendarAfterReadHook = null;
     }
   },
 };

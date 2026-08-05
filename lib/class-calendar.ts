@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { cleanDisplayText, integerInRange } from "./identity";
 import { ApiError } from "./responses";
 import { SEOUL_TIME_ZONE, seoulServerTime } from "./seoul-time";
@@ -148,6 +148,7 @@ export async function requireSavedClassCalendar(classId: string) {
 
 export async function saveClassCalendar(input: {
   classId: string;
+  teacherId: string;
   expectedRevision: unknown;
   schoolYear: unknown;
   classStartDate: unknown;
@@ -195,6 +196,7 @@ export async function saveClassCalendar(input: {
   }
   const now = Date.now();
   const nextRevision = expectedRevision + 1;
+  const guardId = crypto.randomUUID();
   const db = database();
   const calendarStatement = current
     ? db.prepare(
@@ -215,20 +217,62 @@ export async function saveClassCalendar(input: {
       input.classId, schoolYear, SEOUL_TIME_ZONE, classStartDate,
       firstJobStartDate, firstJobEndDate, now, now,
     );
-  await db.batch([
-    calendarStatement,
-    db.prepare(
-      `UPDATE classes SET school_year = ?, time_zone = ?, setup_stage =
-         CASE WHEN setup_stage IN ('roster', 'jobs') THEN 'calendar' ELSE setup_stage END,
-         updated_at = ? WHERE id = ?`,
-    ).bind(schoolYear, SEOUL_TIME_ZONE, now, input.classId),
-    ...days.map((day) => db.prepare(
-      `INSERT INTO class_calendar_days (
-         id, class_id, calendar_date, day_type, memo, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(class_id, calendar_date) DO UPDATE SET
-         day_type = excluded.day_type, memo = excluded.memo, updated_at = excluded.updated_at`,
-    ).bind(crypto.randomUUID(), input.classId, day.date, day.dayType, day.memo, now, now)),
-  ]);
+  const currentRevisionGuard = current
+    ? db.prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN EXISTS (
+         SELECT 1 FROM class_calendars WHERE class_id = ? AND revision = ?
+       ) THEN ? ELSE NULL END, 'class_calendar_save', ?`,
+    ).bind(input.classId, expectedRevision, guardId, now)
+    : db.prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN NOT EXISTS (
+         SELECT 1 FROM class_calendars WHERE class_id = ?
+       ) THEN ? ELSE NULL END, 'class_calendar_save', ?`,
+    ).bind(input.classId, guardId, now);
+  try {
+    await db.batch([
+      currentRevisionGuard,
+      calendarStatement,
+      db.prepare(
+        `UPDATE classes SET school_year = ?, time_zone = ?, setup_stage =
+           CASE WHEN setup_stage IN ('roster', 'jobs') THEN 'calendar' ELSE setup_stage END,
+           updated_at = ? WHERE id = ?`,
+      ).bind(schoolYear, SEOUL_TIME_ZONE, now, input.classId),
+      ...days.map((day) => db.prepare(
+        `INSERT INTO class_calendar_days (
+           id, class_id, calendar_date, day_type, memo, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(class_id, calendar_date) DO UPDATE SET
+           day_type = excluded.day_type, memo = excluded.memo, updated_at = excluded.updated_at`,
+      ).bind(crypto.randomUUID(), input.classId, day.date, day.dayType, day.memo, now, now)),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'class_calendar_saved', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({
+          revision: nextRevision,
+          classStartDate,
+          firstJobStartDate,
+          firstJobEndDate,
+        }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "다른 화면에서 달력을 먼저 저장했어요. 최신 달력을 불러온 뒤 다시 저장해 주세요.",
+        "CALENDAR_STALE",
+      );
+    }
+    throw error;
+  }
   return loadClassCalendar(input.classId, { monthValue: days[0].date.slice(0, 7), epochMs: now });
 }

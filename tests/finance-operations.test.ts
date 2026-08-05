@@ -581,6 +581,31 @@ test("new classes and roster entries commit their audit record atomically", asyn
   assert.match(d1Test, /finance_accounts/);
 });
 
+test("calendar saves reject concurrent revisions and commit audits atomically", async () => {
+  const [calendarService, calendarRoute, d1Test] = await Promise.all([
+    readFile(new URL("../lib/class-calendar.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/classes/[classId]/calendar/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../tests/finance-operations-d1.test.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(calendarService, /registration_operation_guards/);
+  assert.match(calendarService, /class_calendar_save/);
+  assert.match(calendarService, /isOperationGuardFailure/);
+  assert.match(calendarService, /CALENDAR_STALE/);
+  assert.match(
+    calendarService,
+    /currentRevisionGuard[\s\S]*calendarStatement[\s\S]*INSERT INTO audit_logs[\s\S]*'class_calendar_saved'[\s\S]*DELETE FROM registration_operation_guards/,
+  );
+  assert.match(calendarRoute, /teacherId,[\s\S]*saveClassCalendar/);
+  assert.doesNotMatch(calendarRoute, /await audit\(/);
+  assert.match(d1Test, /TEST_CALENDAR_AUDIT_INSERT_FAILURE/);
+  assert.match(d1Test, /x-test-calendar-after-read/);
+  assert.match(d1Test, /CALENDAR_STALE/);
+});
+
 test("stock news publication and closure remain append-only audit events", async () => {
   const [schema, migration, runtime, service, audit] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
