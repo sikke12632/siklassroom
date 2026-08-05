@@ -30,7 +30,8 @@ const stockTickAuditConfigPath = "tests/fixtures/wrangler.stock-tick-audit.jsonc
 function runWrangler(args, { expectSuccess = true } = {}) {
   let result;
   let output = "";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     result = spawnSync(process.execPath, [wranglerPath, ...args], {
       cwd: projectRoot,
       encoding: "utf8",
@@ -42,6 +43,7 @@ function runWrangler(args, { expectSuccess = true } = {}) {
       result.status === 0
       || (!output.includes("bad port") && !output.includes("fetch failed"))
     ) break;
+    Atomics.wait(retrySignal, 0, 0, 250 * (attempt + 1));
   }
   assert.ok(result, "Wrangler did not start.");
   if (expectSuccess) {
@@ -78,6 +80,15 @@ function lastResults(execution) {
   const last = execution.data.at(-1);
   assert.equal(last?.success, true);
   return last.results;
+}
+
+function closeWorkerConnectionAfterEachFetch(worker) {
+  const workerFetch = worker.fetch.bind(worker);
+  worker.fetch = (input, init = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set("connection", "close");
+    return workerFetch(input, { ...init, headers });
+  };
 }
 
 function fundWallet(persistPath, {
@@ -1382,6 +1393,7 @@ test("teacher liquidation keeps the confirmed quote and retries only once in the
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
     const requestBody = {
       studentId: "student-trader",
       reason: "Account recovery liquidation",
@@ -1687,6 +1699,7 @@ test("position value limits protect teacher prices, real buys, and idempotent ca
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
     const teacherCookie = `job_classroom_session=${rawTeacherToken}`;
     const studentCookie = `job_classroom_session=${rawStudentToken}`;
 
@@ -2314,6 +2327,7 @@ test("overlapping automatic stock runs apply one due tick only once", {
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
 
     const response = await worker.fetch("http://test.local/run", {
       method: "POST",
@@ -2525,6 +2539,7 @@ test("automatic stock tick keys survive an interval change at the same bucket", 
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
     const runPlainTick = async (now) => {
       const response = await worker.fetch("http://test.local/run", {
         method: "POST",
@@ -2827,6 +2842,7 @@ test("failed automatic stock ticks back off without starving healthy classes", {
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
     const runPlainTick = async (now, limit = 2) => {
       let response = null;
       let lastError = null;
@@ -3220,6 +3236,7 @@ test("failed automatic stock ticks back off without starving healthy classes", {
         },
       },
     );
+    closeWorkerConnectionAfterEachFetch(worker);
 
     let auditResponse;
     try {
