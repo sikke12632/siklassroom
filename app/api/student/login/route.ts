@@ -1,6 +1,6 @@
 import { prepareSession } from "@/lib/auth";
 import { database, ensureSchema, isOperationGuardFailure } from "@/lib/database";
-import { verifyPassword } from "@/lib/crypto";
+import { verifyPasswordOrDummy } from "@/lib/crypto";
 import { integerInRange, normalizeSchool } from "@/lib/identity";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
@@ -44,7 +44,8 @@ export async function POST(request: Request) {
       qr_generation: number;
     }>();
     const student = studentRows.results.length === 1 ? studentRows.results[0] : null;
-    if (!student || student.status !== "active" || !(await verifyPassword(password, student.password_hash))) {
+    const passwordMatches = await verifyPasswordOrDummy(password, student?.password_hash);
+    if (!student || student.status !== "active" || !passwordMatches) {
       throw new ApiError(401, "입력한 정보를 다시 확인해 주세요.", "LOGIN_FAILED");
     }
     const session = await prepareSession({ actorType: "student", studentId: student.id }, request);

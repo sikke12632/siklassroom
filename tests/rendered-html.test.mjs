@@ -81,10 +81,11 @@ test("관리자 로그인과 로그아웃은 세션과 감사 기록을 함께 �
 });
 
 test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP 전체 한도를 둔다", async () => {
-  const [rateLimit, cryptoSource, teacherLogin, adminLogin, signup, passwordRequest] = await Promise.all([
+  const [rateLimit, cryptoSource, teacherLogin, studentLogin, adminLogin, signup, passwordRequest] = await Promise.all([
     readFile(new URL("../lib/rate-limit.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/crypto.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/login/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/student/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/admin/auth/login/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/signup/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/teacher/password/request/route.ts", import.meta.url), "utf8"),
@@ -95,6 +96,7 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(cryptoSource, /verifyPasswordOrDummy/);
   assert.match(cryptoSource, /DUMMY_PASSWORD_HASH/);
   assert.match(teacherLogin, /verifyPasswordOrDummy\(password, teacher\?\.password_hash\)/);
+  assert.match(studentLogin, /verifyPasswordOrDummy\(password, student\?\.password_hash\)/);
   assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
   assert.match(adminLogin, /consumeRateLimit\(ipKey/);
   assert.match(signup, /teacher-signup-ip/);
