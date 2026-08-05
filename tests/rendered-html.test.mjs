@@ -407,6 +407,19 @@ test("동시에 같은 학급을 만드는 요청은 내부 오류 대신 중복
   assert.match(route, /DELETE FROM registration_operation_guards/);
 });
 
+test("학생 일괄 등록은 보관 학급과 동시 번호 중복을 원자적으로 막는다", async () => {
+  const [route, authorization] = await Promise.all([
+    readFile(new URL("../app/api/classes/[classId]/students/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/authorization.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(authorization, /export async function ownedActiveClass/);
+  assert.match(route, /ownedActiveClass/);
+  assert.match(route, /'students_bulk_create'/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /"STUDENT_NUMBER_EXISTS"/);
+  assert.match(route, /"CLASS_ARCHIVED"/);
+});
+
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
   const [portal, printCards, styles] = await Promise.all([
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
