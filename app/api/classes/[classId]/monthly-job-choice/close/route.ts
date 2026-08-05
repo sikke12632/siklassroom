@@ -1,6 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit } from "@/lib/database";
 import { closeMonthlyJobSource } from "@/lib/monthly-job-choice";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
@@ -16,16 +15,6 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       classId,
       teacherId,
       expectedSourcePeriodId: body.expectedSourcePeriodId,
-    });
-    await audit({
-      action: "monthly_job_source_closed",
-      teacherId,
-      classId,
-      detail: {
-        closureId: result.closureId,
-        sourcePeriodId: body.expectedSourcePeriodId,
-        idempotent: result.idempotent,
-      },
     });
     return json(result, result.idempotent ? 200 : 201);
   } catch (error) {

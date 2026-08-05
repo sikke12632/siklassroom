@@ -1983,6 +1983,84 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    const monthlyClosureState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM class_job_month_closures
+          WHERE class_id = 'class-cash-archive'
+            AND source_period_id = '${confirmedMonthlyPeriodId}') AS closure_count,
+         (SELECT COUNT(*) FROM class_job_month_results result
+          JOIN class_job_month_closures closure ON closure.id = result.closure_id
+          WHERE closure.class_id = 'class-cash-archive'
+            AND closure.source_period_id = '${confirmedMonthlyPeriodId}') AS result_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = 'class-cash-archive'
+            AND action = 'monthly_job_source_closed') AS audit_count;`,
+    ));
+    const monthlyClosurePayload = {
+      expectedSourcePeriodId: confirmedMonthlyPeriodId,
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_monthly_closure_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'monthly_job_source_closed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_MONTHLY_CLOSURE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const monthlyClosureAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyClosurePayload),
+      },
+    );
+    const monthlyClosureAuditFailureBody = await monthlyClosureAuditFailure.text();
+    assert.equal(monthlyClosureAuditFailure.status, 500, monthlyClosureAuditFailureBody);
+    assert.deepEqual(monthlyClosureState(), [{
+      closure_count: 0,
+      result_count: 0,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_monthly_closure_audit_insert_failure;");
+
+    const monthlyClosureSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyClosurePayload),
+      },
+    );
+    const monthlyClosureSuccessBody = await monthlyClosureSuccess.json();
+    assert.equal(monthlyClosureSuccess.status, 201, JSON.stringify(monthlyClosureSuccessBody));
+    assert.equal(monthlyClosureSuccessBody.idempotent, false);
+    assert.deepEqual(monthlyClosureState(), [{
+      closure_count: 1,
+      result_count: 2,
+      audit_count: 1,
+    }]);
+
+    const monthlyClosureRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyClosurePayload),
+      },
+    );
+    const monthlyClosureRetryBody = await monthlyClosureRetry.json();
+    assert.equal(monthlyClosureRetry.status, 200, JSON.stringify(monthlyClosureRetryBody));
+    assert.equal(monthlyClosureRetryBody.idempotent, true);
+    assert.equal(monthlyClosureRetryBody.closureId, monthlyClosureSuccessBody.closureId);
+    assert.deepEqual(monthlyClosureState(), [{
+      closure_count: 1,
+      result_count: 2,
+      audit_count: 1,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

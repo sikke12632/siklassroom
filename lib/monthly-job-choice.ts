@@ -746,15 +746,39 @@ export async function closeMonthlyJobSource(input: {
       closureId,
       closureId,
     ),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       )
+       SELECT ?, ?, ?, NULL, 'monthly_job_source_closed', ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_month_closures
+         WHERE id = ? AND class_id = ? AND source_period_id = ? AND status = 'closed'
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      input.teacherId,
+      input.classId,
+      JSON.stringify({
+        closureId,
+        sourcePeriodId: expectedSourcePeriodId,
+        idempotent: false,
+      }),
+      now,
+      closureId,
+      input.classId,
+      expectedSourcePeriodId,
+    ),
   ];
   try {
     await db.batch(statements);
-  } catch {
+  } catch (error) {
     const raced = await closureForSource(expectedSourcePeriodId);
     if (raced) {
       const nextContext = await loadContext(input.classId);
       return { idempotent: true, closureId: raced.id, board: serializeBoard(nextContext) };
     }
+    if (!(error instanceof ApiError)) throw error;
     throw new ApiError(
       409,
       "월마감 직전에 학생이나 지난달 배정이 바뀌었어요. 최신 화면을 다시 확인해 주세요.",
