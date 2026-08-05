@@ -399,6 +399,14 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(completeApi, /assignments/);
 });
 
+test("동시에 같은 학급을 만드는 요청은 내부 오류 대신 중복으로 거절한다", async () => {
+  const route = await readFile(new URL("../app/api/classes/route.ts", import.meta.url), "utf8");
+  assert.match(route, /'class_create'/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /"CLASS_EXISTS"/);
+  assert.match(route, /DELETE FROM registration_operation_guards/);
+});
+
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
   const [portal, printCards, styles] = await Promise.all([
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
