@@ -2,7 +2,7 @@ import { database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { normalizeSchoolSearch } from "@/lib/schools";
-import { auditSystemAdmin } from "@/lib/system-admin-audit";
+import { systemAdminAuditStatement } from "@/lib/system-admin-audit";
 import { requireSystemAdmin } from "@/lib/system-admin-auth";
 
 type ImportSchool = {
@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     });
     const keys = new Set(rows.map((row) => `${row.officeCode}|${row.schoolCode}`));
     if (keys.size !== rows.length) throw new ApiError(409, "가져오기 목록에 중복 학교 코드가 있습니다.", "DUPLICATE_SCHOOL_CODE");
-    const statements = rows.map((row) => database().prepare(
+    const statements: D1PreparedStatement[] = rows.map((row) => database().prepare(
       `INSERT INTO schools
        (id, office_code, school_code, official_name, normalized_name, search_name, school_level,
         province_name, district_name, road_address, status, source, source_updated_at, created_at, updated_at)
@@ -64,13 +64,13 @@ export async function POST(request: Request) {
       row.searchName, row.schoolLevel, row.provinceName, row.districtName, row.roadAddress,
       now, now, now,
     ));
-    await database().batch(statements);
-    await auditSystemAdmin({
+    statements.push(systemAdminAuditStatement({
       adminKey: admin.adminKey,
       action: "schools_imported",
       targetType: "school",
       after: { imported: rows.length },
-    });
+    }, now));
+    await database().batch(statements);
     return json({ imported: rows.length, schools: rows.map(({ id, officialName }) => ({ id, officialName })) });
   } catch (error) {
     return apiFailure(error);

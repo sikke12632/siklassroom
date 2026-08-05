@@ -294,6 +294,16 @@ test("관리자 초대코드 발급과 폐기는 감사 기록과 함께 저장�
   assert.doesNotMatch(route, /auditSystemAdmin\(/);
 });
 
+test("관리자 학교 가져오기는 학교 목록과 감사 기록을 함께 저장한다", async () => {
+  const route = await readFile(
+    new URL("../app/api/admin/schools/import/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /statements\.push\(systemAdminAuditStatement/);
+  assert.match(route, /await database\(\)\.batch\(statements\)/);
+  assert.doesNotMatch(route, /auditSystemAdmin\(/);
+});
+
 test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
   const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
