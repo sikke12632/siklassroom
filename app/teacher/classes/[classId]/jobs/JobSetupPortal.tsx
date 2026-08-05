@@ -320,10 +320,15 @@ export function JobSetupPortal({ classId }: { classId: string }) {
 
   if (!data) {
     return (
-      <main className="job-page job-loading">
+      <main className="job-page job-loading" aria-busy={busy || undefined}>
         <Logo />
         <Notice message={error} tone="error" />
-        {error ? <a className="button button-primary" href="/teacher">교사 대시보드로</a> : <p>우리 반 직업을 불러오고 있어요…</p>}
+        {error ? (
+          <div className="button-row">
+            <button className="button button-primary" type="button" disabled={busy} onClick={load}>다시 시도</button>
+            <a className="button button-light" href="/teacher">교사 대시보드로</a>
+          </div>
+        ) : <p role="status">우리 반 직업을 불러오고 있어요…</p>}
       </main>
     );
   }

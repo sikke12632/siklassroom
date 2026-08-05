@@ -866,3 +866,10 @@ test("관리자 화면은 인증 실패와 서버 확인 실패를 구분하고 
   assert.match(adminPortal, /접속 상태 다시 확인/);
   assert.match(adminPortal, /controller\.abort\(\)/);
 });
+
+test("직업 설정 화면은 최초 조회 오류를 화면 안에서 다시 시도할 수 있다", async () => {
+  const jobSetup = await readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8");
+  assert.match(jobSetup, /aria-busy=\{busy \|\| undefined\}/);
+  assert.match(jobSetup, /onClick=\{load\}>다시 시도/);
+  assert.match(jobSetup, /role="status">우리 반 직업을 불러오고 있어요/);
+});
