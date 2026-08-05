@@ -685,6 +685,54 @@ test("deposit product publication and availability changes are captured by D1", 
   assert.match(migrationTest, /PRAGMA foreign_key_check/);
 });
 
+test("deposit maturity failures remain immutable after retry success", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationName = (await readdir(migrationDirectory))
+    .find((name) => /^0032_.+\.sql$/u.test(name));
+  assert.ok(migrationName, "The maturity-attempt migration must exist.");
+  const [schema, migration, runtime, service, audit, d1Test, migrationTest] =
+    await Promise.all([
+      readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+      readFile(new URL(migrationName, migrationDirectory), "utf8"),
+      readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/finance-deposits.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+      readFile(new URL("../tests/finance-deposits-d1.test.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../tests/finance-deposit-maturity-attempts-migration-d1.test.mjs",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_deposit_maturity_attempts/);
+    assert.match(source, /legacy_latest/);
+    assert.match(source, /error_code/);
+    assert.match(source, /next_attempt_at/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_deposit_maturity_attempts_insert_guard/);
+    assert.match(source, /finance_deposit_maturity_attempts_update_guard/);
+    assert.match(source, /finance_deposit_maturity_attempts_delete_guard/);
+    assert.match(source, /finance_deposit_maturity_capture_first_attempt/);
+    assert.match(source, /finance_deposit_maturity_capture_later_attempt/);
+    assert.match(source, /FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_deposit_maturity_attempts`?/);
+  }
+  assert.match(service, /deferFailedDepositMaturity/);
+  assert.match(service, /ON CONFLICT\(contract_id\) DO UPDATE SET/);
+  assert.match(audit, /FROM finance_deposit_maturity_attempts attempt/);
+  assert.match(audit, /deposit_maturity_retry_scheduled/);
+  assert.match(audit, /attempt\.capture_status/);
+  assert.match(d1Test, /TEST_DEPOSIT_MATURITY_ATTEMPT_FAILURE/);
+  assert.match(d1Test, /FINANCE_DEPOSIT_MATURITY_ATTEMPT_INVALID/);
+  assert.match(migrationTest, /legacy_latest/);
+  assert.match(migrationTest, /PRAGMA foreign_key_check/);
+});
+
 test("teacher liquidation progress and cancellation remain searchable audit events", async () => {
   const migrationDirectory = new URL("../drizzle/", import.meta.url);
   const migrationName = (await readdir(migrationDirectory))

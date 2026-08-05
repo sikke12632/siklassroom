@@ -1406,6 +1406,10 @@ test("failed maturities back off so later contracts settle and retries clean up"
   );
   let worker;
   const dueNow = 604_900_000;
+  const auditSessionToken = "teacher-maturity-attempt-audit-token";
+  const auditSessionHash = createHash("sha256")
+    .update(auditSessionToken)
+    .digest("base64url");
   try {
     runWrangler([
       "d1",
@@ -1418,10 +1422,13 @@ test("failed maturities back off so later contracts settle and retries clean up"
 
     executeSql(persistPath, `
       INSERT INTO teachers (
-        id, email, password_hash, status, created_at, updated_at
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
       ) VALUES (
         'teacher-maturity-backoff', 'teacher-maturity-backoff@test.local',
-        'hash', 'active', 1, 1
+        'hash', 'active', 1, 'invite_verified', 1,
+        'school-maturity-backoff', 1, 1
       );
       INSERT INTO classes (
         id, teacher_id, school_name, school_normalized,
@@ -1431,6 +1438,13 @@ test("failed maturities back off so later contracts settle and retries clean up"
          'Test School', 'test school', 2099, 6, 10, 'active', 1, 1),
         ('class-maturity-normal', 'teacher-maturity-backoff',
          'Test School', 'test school', 2099, 6, 11, 'active', 1, 1);
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES (
+        'session-maturity-backoff', '${auditSessionHash}', 'teacher',
+        'teacher-maturity-backoff', NULL, 9999999999999, 1, 1
+      );
       INSERT INTO students (
         id, class_id, student_number, official_name, status,
         created_at, updated_at
@@ -1661,6 +1675,37 @@ test("failed maturities back off so later contracts settle and retries clean up"
       WHERE id = 'tx-fill-issuance-floor';
     `);
 
+    executeSql(persistPath, `
+      CREATE TRIGGER test_deposit_maturity_attempt_failure
+      BEFORE INSERT ON finance_deposit_maturity_attempts
+      WHEN NEW.contract_id = 'contract-maturity-a'
+      BEGIN SELECT RAISE(ABORT, 'TEST_DEPOSIT_MATURITY_ATTEMPT_FAILURE'); END;
+    `);
+    const attemptCaptureFailure = executeSql(
+      persistPath,
+      `INSERT INTO finance_deposit_maturity_retries (
+         contract_id, class_id, attempt_count, next_attempt_at,
+         last_error_code, last_failed_at, created_at, updated_at
+       ) VALUES (
+         'contract-maturity-a', 'class-maturity-floor', 1,
+         ${dueNow + 120_000}, 'FINANCE_ISSUANCE_BALANCE_LIMIT',
+         ${dueNow}, ${dueNow}, ${dueNow}
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      attemptCaptureFailure.output,
+      /TEST_DEPOSIT_MATURITY_ATTEMPT_FAILURE/,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS retry_count,
+              (SELECT COUNT(*) FROM finance_deposit_maturity_attempts)
+                AS attempt_count
+       FROM finance_deposit_maturity_retries;`,
+    )), [{ retry_count: 0, attempt_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_deposit_maturity_attempt_failure;");
+
     worker = await (await import("wrangler")).unstable_dev(
       maturityBackoffWorkerPath,
       {
@@ -1718,6 +1763,30 @@ test("failed maturities back off so later contracts settle and retries clean up"
         last_failed_at: dueNow,
         created_at: dueNow,
         updated_at: dueNow,
+      },
+    ]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, attempt_count, error_code, failed_at,
+              next_attempt_at, capture_status
+       FROM finance_deposit_maturity_attempts
+       ORDER BY contract_id, attempt_count;`,
+    )), [
+      {
+        contract_id: "contract-maturity-a",
+        attempt_count: 1,
+        error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT",
+        failed_at: dueNow,
+        next_attempt_at: dueNow + 120_000,
+        capture_status: "exact",
+      },
+      {
+        contract_id: "contract-maturity-b",
+        attempt_count: 1,
+        error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT",
+        failed_at: dueNow,
+        next_attempt_at: dueNow + 120_000,
+        capture_status: "exact",
       },
     ]);
 
@@ -1787,6 +1856,11 @@ test("failed maturities back off so later contracts settle and retries clean up"
       created_at: dueNow,
       updated_at: secondAttemptAt,
     })));
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_maturity_attempts
+       WHERE attempt_count IN (1, 2) AND capture_status = 'exact';`,
+    ))[0].count, 4);
 
     const fairnessAt = secondAttemptAt + 240_000;
     executeSql(persistPath, `
@@ -1868,6 +1942,15 @@ test("failed maturities back off so later contracts settle and retries clean up"
       attempt_count: 2,
       next_attempt_at: fairnessAt - 1,
     }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT attempt_count, error_code FROM finance_deposit_maturity_attempts
+       WHERE contract_id = 'contract-maturity-b'
+       ORDER BY attempt_count;`,
+    )), [
+      { attempt_count: 1, error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT" },
+      { attempt_count: 2, error_code: "FINANCE_ISSUANCE_BALANCE_LIMIT" },
+    ]);
 
     const capAttemptAt = fairnessAt + 1;
     executeSql(persistPath, `
@@ -1937,6 +2020,38 @@ test("failed maturities back off so later contracts settle and retries clean up"
       persistPath,
       `SELECT COUNT(*) AS count FROM finance_deposit_maturity_retries;`,
     )), [{ count: 0 }]);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT contract_id, GROUP_CONCAT(attempt_count, ',') AS attempts
+       FROM finance_deposit_maturity_attempts
+       GROUP BY contract_id ORDER BY contract_id;`,
+    )), [
+      { contract_id: "contract-maturity-a", attempts: "1,2,5,6" },
+      { contract_id: "contract-maturity-b", attempts: "1,2" },
+    ]);
+    const immutableAttempt = executeSql(
+      persistPath,
+      `DELETE FROM finance_deposit_maturity_attempts
+       WHERE contract_id = 'contract-maturity-a' AND attempt_count = 1;`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      immutableAttempt.output,
+      /FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE/,
+    );
+    const forgedAttempt = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_deposit_maturity_attempts
+       SELECT id, class_id, contract_id, attempt_count, 'FORGED_ERROR',
+              failed_at, next_attempt_at, capture_status
+       FROM finance_deposit_maturity_attempts
+       WHERE contract_id = 'contract-maturity-a' AND attempt_count = 6;`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      forgedAttempt.output,
+      /FINANCE_DEPOSIT_MATURITY_ATTEMPT_INVALID/,
+    );
     const finalSettlementState = lastResults(executeSql(
       persistPath,
       `SELECT
@@ -1998,6 +2113,52 @@ test("failed maturities back off so later contracts settle and retries clean up"
       persistPath,
       `SELECT COUNT(*) AS count FROM finance_deposit_maturity_retries;`,
     )), [{ count: 0 }]);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_maturity_attempts;`,
+    ))[0].count, 6);
+    const auditResponse = await worker.fetch(
+      "http://test.local/audit?classId=class-maturity-floor&category=deposit&query=FINANCE_ISSUANCE_BALANCE_LIMIT",
+      { headers: { cookie: `job_classroom_session=${auditSessionToken}` } },
+    );
+    const auditBody = await auditResponse.json();
+    assert.equal(auditResponse.status, 200, JSON.stringify(auditBody));
+    assert.deepEqual(auditBody.events.map((event) => ({
+      action: event.action,
+      studentName: event.studentName,
+      outcome: event.outcome,
+    })), [
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity A",
+        outcome: "failed",
+      },
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity A",
+        outcome: "failed",
+      },
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity B",
+        outcome: "failed",
+      },
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity A",
+        outcome: "failed",
+      },
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity B",
+        outcome: "failed",
+      },
+      {
+        action: "deposit_maturity_retry_scheduled",
+        studentName: "Maturity A",
+        outcome: "failed",
+      },
+    ]);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

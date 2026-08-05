@@ -225,6 +225,13 @@
       "when": 1785890692080,
       "tag": "0031_calm_invisible_woman",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1785891543728,
+      "tag": "0032_stale_mikhail_rasputin",
+      "breakpoints": true
     }
   ]
 }

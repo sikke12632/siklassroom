@@ -1,4 +1,5 @@
 import { settleDueDepositContracts } from "../../lib/finance-deposits";
+import { financeAuditForRequest } from "../../lib/finance-audit";
 
 type TestEnvironment = {
   DB: D1Database;
@@ -6,6 +7,9 @@ type TestEnvironment = {
 
 const depositMaturityBackoffWorker = {
   async fetch(request: Request, environment: TestEnvironment) {
+    if (new URL(request.url).pathname === "/audit") {
+      return Response.json(await financeAuditForRequest(request));
+    }
     const input = await request.json() as { now?: unknown; limit?: unknown };
     const now = Number(input.now);
     const limit = Number(input.limit);

@@ -1200,6 +1200,49 @@ export const financeDepositMaturityRetries = sqliteTable(
   ],
 );
 
+export const financeDepositMaturityAttempts = sqliteTable(
+  "finance_deposit_maturity_attempts",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull(),
+    contractId: text("contract_id").notNull(),
+    attemptCount: integer("attempt_count").notNull(),
+    errorCode: text("error_code").notNull(),
+    failedAt: integer("failed_at").notNull(),
+    nextAttemptAt: integer("next_attempt_at").notNull(),
+    captureStatus: text("capture_status").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_deposit_maturity_attempts_contract_attempt_uq").on(
+      table.contractId,
+      table.attemptCount,
+    ),
+    index("finance_deposit_maturity_attempts_class_failed_idx").on(
+      table.classId,
+      table.failedAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.contractId, table.classId],
+      foreignColumns: [financeDepositContracts.id, financeDepositContracts.classId],
+      name: "finance_deposit_maturity_attempts_contract_class_fk",
+    }),
+    check(
+      "finance_deposit_maturity_attempts_id_ck",
+      sql`${table.id} = 'finance:deposit-maturity-attempt:'
+        || ${table.contractId} || ':' || ${table.attemptCount}`,
+    ),
+    check(
+      "finance_deposit_maturity_attempts_state_ck",
+      sql`${table.attemptCount} BETWEEN 1 AND 1000000
+        AND LENGTH(TRIM(${table.errorCode})) BETWEEN 1 AND 100
+        AND ${table.failedAt} >= 0
+        AND ${table.nextAttemptAt} >= ${table.failedAt}
+        AND ${table.captureStatus} IN ('exact', 'legacy_latest')`,
+    ),
+  ],
+);
+
 export const financeDepositSettlements = sqliteTable("finance_deposit_settlements", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),

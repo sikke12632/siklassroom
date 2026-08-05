@@ -1599,6 +1599,28 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_deposit_maturity_retries(next_attempt_at, contract_id)`,
   `CREATE INDEX IF NOT EXISTS finance_deposit_maturity_retries_class_idx
     ON finance_deposit_maturity_retries(class_id, next_attempt_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_deposit_maturity_attempts (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, contract_id TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL, error_code TEXT NOT NULL,
+    failed_at INTEGER NOT NULL, next_attempt_at INTEGER NOT NULL,
+    capture_status TEXT NOT NULL,
+    FOREIGN KEY (contract_id, class_id)
+      REFERENCES finance_deposit_contracts(id, class_id),
+    CONSTRAINT finance_deposit_maturity_attempts_id_ck CHECK (
+      id = 'finance:deposit-maturity-attempt:' || contract_id || ':' || attempt_count
+    ),
+    CONSTRAINT finance_deposit_maturity_attempts_state_ck CHECK (
+      attempt_count BETWEEN 1 AND 1000000
+      AND LENGTH(TRIM(error_code)) BETWEEN 1 AND 100
+      AND failed_at >= 0 AND next_attempt_at >= failed_at
+      AND capture_status IN ('exact', 'legacy_latest')
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS
+      finance_deposit_maturity_attempts_contract_attempt_uq
+    ON finance_deposit_maturity_attempts(contract_id, attempt_count)`,
+  `CREATE INDEX IF NOT EXISTS finance_deposit_maturity_attempts_class_failed_idx
+    ON finance_deposit_maturity_attempts(class_id, failed_at, id)`,
   `CREATE TABLE IF NOT EXISTS finance_deposit_settlements (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, contract_id TEXT NOT NULL,
     student_id TEXT NOT NULL, settlement_type TEXT NOT NULL,
@@ -1655,6 +1677,78 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     BEGIN
       DELETE FROM finance_deposit_maturity_retries
       WHERE contract_id = NEW.contract_id AND class_id = NEW.class_id;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_attempts_insert_guard
+    BEFORE INSERT ON finance_deposit_maturity_attempts
+    BEGIN
+      SELECT CASE WHEN NEW.id != 'finance:deposit-maturity-attempt:'
+          || NEW.contract_id || ':' || NEW.attempt_count
+        THEN RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_INVALID') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1 FROM finance_deposit_maturity_retries retry
+        WHERE retry.contract_id = NEW.contract_id
+          AND retry.class_id = NEW.class_id
+          AND retry.attempt_count = NEW.attempt_count
+          AND retry.last_error_code = NEW.error_code
+          AND retry.last_failed_at = NEW.failed_at
+          AND retry.next_attempt_at = NEW.next_attempt_at
+      ) THEN RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_INVALID') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_attempts_update_guard
+    BEFORE UPDATE ON finance_deposit_maturity_attempts
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_attempts_delete_guard
+    BEFORE DELETE ON finance_deposit_maturity_attempts
+    BEGIN
+      SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE');
+    END`,
+  `INSERT OR IGNORE INTO finance_deposit_maturity_attempts (
+    id, class_id, contract_id, attempt_count, error_code,
+    failed_at, next_attempt_at, capture_status
+  )
+  SELECT 'finance:deposit-maturity-attempt:' || retry.contract_id
+           || ':' || retry.attempt_count,
+         retry.class_id, retry.contract_id, retry.attempt_count,
+         retry.last_error_code, retry.last_failed_at, retry.next_attempt_at,
+         'legacy_latest'
+  FROM finance_deposit_maturity_retries retry`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_capture_first_attempt
+    AFTER INSERT ON finance_deposit_maturity_retries
+    WHEN NOT EXISTS (
+      SELECT 1 FROM finance_deposit_settlements settlement
+      WHERE settlement.contract_id = NEW.contract_id
+        AND settlement.class_id = NEW.class_id
+    )
+    BEGIN
+      INSERT INTO finance_deposit_maturity_attempts (
+        id, class_id, contract_id, attempt_count, error_code,
+        failed_at, next_attempt_at, capture_status
+      ) VALUES (
+        'finance:deposit-maturity-attempt:' || NEW.contract_id
+          || ':' || NEW.attempt_count,
+        NEW.class_id, NEW.contract_id, NEW.attempt_count,
+        NEW.last_error_code, NEW.last_failed_at, NEW.next_attempt_at, 'exact'
+      );
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_deposit_maturity_capture_later_attempt
+    AFTER UPDATE OF attempt_count ON finance_deposit_maturity_retries
+    WHEN NEW.attempt_count <> OLD.attempt_count AND NOT EXISTS (
+      SELECT 1 FROM finance_deposit_settlements settlement
+      WHERE settlement.contract_id = NEW.contract_id
+        AND settlement.class_id = NEW.class_id
+    )
+    BEGIN
+      INSERT INTO finance_deposit_maturity_attempts (
+        id, class_id, contract_id, attempt_count, error_code,
+        failed_at, next_attempt_at, capture_status
+      ) VALUES (
+        'finance:deposit-maturity-attempt:' || NEW.contract_id
+          || ':' || NEW.attempt_count,
+        NEW.class_id, NEW.contract_id, NEW.attempt_count,
+        NEW.last_error_code, NEW.last_failed_at, NEW.next_attempt_at, 'exact'
+      );
     END`,
   `CREATE TRIGGER IF NOT EXISTS finance_deposit_products_insert_guard
     BEFORE INSERT ON finance_deposit_products
