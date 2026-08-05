@@ -194,6 +194,9 @@ function serializeTransaction(
     && row.source_type !== "deposit_contract"
     && row.source_type !== "deposit_settlement"
     && row.source_type !== "stock_trade"
+    && row.source_type !== "funding_contribution"
+    && row.source_type !== "funding_settlement"
+    && row.source_type !== "funding_refund"
     && !Boolean(row.is_reversed);
   const reversalBlockedReason = canReverse
     ? null
@@ -212,6 +215,10 @@ function serializeTransaction(
                 ? "예금 거래는 계약과 함께 자동 관리됩니다."
               : row.source_type === "stock_trade"
                 ? "주식 거래는 보유 수량과 함께 자동 관리됩니다."
+              : row.source_type === "funding_contribution"
+                  || row.source_type === "funding_settlement"
+                  || row.source_type === "funding_refund"
+                ? "펀딩 거래는 참여·성공 지급·환불 기록과 함께 자동 관리됩니다."
               : Boolean(row.is_reversed)
                 ? "이미 정정된 거래입니다."
                 : null;

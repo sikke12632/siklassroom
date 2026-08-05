@@ -5166,6 +5166,445 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         NULL, NEW.created_at, NEW.updated_at
       );
     END`,
+  `CREATE TABLE IF NOT EXISTS finance_salary_settings (
+    class_id TEXT PRIMARY KEY,
+    grade_a_amount INTEGER NOT NULL DEFAULT 1300,
+    grade_b_amount INTEGER NOT NULL DEFAULT 1000,
+    grade_c_amount INTEGER NOT NULL DEFAULT 700,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_by_teacher_id TEXT,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (updated_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_salary_settings_amount_ck CHECK (
+      grade_a_amount BETWEEN 0 AND 1000000000
+      AND grade_b_amount BETWEEN 0 AND grade_a_amount
+      AND grade_c_amount BETWEEN 0 AND grade_b_amount
+    ),
+    CONSTRAINT finance_salary_settings_revision_ck CHECK (revision >= 0)
+  )`,
+  `CREATE INDEX IF NOT EXISTS finance_salary_settings_updated_by_idx
+    ON finance_salary_settings(updated_by_teacher_id)`,
+  `CREATE TABLE IF NOT EXISTS finance_salary_setting_revisions (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    previous_settings_json TEXT NOT NULL,
+    settings_json TEXT NOT NULL,
+    change_reason TEXT NOT NULL,
+    actor_teacher_id TEXT NOT NULL,
+    actor_label TEXT NOT NULL DEFAULT '교사',
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_salary_setting_revisions_revision_ck CHECK (revision > 0),
+    CONSTRAINT finance_salary_setting_revisions_reason_ck CHECK (
+      LENGTH(TRIM(change_reason)) BETWEEN 2 AND 300
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_salary_setting_revisions_class_revision_uq
+    ON finance_salary_setting_revisions(class_id, revision)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_salary_setting_revisions_class_idempotency_uq
+    ON finance_salary_setting_revisions(class_id, idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS finance_salary_setting_revisions_class_created_idx
+    ON finance_salary_setting_revisions(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_payroll_runs (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    closure_id TEXT NOT NULL,
+    source_period_id TEXT NOT NULL,
+    source_year INTEGER NOT NULL,
+    source_month INTEGER NOT NULL,
+    salary_settings_revision INTEGER NOT NULL,
+    salary_settings_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'prepared',
+    recipient_count INTEGER NOT NULL,
+    posted_count INTEGER NOT NULL DEFAULT 0,
+    total_amount INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    initiated_by_teacher_id TEXT,
+    created_at INTEGER NOT NULL,
+    posted_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (closure_id) REFERENCES class_job_month_closures(id),
+    FOREIGN KEY (source_period_id) REFERENCES class_job_assignment_periods(id),
+    FOREIGN KEY (initiated_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_payroll_runs_status_ck CHECK (
+      status IN ('prepared', 'posting', 'completed')
+    ),
+    CONSTRAINT finance_payroll_runs_counts_ck CHECK (
+      recipient_count > 0 AND posted_count BETWEEN 0 AND recipient_count
+    ),
+    CONSTRAINT finance_payroll_runs_amount_ck CHECK (
+      total_amount BETWEEN 0 AND 1000000000
+    ),
+    CONSTRAINT finance_payroll_runs_time_ck CHECK (
+      (status = 'completed' AND posted_at IS NOT NULL) OR status <> 'completed'
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_runs_closure_uq
+    ON finance_payroll_runs(closure_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_runs_class_idempotency_uq
+    ON finance_payroll_runs(class_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_runs_id_class_uq
+    ON finance_payroll_runs(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_runs_class_posting_uq
+    ON finance_payroll_runs(class_id) WHERE status = 'posting'`,
+  `CREATE INDEX IF NOT EXISTS finance_payroll_runs_class_created_idx
+    ON finance_payroll_runs(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_payroll_items (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    class_id TEXT NOT NULL,
+    closure_result_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    student_number INTEGER NOT NULL,
+    student_name TEXT NOT NULL,
+    class_job_id TEXT NOT NULL,
+    job_name TEXT NOT NULL,
+    job_grade TEXT NOT NULL,
+    base_amount INTEGER NOT NULL,
+    total_amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    posted_transaction_id TEXT,
+    created_at INTEGER NOT NULL,
+    posted_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES finance_payroll_runs(id),
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (closure_result_id) REFERENCES class_job_month_results(id),
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (run_id, class_id) REFERENCES finance_payroll_runs(id, class_id),
+    FOREIGN KEY (posted_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_payroll_items_grade_ck CHECK (job_grade IN ('A', 'B', 'C')),
+    CONSTRAINT finance_payroll_items_amount_ck CHECK (
+      base_amount BETWEEN 0 AND 1000000000 AND total_amount = base_amount
+    ),
+    CONSTRAINT finance_payroll_items_status_ck CHECK (
+      status IN ('pending', 'posted') AND (
+        (status = 'posted' AND posted_transaction_id IS NOT NULL AND posted_at IS NOT NULL)
+        OR (status = 'pending' AND posted_transaction_id IS NULL AND posted_at IS NULL)
+      )
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_items_run_student_uq
+    ON finance_payroll_items(run_id, student_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_items_closure_result_uq
+    ON finance_payroll_items(closure_result_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_payroll_items_posted_transaction_uq
+    ON finance_payroll_items(posted_transaction_id)
+    WHERE posted_transaction_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS finance_payroll_items_class_status_idx
+    ON finance_payroll_items(class_id, status)`,
+  `CREATE TRIGGER IF NOT EXISTS finance_salary_setting_revisions_update_guard
+    BEFORE UPDATE ON finance_salary_setting_revisions
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_SALARY_REVISION_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_salary_setting_revisions_delete_guard
+    BEFORE DELETE ON finance_salary_setting_revisions
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_SALARY_REVISION_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_salary_settings_revision_guard
+    BEFORE UPDATE ON finance_salary_settings
+    WHEN NEW.revision <> OLD.revision + 1
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_SALARY_SETTINGS_STALE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_payroll_items_posted_guard
+    BEFORE UPDATE ON finance_payroll_items
+    WHEN NOT (
+      OLD.status = 'pending' AND NEW.status = 'posted'
+      AND NEW.run_id = OLD.run_id AND NEW.class_id = OLD.class_id
+      AND NEW.closure_result_id = OLD.closure_result_id
+      AND NEW.student_id = OLD.student_id
+      AND NEW.student_number = OLD.student_number
+      AND NEW.student_name = OLD.student_name
+      AND NEW.class_job_id = OLD.class_job_id
+      AND NEW.job_name = OLD.job_name AND NEW.job_grade = OLD.job_grade
+      AND NEW.base_amount = OLD.base_amount AND NEW.total_amount = OLD.total_amount
+      AND NEW.created_at = OLD.created_at
+      AND NEW.posted_transaction_id IS NOT NULL AND NEW.posted_at IS NOT NULL
+      AND NEW.updated_at >= OLD.updated_at
+    )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_PAYROLL_ITEM_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_payroll_items_delete_guard
+    BEFORE DELETE ON finance_payroll_items
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_PAYROLL_ITEM_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_classes_create_salary_settings
+    AFTER INSERT ON classes
+    BEGIN
+      INSERT OR IGNORE INTO finance_salary_settings (
+        class_id, grade_a_amount, grade_b_amount, grade_c_amount,
+        revision, updated_by_teacher_id, updated_at
+      ) VALUES (NEW.id, 1300, 1000, 700, 0, NULL, NEW.updated_at);
+    END`,
+  `INSERT OR IGNORE INTO finance_salary_settings (
+    class_id, grade_a_amount, grade_b_amount, grade_c_amount,
+    revision, updated_by_teacher_id, updated_at
+  )
+  SELECT class_row.id, 1300, 1000, 700, 0, NULL, class_row.updated_at
+  FROM classes class_row`,
+  `CREATE TABLE IF NOT EXISTS finance_funding_campaigns (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    creator_student_id TEXT NOT NULL,
+    recipient_wallet_account_id TEXT NOT NULL,
+    creator_student_number_snapshot INTEGER NOT NULL,
+    creator_student_name_snapshot TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    target_amount INTEGER NOT NULL,
+    pledged_amount INTEGER NOT NULL DEFAULT 0,
+    refunded_amount INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    terminal_reason TEXT,
+    deadline_at INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payout_transaction_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    funded_at INTEGER,
+    settled_at INTEGER,
+    cancelled_at INTEGER,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (creator_student_id) REFERENCES students(id),
+    FOREIGN KEY (recipient_wallet_account_id, class_id)
+      REFERENCES finance_accounts(id, class_id),
+    FOREIGN KEY (payout_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_funding_campaigns_text_ck CHECK (
+      LENGTH(TRIM(title)) BETWEEN 1 AND 50
+      AND LENGTH(description) <= 300
+    ),
+    CONSTRAINT finance_funding_campaigns_amount_ck CHECK (
+      target_amount BETWEEN 1 AND 1000000000
+      AND pledged_amount BETWEEN 0 AND target_amount
+      AND refunded_amount BETWEEN 0 AND pledged_amount
+    ),
+    CONSTRAINT finance_funding_campaigns_status_ck CHECK (
+      status IN (
+        'active', 'paused', 'funded', 'refunding',
+        'succeeded', 'failed', 'cancelled'
+      )
+    ),
+    CONSTRAINT finance_funding_campaigns_revision_ck CHECK (revision >= 0)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaigns_id_class_uq
+    ON finance_funding_campaigns(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaigns_class_creator_idempotency_uq
+    ON finance_funding_campaigns(class_id, creator_student_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaigns_creator_nonterminal_uq
+    ON finance_funding_campaigns(class_id, creator_student_id)
+    WHERE status IN ('active', 'paused', 'funded', 'refunding')`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaigns_payout_transaction_uq
+    ON finance_funding_campaigns(payout_transaction_id)
+    WHERE payout_transaction_id IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS finance_funding_campaigns_class_status_idx
+    ON finance_funding_campaigns(class_id, status, deadline_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_funding_campaign_events (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    actor_type TEXT NOT NULL,
+    actor_teacher_id TEXT,
+    actor_student_id TEXT,
+    actor_label TEXT NOT NULL,
+    intervention_reason TEXT,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    campaign_snapshot_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id, class_id)
+      REFERENCES finance_funding_campaigns(id, class_id),
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (actor_student_id) REFERENCES students(id),
+    CONSTRAINT finance_funding_campaign_events_action_ck CHECK (
+      action IN (
+        'created', 'edited', 'paused', 'resumed', 'refund_started',
+        'funded', 'succeeded', 'failed', 'cancelled'
+      )
+    ),
+    CONSTRAINT finance_funding_campaign_events_actor_ck CHECK (
+      (actor_type = 'teacher' AND actor_teacher_id IS NOT NULL
+        AND actor_student_id IS NULL
+        AND LENGTH(TRIM(COALESCE(intervention_reason, ''))) >= 2)
+      OR (actor_type = 'student' AND actor_teacher_id IS NULL
+        AND actor_student_id IS NOT NULL AND intervention_reason IS NULL)
+      OR (actor_type = 'system' AND actor_teacher_id IS NULL
+        AND actor_student_id IS NULL)
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaign_events_campaign_revision_uq
+    ON finance_funding_campaign_events(campaign_id, revision)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_campaign_events_class_idempotency_uq
+    ON finance_funding_campaign_events(class_id, idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS finance_funding_campaign_events_class_created_idx
+    ON finance_funding_campaign_events(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_funding_contributions (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    contributor_student_id TEXT NOT NULL,
+    wallet_account_id TEXT NOT NULL,
+    student_number_snapshot INTEGER NOT NULL,
+    student_name_snapshot TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    campaign_revision_before INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    posted_transaction_id TEXT NOT NULL,
+    transaction_payload_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id, class_id)
+      REFERENCES finance_funding_campaigns(id, class_id),
+    FOREIGN KEY (contributor_student_id) REFERENCES students(id),
+    FOREIGN KEY (wallet_account_id, class_id)
+      REFERENCES finance_accounts(id, class_id),
+    FOREIGN KEY (posted_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_funding_contributions_amount_ck CHECK (
+      amount BETWEEN 1 AND 1000000000
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_contributions_id_class_uq
+    ON finance_funding_contributions(id, class_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_contributions_student_idempotency_uq
+    ON finance_funding_contributions(
+      class_id, contributor_student_id, idempotency_key
+    )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_contributions_posted_transaction_uq
+    ON finance_funding_contributions(posted_transaction_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_funding_contributions_campaign_created_idx
+    ON finance_funding_contributions(campaign_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_funding_refunds (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    contribution_id TEXT NOT NULL,
+    student_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    posted_transaction_id TEXT NOT NULL,
+    transaction_payload_hash TEXT NOT NULL,
+    refunded_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id, class_id)
+      REFERENCES finance_funding_campaigns(id, class_id),
+    FOREIGN KEY (contribution_id, class_id)
+      REFERENCES finance_funding_contributions(id, class_id),
+    FOREIGN KEY (student_id) REFERENCES students(id),
+    FOREIGN KEY (posted_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_funding_refunds_amount_ck CHECK (
+      amount BETWEEN 1 AND 1000000000
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_refunds_contribution_uq
+    ON finance_funding_refunds(contribution_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_refunds_class_idempotency_uq
+    ON finance_funding_refunds(class_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_refunds_posted_transaction_uq
+    ON finance_funding_refunds(posted_transaction_id)`,
+  `CREATE INDEX IF NOT EXISTS finance_funding_refunds_campaign_idx
+    ON finance_funding_refunds(campaign_id, refunded_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_funding_settlements (
+    id TEXT PRIMARY KEY,
+    class_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    recipient_student_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    posted_transaction_id TEXT NOT NULL,
+    transaction_payload_hash TEXT NOT NULL,
+    settled_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (campaign_id, class_id)
+      REFERENCES finance_funding_campaigns(id, class_id),
+    FOREIGN KEY (recipient_student_id) REFERENCES students(id),
+    FOREIGN KEY (posted_transaction_id, class_id)
+      REFERENCES finance_transactions(id, class_id),
+    CONSTRAINT finance_funding_settlements_amount_ck CHECK (
+      amount BETWEEN 1 AND 1000000000
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_settlements_campaign_uq
+    ON finance_funding_settlements(campaign_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_settlements_class_idempotency_uq
+    ON finance_funding_settlements(class_id, idempotency_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_funding_settlements_posted_transaction_uq
+    ON finance_funding_settlements(posted_transaction_id)`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_events_update_guard
+    BEFORE UPDATE ON finance_funding_campaign_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_events_delete_guard
+    BEFORE DELETE ON finance_funding_campaign_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_contributions_update_guard
+    BEFORE UPDATE ON finance_funding_contributions
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_CONTRIBUTION_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_contributions_delete_guard
+    BEFORE DELETE ON finance_funding_contributions
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_CONTRIBUTION_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_refunds_update_guard
+    BEFORE UPDATE ON finance_funding_refunds
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_REFUND_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_refunds_delete_guard
+    BEFORE DELETE ON finance_funding_refunds
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_REFUND_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_settlements_update_guard
+    BEFORE UPDATE ON finance_funding_settlements
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_SETTLEMENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_settlements_delete_guard
+    BEFORE DELETE ON finance_funding_settlements
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_SETTLEMENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_transactions_reversal_guard
+    BEFORE INSERT ON finance_transactions
+    WHEN NEW.transaction_type = 'reversal' AND EXISTS (
+      SELECT 1 FROM finance_transactions original
+      WHERE original.id = NEW.reversal_of_transaction_id
+        AND original.source_type IN (
+          'funding_contribution', 'funding_settlement', 'funding_refund'
+        )
+    )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_REVERSAL_REQUIRES_CAMPAIGN'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_classes_archive_guard
+    BEFORE UPDATE OF status ON classes
+    WHEN NEW.status = 'archived' AND OLD.status <> 'archived'
+      AND EXISTS (
+        SELECT 1 FROM finance_funding_campaigns campaign
+        WHERE campaign.class_id = NEW.id
+          AND campaign.status IN ('active', 'paused', 'funded', 'refunding')
+      )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_ACTIVE_CLASS'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_funding_students_exclude_guard
+    BEFORE UPDATE OF status ON students
+    WHEN NEW.status = 'excluded' AND OLD.status <> 'excluded'
+      AND (
+        EXISTS (
+          SELECT 1 FROM finance_funding_campaigns campaign
+          WHERE campaign.class_id = NEW.class_id
+            AND campaign.creator_student_id = NEW.id
+            AND campaign.status IN ('active', 'paused', 'funded', 'refunding')
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM finance_funding_contributions contribution
+          JOIN finance_funding_campaigns campaign
+            ON campaign.id = contribution.campaign_id
+           AND campaign.class_id = contribution.class_id
+          WHERE contribution.class_id = NEW.class_id
+            AND contribution.contributor_student_id = NEW.id
+            AND campaign.status IN ('active', 'paused', 'funded', 'refunding')
+        )
+      )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_FUNDING_ACTIVE_STUDENT'); END`,
   `INSERT OR IGNORE INTO finance_settings (
     class_id, currency_name, currency_unit, denominations_json,
     bank_open, deposit_enabled, withdrawal_enabled,

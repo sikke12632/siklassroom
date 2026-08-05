@@ -9,6 +9,8 @@ const AUDIT_CATEGORIES = new Set([
   "setting",
   "deposit",
   "stock",
+  "funding",
+  "payroll",
 ]);
 
 type AuditRow = {
@@ -36,6 +38,9 @@ type StoredSettings = {
   withdrawalEnabled?: unknown;
   bankerProcessingEnabled?: unknown;
   maxRequestAmount?: unknown;
+  gradeAAmount?: unknown;
+  gradeBAmount?: unknown;
+  gradeCAmount?: unknown;
 };
 
 function parseStoredSettings(value: string | null): StoredSettings | null {
@@ -65,14 +70,24 @@ function settingValueText(key: keyof StoredSettings, value: unknown) {
       .map((amount) => amount.toLocaleString("ko-KR"))
       .join("·");
   }
-  if (key === "maxRequestAmount" && Number.isFinite(Number(value))) {
+  if (
+    (
+      key === "maxRequestAmount"
+      || key === "gradeAAmount"
+      || key === "gradeBAmount"
+      || key === "gradeCAmount"
+    )
+    && Number.isFinite(Number(value))
+  ) {
     return Number(value).toLocaleString("ko-KR");
   }
   return String(value ?? "");
 }
 
 function settingAuditDetail(row: AuditRow) {
-  if (row.category !== "setting") return row.detail;
+  const hasSettingsRevision = row.category === "setting"
+    || (row.category === "payroll" && row.action === "salary_settings_updated");
+  if (!hasSettingsRevision) return row.detail;
   const previous = parseStoredSettings(row.previous_settings_json);
   const next = parseStoredSettings(row.settings_json);
   if (!previous || !next) return row.detail;
@@ -86,6 +101,9 @@ function settingAuditDetail(row: AuditRow) {
     ["withdrawalEnabled", "출금"],
     ["bankerProcessingEnabled", "은행원 처리"],
     ["maxRequestAmount", "최대 신청액"],
+    ["gradeAAmount", "A등급 기본급"],
+    ["gradeBAmount", "B등급 기본급"],
+    ["gradeCAmount", "C등급 기본급"],
   ];
   const changes = labels.flatMap(([key, label]) => {
     if (JSON.stringify(previous[key]) === JSON.stringify(next[key])) return [];
@@ -237,6 +255,10 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'stock_trade' THEN 'stock'
            WHEN 'deposit_contract' THEN 'deposit'
            WHEN 'deposit_settlement' THEN 'deposit'
+           WHEN 'funding_contribution' THEN 'funding'
+           WHEN 'funding_settlement' THEN 'funding'
+           WHEN 'funding_refund' THEN 'funding'
+           WHEN 'salary_item' THEN 'payroll'
            ELSE 'transaction'
          END AS category,
          transaction_row.transaction_type AS action,
@@ -247,6 +269,9 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'manual_credit' THEN '교사 지급'
            WHEN 'manual_debit' THEN '교사 차감'
            WHEN 'salary' THEN '직업 월급'
+           WHEN 'funding_contribution' THEN '펀딩 참여'
+           WHEN 'funding_payout' THEN '펀딩 성공 지급'
+           WHEN 'funding_refund' THEN '펀딩 환불'
            WHEN 'deposit_open' THEN '예금 가입'
            WHEN 'deposit_maturity' THEN CASE transaction_row.actor_type
              WHEN 'teacher' THEN '예금 교사 비상 정산'
@@ -350,6 +375,98 @@ export async function financeAuditForRequest(request: Request) {
             amount, occurred_at, outcome, related_id,
             previous_settings_json, settings_json
      FROM finance_events
+     WHERE class_id = ?
+       AND (? = '' OR category = ?)
+       AND (
+         ? = ''
+         OR LOWER(title) LIKE ? ESCAPE '!'
+         OR LOWER(detail) LIKE ? ESCAPE '!'
+         OR LOWER(actor_label) LIKE ? ESCAPE '!'
+         OR LOWER(COALESCE(student_name, '')) LIKE ? ESCAPE '!'
+       )
+       AND (
+         occurred_at < ?
+         OR (occurred_at = ? AND id < ?)
+       )
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT ?`,
+  ).bind(
+    context.classroom.id,
+    category,
+    category,
+    query,
+    search,
+    search,
+    search,
+    search,
+    cursor.time,
+    cursor.time,
+    cursor.id,
+    limit + 1,
+  ).all<AuditRow>();
+
+  // Keep newer module events in their own bounded query. Local D1 uses a low
+  // compound-SELECT limit in some test/runtime builds, so growing the general
+  // audit UNION indefinitely can make the entire audit page unavailable.
+  const moduleResultPromise = database().prepare(
+    `WITH module_events AS (
+       SELECT
+         'salary-setting:' || salary_revision.id AS id,
+         salary_revision.class_id AS class_id,
+         'payroll' AS category,
+         'salary_settings_updated' AS action,
+         '직업 월급 기준 변경' AS title,
+         salary_revision.change_reason AS detail,
+         salary_revision.actor_label AS actor_label,
+         NULL AS student_name,
+         NULL AS amount,
+         salary_revision.created_at AS occurred_at,
+         'completed' AS outcome,
+         salary_revision.id AS related_id,
+         salary_revision.previous_settings_json AS previous_settings_json,
+         salary_revision.settings_json AS settings_json
+       FROM finance_salary_setting_revisions salary_revision
+
+       UNION ALL
+
+       SELECT
+         'funding-event:' || funding_event.id AS id,
+         funding_event.class_id AS class_id,
+         'funding' AS category,
+         'funding_' || funding_event.action AS action,
+         CASE funding_event.action
+           WHEN 'created' THEN '펀딩 시작'
+           WHEN 'edited' THEN '펀딩 내용 변경'
+           WHEN 'paused' THEN '펀딩 일시정지'
+           WHEN 'resumed' THEN '펀딩 다시 시작'
+           WHEN 'funded' THEN '펀딩 목표 달성'
+           WHEN 'refund_started' THEN '펀딩 환불 시작'
+           WHEN 'succeeded' THEN '펀딩 성공 지급'
+           WHEN 'failed' THEN '펀딩 마감·환불 완료'
+           ELSE '펀딩 취소·환불 완료'
+         END AS title,
+         COALESCE(
+           funding_event.intervention_reason,
+           campaign.title || ' · 목표 '
+             || CAST(campaign.target_amount AS TEXT)
+         ) AS detail,
+         funding_event.actor_label AS actor_label,
+         campaign.creator_student_name_snapshot AS student_name,
+         NULL AS amount,
+         funding_event.created_at AS occurred_at,
+         funding_event.action AS outcome,
+         funding_event.campaign_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_funding_campaign_events funding_event
+       JOIN finance_funding_campaigns campaign
+         ON campaign.id = funding_event.campaign_id
+        AND campaign.class_id = funding_event.class_id
+     )
+     SELECT id, category, action, title, detail, actor_label, student_name,
+            amount, occurred_at, outcome, related_id,
+            previous_settings_json, settings_json
+     FROM module_events
      WHERE class_id = ?
        AND (? = '' OR category = ?)
        AND (
@@ -680,13 +797,15 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
-  const [generalResult, stockResult, automationFailureResult] = await Promise.all([
+  const [generalResult, moduleResult, stockResult, automationFailureResult] = await Promise.all([
     generalResultPromise,
+    moduleResultPromise,
     stockResultPromise,
     automationFailureResultPromise,
   ]);
   const mergedResults = [
     ...generalResult.results,
+    ...moduleResult.results,
     ...stockResult.results,
     ...automationFailureResult.results,
   ].sort((left, right) => {

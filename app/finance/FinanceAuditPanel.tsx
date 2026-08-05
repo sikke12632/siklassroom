@@ -15,7 +15,7 @@ import {
   useState,
 } from "react";
 
-type AuditCategory = "all" | "request" | "decision" | "transaction" | "setting" | "deposit" | "stock";
+type AuditCategory = "all" | "request" | "decision" | "transaction" | "setting" | "deposit" | "stock" | "funding" | "payroll";
 
 export type FinanceAuditEvent = {
   id: string;
@@ -53,6 +53,8 @@ const CATEGORY_OPTIONS: ReadonlyArray<{
   { value: "setting", label: "설정" },
   { value: "deposit", label: "예금" },
   { value: "stock", label: "주식" },
+  { value: "funding", label: "펀딩" },
+  { value: "payroll", label: "월급" },
 ];
 
 function categoryText(category: string) {
@@ -89,7 +91,7 @@ function amountText(
   category: string,
 ) {
   if (amount === null || !Number.isFinite(amount)) return null;
-  const sign = category === "transaction"
+  const sign = ["transaction", "funding", "payroll"].includes(category)
     ? amount > 0 ? "+" : amount < 0 ? "-" : ""
     : "";
   return `${sign}${Math.abs(amount).toLocaleString("ko-KR")} ${currencyUnit}`;

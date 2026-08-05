@@ -126,6 +126,9 @@ export const TRANSACTION_LABELS: Record<string, string> = {
   stock_buy: "주식 매수",
   stock_sell: "주식 매도",
   salary: "직업 월급",
+  funding_contribution: "펀딩 참여",
+  funding_payout: "펀딩 성공 지급",
+  funding_refund: "펀딩 환불",
   transfer: "이체",
   reversal: "정정",
 };

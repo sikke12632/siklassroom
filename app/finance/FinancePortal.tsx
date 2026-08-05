@@ -21,6 +21,9 @@ import { FinanceDepositsPanel } from "./FinanceDepositsPanel";
 import { FinanceOperations } from "./FinanceOperations";
 import { FinanceSettingsPanel } from "./FinanceSettingsPanel";
 import { FinanceStocksPanel } from "./FinanceStocksPanel";
+import { FinancePayrollPanel } from "./FinancePayrollPanel";
+import { FinanceStatisticsPanel } from "./FinanceStatisticsPanel";
+import { FinanceFundingPanel } from "./FinanceFundingPanel";
 
 type FinanceRole = "teacher" | "banker" | "student";
 
@@ -336,8 +339,11 @@ function TeacherFinanceHome({
 
       <nav className="finance-teacher-section-nav" aria-label="금융센터 교사 메뉴">
         <a href="#finance-operations">은행 업무</a>
+        <a href="#finance-payroll">직업 월급</a>
         <a href="#finance-deposits">예금상품</a>
         <a href="#finance-stocks">주식시장</a>
+        <a href="#finance-funding">펀딩</a>
+        <a href="#finance-statistics">경제 현황</a>
         <a href="#finance-settings">화폐·은행 설정</a>
         <a href="#finance-audit">전체 금융 기록</a>
       </nav>
@@ -354,6 +360,15 @@ function TeacherFinanceHome({
           onRefresh={onRefresh}
         />
       </div>
+
+      <FinancePayrollPanel
+        classId={context.classroom.id}
+        classIsActive={classIsActive}
+        currencyLabel={finance.currencyLabel}
+        denominations={finance.settings.denominations}
+        refreshRevision={moduleRefreshRevision}
+        onRefresh={onRefresh}
+      />
 
       <FinanceDepositsPanel
         classId={context.classroom.id}
@@ -378,6 +393,23 @@ function TeacherFinanceHome({
           onRefresh={onRefresh}
         />
       </div>
+
+      <FinanceFundingPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        actorType={context.actor.type}
+        classIsActive={classIsActive}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+        onRefresh={onRefresh}
+      />
+
+      <FinanceStatisticsPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+      />
 
       <div id="finance-settings">
         <FinanceSettingsPanel
@@ -474,6 +506,23 @@ function BankerFinanceHome({
         />
       </div>
 
+      <FinanceFundingPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        actorType={context.actor.type}
+        classIsActive={context.classroom.status === "active"}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+        onRefresh={onRefresh}
+      />
+
+      <FinanceStatisticsPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+      />
+
       <FinanceSettingsPanel
         role="banker"
         classId={context.classroom.id}
@@ -554,6 +603,23 @@ function StudentFinanceHome({
           onRefresh={onRefresh}
         />
       </div>
+
+      <FinanceFundingPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        actorType={context.actor.type}
+        classIsActive={context.classroom.status === "active"}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+        onRefresh={onRefresh}
+      />
+
+      <FinanceStatisticsPanel
+        classId={context.classroom.id}
+        financeRole={context.financeRole}
+        currencyUnit={finance.currencyLabel}
+        refreshRevision={moduleRefreshRevision}
+      />
 
       <FinanceSettingsPanel
         role="student"

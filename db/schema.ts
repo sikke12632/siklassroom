@@ -943,6 +943,388 @@ export const financeSettingRevisions = sqliteTable("finance_setting_revisions", 
   ),
 ]);
 
+export const financeSalarySettings = sqliteTable("finance_salary_settings", {
+  classId: text("class_id").primaryKey().references(() => classes.id),
+  gradeAAmount: integer("grade_a_amount").notNull().default(1300),
+  gradeBAmount: integer("grade_b_amount").notNull().default(1000),
+  gradeCAmount: integer("grade_c_amount").notNull().default(700),
+  revision: integer("revision").notNull().default(0),
+  updatedByTeacherId: text("updated_by_teacher_id").references(() => teachers.id),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  index("finance_salary_settings_updated_by_idx").on(table.updatedByTeacherId),
+  check(
+    "finance_salary_settings_amount_ck",
+    sql`${table.gradeAAmount} BETWEEN 0 AND 1000000000
+      AND ${table.gradeBAmount} BETWEEN 0 AND ${table.gradeAAmount}
+      AND ${table.gradeCAmount} BETWEEN 0 AND ${table.gradeBAmount}`,
+  ),
+  check("finance_salary_settings_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeSalarySettingRevisions = sqliteTable("finance_salary_setting_revisions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  revision: integer("revision").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  previousSettingsJson: text("previous_settings_json").notNull(),
+  settingsJson: text("settings_json").notNull(),
+  changeReason: text("change_reason").notNull(),
+  actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+  actorLabel: text("actor_label").notNull().default("교사"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_salary_setting_revisions_class_revision_uq").on(
+    table.classId,
+    table.revision,
+  ),
+  uniqueIndex("finance_salary_setting_revisions_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_salary_setting_revisions_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+  ),
+  check(
+    "finance_salary_setting_revisions_revision_ck",
+    sql`${table.revision} > 0`,
+  ),
+  check(
+    "finance_salary_setting_revisions_reason_ck",
+    sql`LENGTH(TRIM(${table.changeReason})) BETWEEN 2 AND 300`,
+  ),
+]);
+
+export const financePayrollRuns = sqliteTable("finance_payroll_runs", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  closureId: text("closure_id").notNull().references(() => classJobMonthClosures.id),
+  sourcePeriodId: text("source_period_id").notNull().references(() => classJobAssignmentPeriods.id),
+  sourceYear: integer("source_year").notNull(),
+  sourceMonth: integer("source_month").notNull(),
+  salarySettingsRevision: integer("salary_settings_revision").notNull(),
+  salarySettingsJson: text("salary_settings_json").notNull(),
+  status: text("status").notNull().default("prepared"),
+  recipientCount: integer("recipient_count").notNull(),
+  postedCount: integer("posted_count").notNull().default(0),
+  totalAmount: integer("total_amount").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  initiatedByTeacherId: text("initiated_by_teacher_id").references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+  postedAt: integer("posted_at"),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_payroll_runs_closure_uq").on(table.closureId),
+  uniqueIndex("finance_payroll_runs_class_idempotency_uq").on(table.classId, table.idempotencyKey),
+  uniqueIndex("finance_payroll_runs_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_payroll_runs_class_posting_uq")
+    .on(table.classId)
+    .where(sql`${table.status} = 'posting'`),
+  index("finance_payroll_runs_class_created_idx").on(table.classId, table.createdAt),
+  check(
+    "finance_payroll_runs_status_ck",
+    sql`${table.status} IN ('prepared', 'posting', 'completed')`,
+  ),
+  check(
+    "finance_payroll_runs_counts_ck",
+    sql`${table.recipientCount} > 0
+      AND ${table.postedCount} BETWEEN 0 AND ${table.recipientCount}`,
+  ),
+  check("finance_payroll_runs_amount_ck", sql`${table.totalAmount} BETWEEN 0 AND 1000000000`),
+  check(
+    "finance_payroll_runs_time_ck",
+    sql`(${table.status} = 'completed' AND ${table.postedAt} IS NOT NULL)
+      OR (${table.status} <> 'completed')`,
+  ),
+]);
+
+export const financePayrollItems = sqliteTable("finance_payroll_items", {
+  id: text("id").primaryKey(),
+  runId: text("run_id").notNull().references(() => financePayrollRuns.id),
+  classId: text("class_id").notNull().references(() => classes.id),
+  closureResultId: text("closure_result_id").notNull().references(() => classJobMonthResults.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  studentNumber: integer("student_number").notNull(),
+  studentName: text("student_name").notNull(),
+  classJobId: text("class_job_id").notNull(),
+  jobName: text("job_name").notNull(),
+  jobGrade: text("job_grade").notNull(),
+  baseAmount: integer("base_amount").notNull(),
+  totalAmount: integer("total_amount").notNull(),
+  status: text("status").notNull().default("pending"),
+  postedTransactionId: text("posted_transaction_id"),
+  createdAt: integer("created_at").notNull(),
+  postedAt: integer("posted_at"),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_payroll_items_run_student_uq").on(table.runId, table.studentId),
+  uniqueIndex("finance_payroll_items_closure_result_uq").on(table.closureResultId),
+  uniqueIndex("finance_payroll_items_posted_transaction_uq")
+    .on(table.postedTransactionId)
+    .where(sql`${table.postedTransactionId} IS NOT NULL`),
+  index("finance_payroll_items_class_status_idx").on(table.classId, table.status),
+  foreignKey({
+    columns: [table.runId, table.classId],
+    foreignColumns: [financePayrollRuns.id, financePayrollRuns.classId],
+    name: "finance_payroll_items_run_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_payroll_items_transaction_class_fk",
+  }),
+  check("finance_payroll_items_grade_ck", sql`${table.jobGrade} IN ('A', 'B', 'C')`),
+  check(
+    "finance_payroll_items_amount_ck",
+    sql`${table.baseAmount} BETWEEN 0 AND 1000000000
+      AND ${table.totalAmount} = ${table.baseAmount}`,
+  ),
+  check(
+    "finance_payroll_items_status_ck",
+    sql`${table.status} IN ('pending', 'posted')
+      AND ((${table.status} = 'posted'
+          AND ${table.postedTransactionId} IS NOT NULL
+          AND ${table.postedAt} IS NOT NULL)
+        OR (${table.status} = 'pending'
+          AND ${table.postedTransactionId} IS NULL
+          AND ${table.postedAt} IS NULL))`,
+  ),
+]);
+
+export const financeFundingCampaigns = sqliteTable("finance_funding_campaigns", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  creatorStudentId: text("creator_student_id").notNull().references(() => students.id),
+  recipientWalletAccountId: text("recipient_wallet_account_id").notNull(),
+  creatorStudentNumberSnapshot: integer("creator_student_number_snapshot").notNull(),
+  creatorStudentNameSnapshot: text("creator_student_name_snapshot").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  targetAmount: integer("target_amount").notNull(),
+  pledgedAmount: integer("pledged_amount").notNull().default(0),
+  refundedAmount: integer("refunded_amount").notNull().default(0),
+  status: text("status").notNull().default("active"),
+  deadlineAt: integer("deadline_at").notNull(),
+  terminalReason: text("terminal_reason"),
+  revision: integer("revision").notNull().default(0),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  payoutTransactionId: text("payout_transaction_id"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+  fundedAt: integer("funded_at"),
+  settledAt: integer("settled_at"),
+  cancelledAt: integer("cancelled_at"),
+}, (table) => [
+  uniqueIndex("finance_funding_campaigns_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_funding_campaigns_class_creator_idempotency_uq").on(
+    table.classId,
+    table.creatorStudentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_funding_campaigns_creator_nonterminal_uq")
+    .on(table.classId, table.creatorStudentId)
+    .where(sql`${table.status} IN ('active', 'paused', 'funded', 'refunding')`),
+  uniqueIndex("finance_funding_campaigns_payout_transaction_uq")
+    .on(table.payoutTransactionId)
+    .where(sql`${table.payoutTransactionId} IS NOT NULL`),
+  index("finance_funding_campaigns_class_status_idx").on(table.classId, table.status, table.deadlineAt),
+  foreignKey({
+    columns: [table.recipientWalletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_funding_campaigns_wallet_class_fk",
+  }),
+  foreignKey({
+    columns: [table.payoutTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_funding_campaigns_payout_class_fk",
+  }),
+  check(
+    "finance_funding_campaigns_text_ck",
+    sql`LENGTH(TRIM(${table.title})) BETWEEN 1 AND 50
+      AND LENGTH(${table.description}) <= 300`,
+  ),
+  check(
+    "finance_funding_campaigns_amount_ck",
+    sql`${table.targetAmount} BETWEEN 1 AND 1000000000
+      AND ${table.pledgedAmount} BETWEEN 0 AND ${table.targetAmount}
+      AND ${table.refundedAmount} BETWEEN 0 AND ${table.pledgedAmount}`,
+  ),
+  check(
+    "finance_funding_campaigns_status_ck",
+    sql`${table.status} IN ('active', 'paused', 'funded', 'refunding', 'succeeded', 'failed', 'cancelled')`,
+  ),
+  check("finance_funding_campaigns_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const financeFundingCampaignEvents = sqliteTable("finance_funding_campaign_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+  actorStudentId: text("actor_student_id").references(() => students.id),
+  actorLabel: text("actor_label").notNull(),
+  interventionReason: text("intervention_reason"),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  campaignSnapshotJson: text("campaign_snapshot_json").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_funding_campaign_events_campaign_revision_uq").on(
+    table.campaignId,
+    table.revision,
+  ),
+  uniqueIndex("finance_funding_campaign_events_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_funding_campaign_events_class_created_idx").on(table.classId, table.createdAt),
+  foreignKey({
+    columns: [table.campaignId, table.classId],
+    foreignColumns: [financeFundingCampaigns.id, financeFundingCampaigns.classId],
+    name: "finance_funding_campaign_events_campaign_class_fk",
+  }),
+  check(
+    "finance_funding_campaign_events_action_ck",
+    sql`${table.action} IN ('created', 'edited', 'paused', 'resumed', 'funded', 'refund_started', 'succeeded', 'failed', 'cancelled')`,
+  ),
+  check(
+    "finance_funding_campaign_events_actor_ck",
+    sql`(${table.actorType} = 'teacher'
+        AND ${table.actorTeacherId} IS NOT NULL
+        AND ${table.actorStudentId} IS NULL
+        AND LENGTH(TRIM(COALESCE(${table.interventionReason}, ''))) >= 2)
+      OR (${table.actorType} = 'student'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NOT NULL
+        AND ${table.interventionReason} IS NULL)
+      OR (${table.actorType} = 'system'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NULL)`,
+  ),
+]);
+
+export const financeFundingContributions = sqliteTable("finance_funding_contributions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  contributorStudentId: text("contributor_student_id").notNull().references(() => students.id),
+  walletAccountId: text("wallet_account_id").notNull(),
+  studentNumberSnapshot: integer("student_number_snapshot").notNull(),
+  studentNameSnapshot: text("student_name_snapshot").notNull(),
+  amount: integer("amount").notNull(),
+  campaignRevisionBefore: integer("campaign_revision_before").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id").notNull(),
+  transactionPayloadHash: text("transaction_payload_hash").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_funding_contributions_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("finance_funding_contributions_student_idempotency_uq").on(
+    table.classId,
+    table.contributorStudentId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_funding_contributions_posted_transaction_uq")
+    .on(table.postedTransactionId)
+    .where(sql`${table.postedTransactionId} IS NOT NULL`),
+  index("finance_funding_contributions_campaign_created_idx").on(table.campaignId, table.createdAt),
+  foreignKey({
+    columns: [table.campaignId, table.classId],
+    foreignColumns: [financeFundingCampaigns.id, financeFundingCampaigns.classId],
+    name: "finance_funding_contributions_campaign_class_fk",
+  }),
+  foreignKey({
+    columns: [table.walletAccountId, table.classId],
+    foreignColumns: [financeAccounts.id, financeAccounts.classId],
+    name: "finance_funding_contributions_wallet_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_funding_contributions_transaction_class_fk",
+  }),
+  check("finance_funding_contributions_amount_ck", sql`${table.amount} BETWEEN 1 AND 1000000000`),
+]);
+
+export const financeFundingRefunds = sqliteTable("finance_funding_refunds", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  contributionId: text("contribution_id").notNull(),
+  studentId: text("student_id").notNull().references(() => students.id),
+  amount: integer("amount").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id").notNull(),
+  transactionPayloadHash: text("transaction_payload_hash").notNull(),
+  refundedAt: integer("refunded_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_funding_refunds_contribution_uq").on(table.contributionId),
+  uniqueIndex("finance_funding_refunds_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_funding_refunds_posted_transaction_uq").on(table.postedTransactionId),
+  index("finance_funding_refunds_campaign_idx").on(table.campaignId, table.refundedAt),
+  foreignKey({
+    columns: [table.campaignId, table.classId],
+    foreignColumns: [financeFundingCampaigns.id, financeFundingCampaigns.classId],
+    name: "finance_funding_refunds_campaign_class_fk",
+  }),
+  foreignKey({
+    columns: [table.contributionId, table.classId],
+    foreignColumns: [financeFundingContributions.id, financeFundingContributions.classId],
+    name: "finance_funding_refunds_contribution_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_funding_refunds_transaction_class_fk",
+  }),
+  check("finance_funding_refunds_amount_ck", sql`${table.amount} BETWEEN 1 AND 1000000000`),
+]);
+
+export const financeFundingSettlements = sqliteTable("finance_funding_settlements", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  campaignId: text("campaign_id").notNull(),
+  recipientStudentId: text("recipient_student_id").notNull().references(() => students.id),
+  amount: integer("amount").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  postedTransactionId: text("posted_transaction_id").notNull(),
+  transactionPayloadHash: text("transaction_payload_hash").notNull(),
+  settledAt: integer("settled_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_funding_settlements_campaign_uq").on(table.campaignId),
+  uniqueIndex("finance_funding_settlements_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  uniqueIndex("finance_funding_settlements_posted_transaction_uq").on(table.postedTransactionId),
+  foreignKey({
+    columns: [table.campaignId, table.classId],
+    foreignColumns: [financeFundingCampaigns.id, financeFundingCampaigns.classId],
+    name: "finance_funding_settlements_campaign_class_fk",
+  }),
+  foreignKey({
+    columns: [table.postedTransactionId, table.classId],
+    foreignColumns: [financeTransactions.id, financeTransactions.classId],
+    name: "finance_funding_settlements_transaction_class_fk",
+  }),
+  check("finance_funding_settlements_amount_ck", sql`${table.amount} BETWEEN 1 AND 1000000000`),
+]);
+
 export const financeDepositProducts = sqliteTable("finance_deposit_products", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),

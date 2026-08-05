@@ -41,6 +41,35 @@ async function activeStockHoldingCount(input: {
   return Number(row?.count ?? 0);
 }
 
+async function activeFundingCampaignCount(input: {
+  classId: string;
+  studentId?: string;
+}) {
+  await ensureSchema();
+  const conditions = [
+    "campaign.class_id = ?",
+    "campaign.status IN ('active', 'paused', 'funded', 'refunding')",
+  ];
+  const bindings = [input.classId];
+  if (input.studentId) {
+    conditions.push(`(
+      campaign.creator_student_id = ? OR EXISTS (
+        SELECT 1 FROM finance_funding_contributions contribution
+        WHERE contribution.class_id = campaign.class_id
+          AND contribution.campaign_id = campaign.id
+          AND contribution.contributor_student_id = ?
+      )
+    )`);
+    bindings.push(input.studentId, input.studentId);
+  }
+  const row = await database().prepare(
+    `SELECT COUNT(*) AS count
+     FROM finance_funding_campaigns campaign
+     WHERE ${conditions.join(" AND ")}`,
+  ).bind(...bindings).first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 async function pendingCashRequestCount(input: {
   classId: string;
   studentId?: string;
@@ -90,6 +119,13 @@ export async function assertClassCanBeArchived(classId: string) {
       "FINANCE_STOCK_ACTIVE_CLASS",
     );
   }
+  if (await activeFundingCampaignCount({ classId }) > 0) {
+    throw new ApiError(
+      409,
+      "진행 중이거나 정산 중인 펀딩이 있어 학급을 아직 보관할 수 없습니다. 펀딩이 성공 또는 환불 완료된 뒤 다시 시도해 주세요.",
+      "FINANCE_FUNDING_ACTIVE_CLASS",
+    );
+  }
 }
 
 export async function assertStudentCanBeExcluded(
@@ -119,6 +155,13 @@ export async function assertStudentCanBeExcluded(
       409,
       "이 학생이 보유한 주식이 남아 있어 명단에서 제외할 수 없습니다. 학생이 매도하거나 교사가 주식시장에서 비상 청산해 주세요.",
       "FINANCE_STOCK_ACTIVE_STUDENT",
+    );
+  }
+  if (await activeFundingCampaignCount({ classId, studentId }) > 0) {
+    throw new ApiError(
+      409,
+      "이 학생이 만든 펀딩 또는 참여한 펀딩이 진행 중이라 명단에서 제외할 수 없습니다. 펀딩 정산을 먼저 마쳐 주세요.",
+      "FINANCE_FUNDING_ACTIVE_STUDENT",
     );
   }
 }
@@ -165,6 +208,20 @@ export function mapFinanceDepositLifecycleError(error: unknown): never {
       409,
       "이 학생이 보유한 주식이 남아 있어 명단에서 제외할 수 없습니다. 학생이 매도하거나 교사가 주식시장에서 비상 청산해 주세요.",
       "FINANCE_STOCK_ACTIVE_STUDENT",
+    );
+  }
+  if (message.includes("FINANCE_FUNDING_ACTIVE_CLASS")) {
+    throw new ApiError(
+      409,
+      "진행 중이거나 정산 중인 펀딩이 있어 학급을 아직 보관할 수 없습니다. 펀딩 정산을 먼저 마쳐 주세요.",
+      "FINANCE_FUNDING_ACTIVE_CLASS",
+    );
+  }
+  if (message.includes("FINANCE_FUNDING_ACTIVE_STUDENT")) {
+    throw new ApiError(
+      409,
+      "이 학생이 만든 펀딩 또는 참여한 펀딩이 진행 중이라 명단에서 제외할 수 없습니다. 펀딩 정산을 먼저 마쳐 주세요.",
+      "FINANCE_FUNDING_ACTIVE_STUDENT",
     );
   }
   throw error;

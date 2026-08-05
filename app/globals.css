@@ -2893,6 +2893,124 @@ body.qr-printing { overflow: hidden; }
   margin-top: 16px;
 }
 
+.finance-audit-category.category-funding {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+.finance-audit-category.category-payroll {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+}
+.finance-action-notice.danger {
+  border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+.finance-role-badge.role-active,
+.finance-role-badge.role-succeeded {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+}
+.finance-role-badge.role-paused,
+.finance-role-badge.role-funded,
+.finance-role-badge.role-refunding {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+.finance-role-badge.role-failed,
+.finance-role-badge.role-cancelled {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.finance-statistics-panel { scroll-margin-top: 80px; }
+.finance-statistics-summary-grid { margin-top: 18px; }
+.finance-statistics-asset-card > span,
+.finance-statistics-summary-grid .finance-balance-card > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.finance-statistics-asset-card > span svg,
+.finance-statistics-summary-grid .finance-balance-card > span svg {
+  width: 22px;
+  height: 22px;
+}
+.finance-statistics-asset-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.finance-statistics-asset-card p { margin: 6px 0 0; color: var(--color-text-muted); }
+.finance-statistics-breakdown,
+.finance-statistics-own,
+.finance-statistics-distribution,
+.finance-statistics-students {
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 1px solid var(--color-border);
+}
+.finance-statistics-own-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 0;
+}
+.finance-statistics-own-list > div {
+  min-width: 0;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-subtle);
+}
+.finance-statistics-own-list dt { color: var(--color-text-muted); font-size: var(--text-sm); }
+.finance-statistics-own-list dd { margin: 5px 0 0; font-weight: 850; overflow-wrap: anywhere; }
+.finance-statistics-distribution ul {
+  display: grid;
+  gap: 11px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.finance-statistics-distribution li > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+.finance-statistics-distribution progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--color-primary);
+}
+.finance-statistics-table-wrap {
+  overflow-x: auto;
+  margin-top: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.finance-statistics-table-wrap table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+.finance-statistics-table-wrap th,
+.finance-statistics-table-wrap td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--color-border);
+  text-align: right;
+  white-space: nowrap;
+}
+.finance-statistics-table-wrap th:first-child,
+.finance-statistics-table-wrap td:first-child { text-align: left; }
+.finance-statistics-table-wrap thead { background: var(--color-surface-subtle); }
+.finance-statistics-table-wrap tbody tr:last-child > * { border-bottom: 0; }
+.finance-statistics-disclaimer { margin-top: 20px; }
+
 .finance-state-page {
   display: grid;
   place-items: center;
@@ -3034,6 +3152,7 @@ body.qr-printing { overflow: hidden; }
   .finance-audit-event-content { grid-template-columns: 1fr; }
   .finance-audit-event-content .finance-audit-amount { grid-column: auto; }
   .finance-state-card { padding: 30px 20px; }
+  .finance-statistics-own-list { grid-template-columns: 1fr 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

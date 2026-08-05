@@ -15,6 +15,33 @@ import {
 } from "./job-evaluation";
 import { ApiError } from "./responses";
 import { seoulServerTime } from "./seoul-time";
+import { autoPayFinancePayrollForClosure } from "./finance-payroll";
+
+async function automaticPayrollAfterClosure(classId: string, closureId: string) {
+  try {
+    const result = await autoPayFinancePayrollForClosure({ classId, closureId });
+    return {
+      status: "completed" as const,
+      payrollId: result.payroll.id,
+      recipientCount: result.payroll.recipientCount,
+      totalAmount: result.payroll.totalAmount,
+      deduplicated: result.deduplicated,
+    };
+  } catch (error) {
+    console.error("automatic job salary payout deferred", {
+      classId,
+      closureId,
+      error,
+    });
+    return {
+      status: "attention" as const,
+      code: error instanceof ApiError
+        ? error.code ?? "FINANCE_PAYROLL_DEFERRED"
+        : "FINANCE_PAYROLL_DEFERRED",
+      message: "직업 월급 자동 지급을 마치지 못했습니다. 금융센터의 직업 월급에서 다시 지급할 수 있습니다.",
+    };
+  }
+}
 
 export {
   nextJobMonth,
@@ -605,10 +632,15 @@ export async function closeMonthlyJobSource(input: {
     );
   }
   if (context.closure) {
+    const payroll = await automaticPayrollAfterClosure(
+      input.classId,
+      context.closure.id,
+    );
     return {
       idempotent: true,
       closureId: context.closure.id,
       board: serializeBoard(context),
+      payroll,
     };
   }
   const blocked = blockingReason(context);
@@ -794,10 +826,12 @@ export async function closeMonthlyJobSource(input: {
     );
   }
   const nextContext = await loadContext(input.classId);
+  const payroll = await automaticPayrollAfterClosure(input.classId, stored.id);
   return {
     idempotent: stored.id !== closureId,
     closureId: stored.id,
     board: serializeBoard(nextContext),
+    payroll,
   };
 }
 

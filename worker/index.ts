@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { settleDueDepositContracts } from "../lib/finance-deposits";
 import { processFinanceStockMarketTicks } from "../lib/finance-stocks";
+import { processDueFundingCampaigns } from "../lib/finance-funding";
 
 interface Env {
   ASSETS: Fetcher;
@@ -87,7 +88,8 @@ const worker = {
       Promise.allSettled([
         settleDueDepositContracts(env.DB, { now, limit: 100 }),
         processFinanceStockMarketTicks(env.DB, { now, limit: 100 }),
-      ]).then(([depositResult, stockResult]) => {
+        processDueFundingCampaigns(env.DB, { now, limit: 100 }),
+      ]).then(([depositResult, stockResult, fundingResult]) => {
         if (depositResult.status === "rejected") {
           console.error("finance deposit maturity processing failed", depositResult.reason);
         } else if (
@@ -117,6 +119,11 @@ const worker = {
             deferred: stockResult.value.deferred,
             retrySchedulingFailed: stockResult.value.retrySchedulingFailed,
           });
+        }
+        if (fundingResult.status === "rejected") {
+          console.error("finance funding processing failed", fundingResult.reason);
+        } else if (fundingResult.value.failed > 0) {
+          console.error("finance funding processing incomplete", fundingResult.value);
         }
       }),
     );

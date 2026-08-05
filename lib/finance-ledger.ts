@@ -537,6 +537,17 @@ export async function reverseFinanceTransaction(input: {
       "FINANCE_STOCK_REVERSAL_REQUIRES_TRADE",
     );
   }
+  if (
+    original.sourceType === "funding_contribution"
+    || original.sourceType === "funding_settlement"
+    || original.sourceType === "funding_refund"
+  ) {
+    throw new ApiError(
+      409,
+      "펀딩 거래는 참여금·성공 지급·환불 기록이 함께 움직이므로 일반 거래 정정으로 바꿀 수 없습니다.",
+      "FINANCE_FUNDING_REVERSAL_REQUIRES_CAMPAIGN",
+    );
+  }
 
   return postFinanceTransaction({
     classId: input.classId,

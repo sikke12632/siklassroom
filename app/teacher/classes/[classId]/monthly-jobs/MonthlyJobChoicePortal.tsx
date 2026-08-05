@@ -167,6 +167,13 @@ type ApiPayload = {
   code?: string;
 };
 
+type CloseMonthlySourceResponse = {
+  payroll?: {
+    status: "completed" | "attention";
+    message?: string;
+  };
+};
+
 class MonthlyChoiceError extends Error {
   code?: string;
 
@@ -551,7 +558,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
     setMessage("");
     let closed = false;
     try {
-      await post(
+      const closeResult = await post<CloseMonthlySourceResponse>(
         `/api/classes/${classId}/monthly-job-choice/close`,
         {
           expectedSourcePeriodId: board.sourcePeriod.id,
@@ -561,6 +568,12 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
       await post(`/api/classes/${classId}/monthly-job-choice/start`, {});
       setMessage(`${monthLabel(board.targetMonth)} 직업 선택 순서를 만들었어요.`);
       await load();
+      if (closeResult.payroll?.status === "attention") {
+        setStorageWarning(
+          closeResult.payroll.message
+            || "직업 월급 자동 지급을 마치지 못했습니다. 금융센터의 직업 월급에서 다시 지급해 주세요.",
+        );
+      }
     } catch (reason) {
       setError(formatError(reason));
       if (closed) await load();
