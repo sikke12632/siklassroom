@@ -1305,6 +1305,140 @@ test("unresolved cash requests atomically block class archive and student exclus
       guard_count: 0,
     }]);
 
+    const completionState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT period.status, period.mode, period.revision,
+              period.confirmed_at, classroom.setup_stage,
+              (SELECT COUNT(*) FROM student_job_assignments assignment
+               WHERE assignment.period_id = period.id) AS assignment_count,
+              (SELECT COUNT(*) FROM job_assignment_candidates candidate
+               WHERE candidate.period_id = period.id) AS candidate_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = period.class_id
+                 AND action = 'initial_job_assignments_confirmed') AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'initial_job_assignments_complete') AS guard_count
+       FROM class_job_assignment_periods period
+       JOIN classes classroom ON classroom.id = period.class_id
+       WHERE period.class_id = 'class-cash-archive'
+         AND period.assignment_type = 'initial';`,
+    ));
+    const completionPayload = {
+      mode: "manual",
+      expectedRevision: 1,
+      expectedCalendarRevision: 2,
+      requestId: "initial-assignment-completion-request",
+      assignments: [
+        {
+          classJobId: "class-cash-archive:custom:atomic-job",
+          studentId: "student-cash-archive",
+          method: "manual",
+        },
+        {
+          classJobId: "class-cash-archive:custom:atomic-job",
+          studentId: "student-cash-archive-peer",
+          method: "manual",
+        },
+      ],
+    };
+    const completionStateBefore = completionState();
+    executeSql(persistPath, `
+      CREATE TRIGGER test_assignment_completion_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'initial_job_assignments_confirmed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_ASSIGNMENT_COMPLETION_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const completionAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(completionPayload),
+      },
+    );
+    const completionAuditFailureBody = await completionAuditFailure.text();
+    assert.equal(completionAuditFailure.status, 500, completionAuditFailureBody);
+    assert.deepEqual(completionState(), completionStateBefore);
+    executeSql(persistPath, "DROP TRIGGER test_assignment_completion_audit_insert_failure;");
+
+    const completionSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(completionPayload),
+      },
+    );
+    const completionSuccessBody = await completionSuccess.json();
+    assert.equal(completionSuccess.status, 200, JSON.stringify(completionSuccessBody));
+    assert.equal(completionSuccessBody.idempotent, false);
+    assert.deepEqual(completionState(), [{
+      status: "confirmed",
+      mode: "manual",
+      revision: 2,
+      confirmed_at: completionSuccessBody.confirmedAt,
+      setup_stage: "completed",
+      assignment_count: 2,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const completionRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(completionPayload),
+      },
+    );
+    const completionRetryBody = await completionRetry.json();
+    assert.equal(completionRetry.status, 200, JSON.stringify(completionRetryBody));
+    assert.equal(completionRetryBody.idempotent, true);
+    assert.deepEqual(completionState(), [{
+      status: "confirmed",
+      mode: "manual",
+      revision: 2,
+      confirmed_at: completionSuccessBody.confirmedAt,
+      setup_stage: "completed",
+      assignment_count: 2,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const reusedCompletion = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...completionPayload,
+          assignments: completionPayload.assignments.map((assignment, index) => ({
+            ...assignment,
+            method: index === 0 ? "random" : assignment.method,
+          })),
+        }),
+      },
+    );
+    const reusedCompletionBody = await reusedCompletion.json();
+    assert.equal(reusedCompletion.status, 409, JSON.stringify(reusedCompletionBody));
+    assert.equal(reusedCompletionBody.code, "ASSIGNMENT_REQUEST_REUSED");
+    assert.deepEqual(completionState(), [{
+      status: "confirmed",
+      mode: "manual",
+      revision: 2,
+      confirmed_at: completionSuccessBody.confirmedAt,
+      setup_stage: "completed",
+      assignment_count: 2,
+      candidate_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

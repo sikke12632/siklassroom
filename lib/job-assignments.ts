@@ -323,6 +323,18 @@ function requestId(value: unknown) {
   return id;
 }
 
+function compositeRequestId(value: unknown) {
+  const id = requestId(value);
+  if (id.includes(":")) {
+    throw new ApiError(
+      400,
+      "요청 식별값 형식이 올바르지 않습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
+      "INVALID_REQUEST_ID",
+    );
+  }
+  return id;
+}
+
 async function manualRequestAssignments(periodId: string, id: string) {
   const result = await database().prepare(
     `SELECT class_job_id, student_id, assignment_method, request_id
@@ -495,14 +507,7 @@ export async function createManualAssignments(input: {
     throw new ApiError(400, "배정할 학생을 다시 선택해 주세요.", "INVALID_STUDENTS");
   }
   const students = await eligibleStudents(input.classId, input.studentIds.map(String));
-  const id = requestId(input.requestId);
-  if (id.includes(":")) {
-    throw new ApiError(
-      400,
-      "요청 식별값 형식이 올바르지 않습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
-      "INVALID_REQUEST_ID",
-    );
-  }
+  const id = compositeRequestId(input.requestId);
   const selectedStudentIds = students.map((student) => student.id);
   const existing = await manualRequestAssignments(period.id, id);
   if (existing.length) {
@@ -861,6 +866,26 @@ function submittedAssignments(
   );
 }
 
+function isExactSubmittedCompletion(input: {
+  stored: AssignmentRow[];
+  submitted: SubmittedAssignment[];
+  requestId: string;
+}) {
+  const prefix = `${input.requestId}:`;
+  const requestRows = input.stored.filter((row) => row.request_id?.startsWith(prefix));
+  if (requestRows.length !== input.submitted.length) {
+    return { exact: false, reused: requestRows.length > 0 };
+  }
+  const byStudent = new Map(requestRows.map((row) => [row.student_id, row]));
+  const exact = input.submitted.every((assignment) => {
+    const stored = byStudent.get(assignment.studentId);
+    return stored?.class_job_id === assignment.classJobId
+      && stored.assignment_method === assignment.method
+      && stored.request_id === `${input.requestId}:${assignment.studentId}`;
+  });
+  return { exact, reused: requestRows.length > 0 };
+}
+
 async function completeSubmittedAssignments(input: {
   classId: string;
   teacherId: string;
@@ -880,7 +905,38 @@ async function completeSubmittedAssignments(input: {
   if (!Number.isInteger(expectedCalendarRevision) || expectedCalendarRevision < 1) {
     throw new ApiError(400, "달력 버전을 확인할 수 없어요. 새로고침한 뒤 다시 시도해 주세요.", "INVALID_CALENDAR_REVISION");
   }
-  const idempotencyKey = requestId(input.requestId);
+  const idempotencyKey = compositeRequestId(input.requestId);
+  const currentBoard = await loadInitialAssignmentBoard(input.classId);
+  const currentPeriod = currentBoard.assignmentPeriodRecord;
+  if (currentPeriod?.status === "confirmed") {
+    const submitted = submittedAssignments(input.assignments, currentBoard);
+    const requestState = isExactSubmittedCompletion({
+      stored: currentBoard.assignments,
+      submitted,
+      requestId: idempotencyKey,
+    });
+    if (requestState.exact && currentPeriod.mode === mode) {
+      return {
+        periodId: currentPeriod.id,
+        confirmedAt: Number(currentPeriod.confirmed_at),
+        assignmentCount: submitted.length,
+        source: "local_draft",
+        idempotent: true,
+      };
+    }
+    if (requestState.reused) {
+      throw new ApiError(
+        409,
+        "같은 요청 식별값이 다른 배정표에 이미 사용되었습니다. 최신 배정표를 확인해 주세요.",
+        "ASSIGNMENT_REQUEST_REUSED",
+      );
+    }
+    throw new ApiError(
+      409,
+      "첫 직업 배정이 이미 확정되었습니다. 최신 배정표를 확인해 주세요.",
+      "ASSIGNMENT_CONFIRMED",
+    );
+  }
   const period = await requireReadyDraftPeriod(input.classId);
   if (Number(period.revision) !== expectedRevision) {
     throw new ApiError(
@@ -903,7 +959,45 @@ async function completeSubmittedAssignments(input: {
   const assignments = submittedAssignments(input.assignments, board);
   const now = Date.now();
   const db = database();
+  const reservationGuardId = crypto.randomUUID();
+  const completionGuardId = crypto.randomUUID();
   const statements = [
+    db.prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN
+         EXISTS (
+           SELECT 1 FROM class_job_assignment_periods
+           WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+         )
+         AND EXISTS (
+           SELECT 1 FROM class_calendars
+           WHERE class_id = ? AND revision = ?
+             AND first_job_start_date = ? AND first_job_end_date = ?
+         )
+         AND EXISTS (
+           SELECT 1 FROM class_job_setup
+           WHERE class_id = ? AND status = 'completed'
+         )
+         AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded') = ?
+         AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
+              WHERE class_id = ? AND is_active = 1) = ?
+       THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
+    ).bind(
+      period.id,
+      input.classId,
+      expectedRevision,
+      input.classId,
+      expectedCalendarRevision,
+      board.calendar.firstJobStartDate,
+      board.calendar.firstJobEndDate,
+      input.classId,
+      input.classId,
+      assignments.length,
+      input.classId,
+      assignments.length,
+      reservationGuardId,
+      now,
+    ),
     db.prepare(
       `DELETE FROM student_job_assignments
        WHERE period_id = ? AND EXISTS (
@@ -949,59 +1043,52 @@ async function completeSubmittedAssignments(input: {
       input.classId,
     )),
     db.prepare(
+      `INSERT INTO registration_operation_guards (id, operation, created_at)
+       SELECT CASE WHEN
+         EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)
+         AND (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?) = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM student_job_assignments assignment
+           LEFT JOIN students student ON student.id = assignment.student_id
+           LEFT JOIN class_jobs job ON job.id = assignment.class_job_id
+           WHERE assignment.period_id = ?
+             AND (student.class_id <> ? OR student.status = 'excluded'
+               OR job.class_id <> ? OR job.is_active <> 1)
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM class_jobs job
+           WHERE job.class_id = ? AND job.is_active = 1
+             AND (
+               SELECT COUNT(*) FROM student_job_assignments assignment
+               WHERE assignment.period_id = ? AND assignment.class_job_id = job.id
+             ) <> job.member_capacity
+         )
+       THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
+    ).bind(
+      reservationGuardId,
+      period.id,
+      assignments.length,
+      period.id,
+      input.classId,
+      input.classId,
+      input.classId,
+      period.id,
+      completionGuardId,
+      now,
+    ),
+    db.prepare(
       `DELETE FROM job_assignment_candidates WHERE period_id = ?`,
     ).bind(period.id),
     db.prepare(
       `UPDATE class_job_assignment_periods
-       SET mode = ?,
-           status = CASE WHEN status = 'draft' AND revision = ?
-             AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded') = ?
-             AND (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?) = ?
-             AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
-                  WHERE class_id = ? AND is_active = 1) = ?
-             AND NOT EXISTS (
-               SELECT 1 FROM student_job_assignments a
-               LEFT JOIN students s ON s.id = a.student_id
-               LEFT JOIN class_jobs j ON j.id = a.class_job_id
-               WHERE a.period_id = ?
-                 AND (s.class_id <> ? OR s.status = 'excluded'
-                   OR j.class_id <> ? OR j.is_active <> 1)
-             )
-             AND NOT EXISTS (
-               SELECT 1 FROM student_job_assignments a
-               JOIN class_jobs j ON j.id = a.class_job_id
-               WHERE a.period_id = ?
-               GROUP BY a.class_job_id, j.member_capacity
-               HAVING COUNT(*) > j.member_capacity
-             )
-             AND EXISTS (
-               SELECT 1 FROM class_calendars c
-               WHERE c.class_id = ? AND c.revision = ?
-                 AND c.first_job_start_date = ?
-                 AND c.first_job_end_date = ?
-             )
-           THEN 'confirmed' ELSE NULL END,
+       SET mode = ?, status = 'confirmed',
            calendar_revision = ?, first_job_start_date = ?, first_job_end_date = ?,
            confirmed_at = ?, confirmed_by_teacher_id = ?,
            revision = revision + 1, updated_at = ?
-       WHERE id = ? AND class_id = ?`,
+       WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+         AND EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
     ).bind(
       mode,
-      expectedRevision,
-      input.classId,
-      assignments.length,
-      period.id,
-      assignments.length,
-      input.classId,
-      assignments.length,
-      period.id,
-      input.classId,
-      input.classId,
-      period.id,
-      input.classId,
-      expectedCalendarRevision,
-      board.calendar.firstJobStartDate,
-      board.calendar.firstJobEndDate,
       expectedCalendarRevision,
       board.calendar.firstJobStartDate,
       board.calendar.firstJobEndDate,
@@ -1010,6 +1097,8 @@ async function completeSubmittedAssignments(input: {
       now,
       period.id,
       input.classId,
+      expectedRevision,
+      completionGuardId,
     ),
     db.prepare(
       `UPDATE classes SET setup_stage = 'completed', updated_at = ?
@@ -1018,21 +1107,44 @@ async function completeSubmittedAssignments(input: {
          WHERE id = ? AND class_id = ? AND status = 'confirmed'
        )`,
     ).bind(now, input.classId, period.id, input.classId),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       ) VALUES (?, ?, ?, NULL, 'initial_job_assignments_confirmed', ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      input.teacherId,
+      input.classId,
+      JSON.stringify({
+        periodId: period.id,
+        confirmedAt: now,
+        assignmentCount: assignments.length,
+        source: "local_draft",
+        idempotent: false,
+      }),
+      now,
+    ),
+    db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(completionGuardId),
+    db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(reservationGuardId),
   ];
   try {
     await db.batch(statements);
-  } catch {
-    throw new ApiError(
-      409,
-      "확정 직전에 학생·직업·달력 정보가 바뀌었어요. 로컬 배정은 유지했으니 새로고침 후 다시 확인해 주세요.",
-      "ASSIGNMENT_CONFIRM_CONFLICT",
-    );
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "확정 직전에 학생·직업·달력 정보가 바뀌었어요. 로컬 배정은 유지했으니 새로고침 후 다시 확인해 주세요.",
+        "ASSIGNMENT_CONFIRM_CONFLICT",
+      );
+    }
+    throw error;
   }
   return {
     periodId: period.id,
     confirmedAt: now,
     assignmentCount: assignments.length,
     source: "local_draft",
+    idempotent: false,
   };
 }
 
@@ -1070,40 +1182,80 @@ export async function completeInitialAssignments(input: {
   }
   const now = Date.now();
   const db = database();
-  const results = await db.batch([
-    db.prepare(
-      `UPDATE class_job_assignment_periods
-       SET status = 'confirmed', confirmed_at = ?, confirmed_by_teacher_id = ?,
-           revision = revision + 1, updated_at = ?
-       WHERE id = ? AND class_id = ? AND status = 'draft'
-         AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded')
-             = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
-         AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
-              WHERE class_id = ? AND is_active = 1)
-             = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
-         AND EXISTS (SELECT 1 FROM class_calendars WHERE class_id = ?)`,
-    ).bind(
-      now, input.teacherId, now, period.id, input.classId,
-      input.classId, period.id, input.classId, period.id, input.classId,
-    ),
-    db.prepare(
-      `UPDATE classes SET setup_stage = 'completed', updated_at = ?
-       WHERE id = ? AND EXISTS (
-         SELECT 1 FROM class_job_assignment_periods
-         WHERE id = ? AND class_id = ? AND status = 'confirmed'
-       )`,
-    ).bind(now, input.classId, period.id, input.classId),
-  ]);
-  if (!results[0].meta.changes) {
-    throw new ApiError(
-      409,
-      "확정 직전에 학생이나 직업 정보가 바뀌었어요. 최신 배정표를 확인해 주세요.",
-      "ASSIGNMENT_CONFIRM_CONFLICT",
-    );
+  const completionGuardId = crypto.randomUUID();
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE class_job_assignment_periods
+         SET status = 'confirmed', confirmed_at = ?, confirmed_by_teacher_id = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE id = ? AND class_id = ? AND status = 'draft'
+           AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded')
+               = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
+           AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
+                WHERE class_id = ? AND is_active = 1)
+               = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
+           AND EXISTS (SELECT 1 FROM class_calendars WHERE class_id = ?)`,
+      ).bind(
+        now, input.teacherId, now, period.id, input.classId,
+        input.classId, period.id, input.classId, period.id, input.classId,
+      ),
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM class_job_assignment_periods
+           WHERE id = ? AND class_id = ? AND status = 'confirmed'
+             AND confirmed_at = ? AND confirmed_by_teacher_id = ?
+         ) THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
+      ).bind(
+        period.id,
+        input.classId,
+        now,
+        input.teacherId,
+        completionGuardId,
+        now,
+      ),
+      db.prepare(
+        `UPDATE classes SET setup_stage = 'completed', updated_at = ?
+         WHERE id = ? AND EXISTS (
+           SELECT 1 FROM class_job_assignment_periods
+           WHERE id = ? AND class_id = ? AND status = 'confirmed'
+         )`,
+      ).bind(now, input.classId, period.id, input.classId),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'initial_job_assignments_confirmed', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({
+          periodId: period.id,
+          confirmedAt: now,
+          assignmentCount: board.assignments.length,
+          source: "server_draft",
+          idempotent: false,
+        }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(completionGuardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "확정 직전에 학생이나 직업 정보가 바뀌었어요. 최신 배정표를 확인해 주세요.",
+        "ASSIGNMENT_CONFIRM_CONFLICT",
+      );
+    }
+    throw error;
   }
   return {
     periodId: period.id,
     confirmedAt: now,
     assignmentCount: board.assignments.length,
+    source: "server_draft",
+    idempotent: false,
   };
 }
