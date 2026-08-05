@@ -36,6 +36,24 @@ test("student roster controls retain a 44px touch target", async () => {
   assert.match(styles, /\.table-actions button \{ min-height: 44px;/);
 });
 
+test("job setup and assignment controls retain a 44px touch target", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  for (const selector of [
+    ".survey-template-list button",
+    ".job-remove",
+    ".assignment-roster li button",
+    ".assignment-toolbar button",
+    ".candidate-tools button",
+    ".winner-tools button",
+  ]) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(styles, new RegExp(`${escaped} \\{[^}]*min-height: 44px;`), selector);
+  }
+  assert.match(styles, /\.capacity-control button \{[^}]*width: 44px;[^}]*height: 44px;/);
+  assert.match(styles, /\.calendar-summary-strip button, \.assignment-calendar button \{ min-height: 44px;/);
+  assert.match(styles, /\.calendar-month > header button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
