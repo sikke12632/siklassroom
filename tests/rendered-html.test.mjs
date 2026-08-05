@@ -28,6 +28,14 @@ test("student roster edit inputs identify the student and field to assistive tec
   assert.match(portal, /aria-label=\{`\$\{student\.official_name\} 학생 이름`\}/);
 });
 
+test("student roster controls retain a 44px touch target", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.roster-entry-row input \{ min-height: 44px; \}/);
+  assert.match(styles, /\.roster-entry-row button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(styles, /\.table-input \{[^}]*min-height: 44px;/);
+  assert.match(styles, /\.table-actions button \{ min-height: 44px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
