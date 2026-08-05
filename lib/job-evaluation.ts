@@ -1041,9 +1041,35 @@ export async function closeJobEvaluation(input: {
         expectedResponseRevision,
         now,
       )),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         )
+         SELECT ?, ?, ?, NULL, 'job_evaluation_closed', ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM class_job_evaluation_sessions
+           WHERE id = ? AND class_id = ? AND status = 'closed'
+             AND revision = ? AND calculated_response_revision = ?
+         )`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({
+          evaluationId: session.id,
+          submittedCount: responses.length,
+          studentCount: Number(session.student_count_snapshot),
+          idempotent: false,
+        }),
+        now,
+        session.id,
+        input.classId,
+        expectedRevision + 1,
+        expectedResponseRevision,
+      ),
     ]);
     closeChanged = Boolean(batchResults[0]?.meta.changes);
-  } catch {
+  } catch (error) {
     const latest = await sessionById(session.id);
     if (latest && latest.status !== "open") {
       return {
@@ -1051,6 +1077,7 @@ export async function closeJobEvaluation(input: {
         evaluation: await teacherEvaluationFromRow(latest),
       };
     }
+    if (!(error instanceof ApiError)) throw error;
     throw new ApiError(
       409,
       "마감하는 동안 학생 제출 현황이 바뀌었어요. 최신 정보를 확인해 주세요.",

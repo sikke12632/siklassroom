@@ -634,7 +634,7 @@ test("입출금 신청은 은행원 처리·교사 개입·정정을 불변 원�
 });
 
 test("unresolved cash requests atomically block class archive and student exclusion", {
-  timeout: 120_000,
+  timeout: 180_000,
 }, async () => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "siklassroom-finance-cash-lifecycle-d1-"),
@@ -1805,6 +1805,89 @@ test("unresolved cash requests atomically block class archive and student exclus
     assert.deepEqual(evaluationSubmitState(), [{
       response_revision: 1,
       response_count: 1,
+      audit_count: 1,
+    }]);
+
+    const evaluationCloseState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT status FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS evaluation_status,
+         (SELECT revision FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS evaluation_revision,
+         (SELECT COUNT(*) FROM class_job_evaluation_results
+          WHERE session_id = '${evaluationId}') AS result_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = 'class-cash-archive'
+            AND action = 'job_evaluation_closed') AS audit_count;`,
+    ));
+    const evaluationClosePayload = {
+      evaluationId,
+      expectedRevision: 0,
+      expectedResponseRevision: 1,
+      allowIncomplete: true,
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_evaluation_close_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_evaluation_closed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_EVALUATION_CLOSE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const evaluationCloseAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationClosePayload),
+      },
+    );
+    const evaluationCloseAuditFailureBody = await evaluationCloseAuditFailure.text();
+    assert.equal(evaluationCloseAuditFailure.status, 500, evaluationCloseAuditFailureBody);
+    assert.deepEqual(evaluationCloseState(), [{
+      evaluation_status: "open",
+      evaluation_revision: 0,
+      result_count: 0,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_evaluation_close_audit_insert_failure;");
+
+    const evaluationCloseSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationClosePayload),
+      },
+    );
+    const evaluationCloseSuccessBody = await evaluationCloseSuccess.json();
+    assert.equal(evaluationCloseSuccess.status, 200, JSON.stringify(evaluationCloseSuccessBody));
+    assert.equal(evaluationCloseSuccessBody.idempotent, false);
+    assert.equal(evaluationCloseSuccessBody.evaluation.status, "closed");
+    assert.deepEqual(evaluationCloseState(), [{
+      evaluation_status: "closed",
+      evaluation_revision: 1,
+      result_count: evaluationCloseSuccessBody.evaluation.jobs.length,
+      audit_count: 1,
+    }]);
+
+    const evaluationCloseRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationClosePayload),
+      },
+    );
+    const evaluationCloseRetryBody = await evaluationCloseRetry.json();
+    assert.equal(evaluationCloseRetry.status, 200, JSON.stringify(evaluationCloseRetryBody));
+    assert.equal(evaluationCloseRetryBody.idempotent, true);
+    assert.deepEqual(evaluationCloseState(), [{
+      evaluation_status: "closed",
+      evaluation_revision: 1,
+      result_count: evaluationCloseSuccessBody.evaluation.jobs.length,
       audit_count: 1,
     }]);
 
