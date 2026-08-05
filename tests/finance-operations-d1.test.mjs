@@ -1891,6 +1891,98 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    const evaluationFinalizeState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT status FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS evaluation_status,
+         (SELECT revision FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS evaluation_revision,
+         (SELECT final_grades_json FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS final_grades_json,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = 'class-cash-archive'
+            AND action = 'job_evaluation_finalized') AS audit_count;`,
+    ));
+    const evaluationFinalizePayload = {
+      evaluationId,
+      expectedRevision: 1,
+      finalGrades: Object.fromEntries(
+        evaluationCloseSuccessBody.evaluation.jobs.map((job) => [job.classJobId, "A"]),
+      ),
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_evaluation_finalize_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_evaluation_finalized'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_EVALUATION_FINALIZE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const evaluationFinalizeAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/finalize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationFinalizePayload),
+      },
+    );
+    const evaluationFinalizeAuditFailureBody = await evaluationFinalizeAuditFailure.text();
+    assert.equal(evaluationFinalizeAuditFailure.status, 500, evaluationFinalizeAuditFailureBody);
+    assert.deepEqual(evaluationFinalizeState(), [{
+      evaluation_status: "closed",
+      evaluation_revision: 1,
+      final_grades_json: null,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_evaluation_finalize_audit_insert_failure;");
+
+    const evaluationFinalizeSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/finalize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationFinalizePayload),
+      },
+    );
+    const evaluationFinalizeSuccessBody = await evaluationFinalizeSuccess.json();
+    assert.equal(
+      evaluationFinalizeSuccess.status,
+      200,
+      JSON.stringify(evaluationFinalizeSuccessBody),
+    );
+    assert.equal(evaluationFinalizeSuccessBody.idempotent, false);
+    assert.equal(evaluationFinalizeSuccessBody.evaluation.status, "finalized");
+    assert.deepEqual(evaluationFinalizeState(), [{
+      evaluation_status: "finalized",
+      evaluation_revision: 2,
+      final_grades_json: JSON.stringify(evaluationFinalizePayload.finalGrades),
+      audit_count: 1,
+    }]);
+
+    const evaluationFinalizeRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/finalize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationFinalizePayload),
+      },
+    );
+    const evaluationFinalizeRetryBody = await evaluationFinalizeRetry.json();
+    assert.equal(
+      evaluationFinalizeRetry.status,
+      200,
+      JSON.stringify(evaluationFinalizeRetryBody),
+    );
+    assert.equal(evaluationFinalizeRetryBody.idempotent, true);
+    assert.deepEqual(evaluationFinalizeState(), [{
+      evaluation_status: "finalized",
+      evaluation_revision: 2,
+      final_grades_json: JSON.stringify(evaluationFinalizePayload.finalGrades),
+      audit_count: 1,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

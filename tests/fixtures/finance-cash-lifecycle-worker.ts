@@ -9,6 +9,7 @@ import { POST as completeMonthlyJobChoice } from "../../app/api/classes/[classId
 import { POST as shuffleMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/shuffle/route";
 import { POST as openJobEvaluation } from "../../app/api/classes/[classId]/job-evaluation/open/route";
 import { POST as closeJobEvaluation } from "../../app/api/classes/[classId]/job-evaluation/close/route";
+import { POST as finalizeJobEvaluation } from "../../app/api/classes/[classId]/job-evaluation/finalize/route";
 import { POST as submitStudentJobEvaluation } from "../../app/api/student/job-evaluation/route";
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
@@ -524,6 +525,13 @@ const financeCashLifecycleWorker = {
         && request.method === "POST"
       ) {
         response = await closeJobEvaluation(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-evaluation/finalize"
+        && request.method === "POST"
+      ) {
+        response = await finalizeJobEvaluation(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (url.pathname === "/classes/class-cash-archive") {

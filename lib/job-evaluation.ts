@@ -1163,24 +1163,50 @@ export async function finalizeJobEvaluation(input: {
   }
   const finalGrades = parseFinalGradeInput(input.finalGrades, jobs);
   const now = Date.now();
-  const result = await database().prepare(
-    `UPDATE class_job_evaluation_sessions
-     SET status = 'finalized', final_grades_json = ?, revision = revision + 1,
-         finalized_by_teacher_id = ?, finalized_at = ?, updated_at = ?
-     WHERE id = ? AND class_id = ? AND status = 'closed' AND revision = ?
-       AND calculated_response_revision = response_revision
-       AND (SELECT COUNT(*) FROM class_job_evaluation_results result
-            WHERE result.session_id = class_job_evaluation_sessions.id) = ?`,
-  ).bind(
-    JSON.stringify(finalGrades),
-    input.teacherId,
-    now,
-    now,
-    session.id,
-    input.classId,
-    expectedRevision,
-    jobs.length,
-  ).run();
+  const db = database();
+  const batchResults = await db.batch([
+    db.prepare(
+      `UPDATE class_job_evaluation_sessions
+       SET status = 'finalized', final_grades_json = ?, revision = revision + 1,
+           finalized_by_teacher_id = ?, finalized_at = ?, updated_at = ?
+       WHERE id = ? AND class_id = ? AND status = 'closed' AND revision = ?
+         AND calculated_response_revision = response_revision
+         AND (SELECT COUNT(*) FROM class_job_evaluation_results result
+              WHERE result.session_id = class_job_evaluation_sessions.id) = ?`,
+    ).bind(
+      JSON.stringify(finalGrades),
+      input.teacherId,
+      now,
+      now,
+      session.id,
+      input.classId,
+      expectedRevision,
+      jobs.length,
+    ),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       )
+       SELECT ?, ?, ?, NULL, 'job_evaluation_finalized', ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_evaluation_sessions
+         WHERE id = ? AND class_id = ? AND status = 'finalized'
+           AND revision = ? AND finalized_by_teacher_id = ? AND finalized_at = ?
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      input.teacherId,
+      input.classId,
+      JSON.stringify({ evaluationId: session.id, idempotent: false }),
+      now,
+      session.id,
+      input.classId,
+      expectedRevision + 1,
+      input.teacherId,
+      now,
+    ),
+  ]);
+  const result = batchResults[0];
   if (!result.meta.changes) {
     const latest = await sessionById(session.id);
     if (latest?.status === "finalized") {
