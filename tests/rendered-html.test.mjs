@@ -407,6 +407,16 @@ test("동시에 같은 학급을 만드는 요청은 내부 오류 대신 중복
   assert.match(route, /DELETE FROM registration_operation_guards/);
 });
 
+test("학급 수정은 빈 요청과 오래된 화면의 덮어쓰기를 막는다", async () => {
+  const route = await readFile(new URL("../app/api/classes/[classId]/route.ts", import.meta.url), "utf8");
+  assert.match(route, /"CLASS_UPDATE_REQUIRED"/);
+  assert.match(route, /'class_update'/);
+  assert.match(route, /current\.updated_at = \?/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /"CLASS_STALE"/);
+  assert.match(route, /"CLASS_ARCHIVED"/);
+});
+
 test("학생 일괄 등록은 보관 학급과 동시 번호 중복을 원자적으로 막는다", async () => {
   const [route, authorization] = await Promise.all([
     readFile(new URL("../app/api/classes/[classId]/students/route.ts", import.meta.url), "utf8"),
