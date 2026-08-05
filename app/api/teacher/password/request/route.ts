@@ -1,4 +1,4 @@
-import { audit, database, ensureSchema, runtimeEnv } from "@/lib/database";
+import { database, ensureSchema, runtimeEnv } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { sendTeacherPasswordReset } from "@/lib/email";
 import { normalizeEmail } from "@/lib/identity";
@@ -40,6 +40,15 @@ export async function POST(request: Request) {
          SELECT ?, id, ?, ?, ? FROM teachers
          WHERE id = ? AND status = 'active' AND teacher_access_status != 'revoked'`,
       ).bind(crypto.randomUUID(), tokenHash, now + 30 * 60 * 1000, now, teacherId),
+      database().prepare(
+        `INSERT INTO audit_logs (id, teacher_id, action, detail, created_at)
+         VALUES (?, ?, 'teacher_password_reset_requested', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        teacher?.id ?? null,
+        JSON.stringify({ accountMatched: Boolean(teacher) }),
+        now,
+      ),
     ]);
     const resetUrl = new URL("/teacher/reset", request.url);
     resetUrl.hash = new URLSearchParams({ token: rawToken }).toString();
@@ -49,11 +58,6 @@ export async function POST(request: Request) {
     const developmentResetUrl = hostname === "localhost" || hostname === "127.0.0.1" ? url : undefined;
     const { RESEND_API_KEY, MAIL_FROM } = runtimeEnv();
     const emailConfigured = Boolean(RESEND_API_KEY && MAIL_FROM);
-    await audit({
-      action: "teacher_password_reset_requested",
-      teacherId: teacher?.id ?? null,
-      detail: { accountMatched: Boolean(teacher) },
-    });
     return json({
       ok: true,
       message: "가입된 이메일이라면 비밀번호 재설정 안내를 보냈습니다.",

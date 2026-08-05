@@ -20,6 +20,7 @@ import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
 import { issueEmailVerification } from "../../lib/teacher-verification";
+import { POST as requestTeacherPasswordReset } from "../../app/api/teacher/password/request/route";
 
 type TestEnvironment = {
   DB: D1Database;
@@ -462,6 +463,8 @@ const financeCashLifecycleWorker = {
           email: "teacher-cash-lifecycle@test.local",
           request,
         }));
+      } else if (url.pathname === "/teacher/password/request" && request.method === "POST") {
+        response = await requestTeacherPasswordReset(request);
       } else if (url.pathname === "/classes" && request.method === "POST") {
         response = await createClass(request);
       } else if (

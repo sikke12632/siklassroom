@@ -820,6 +820,56 @@ test("unresolved cash requests atomically block class archive and student exclus
     assert.match(emailVerificationSuccessBody.developmentUrl, /verifyEmailToken=/);
     assert.deepEqual(emailVerificationState(), [{ token_count: 1, audit_count: 1 }]);
 
+    const passwordResetRequestState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM teacher_password_resets
+          WHERE teacher_id = 'teacher-cash-lifecycle') AS token_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE teacher_id = 'teacher-cash-lifecycle'
+            AND action = 'teacher_password_reset_requested') AS audit_count;`,
+    ));
+    executeSql(persistPath, `
+      CREATE TRIGGER test_password_reset_request_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'teacher_password_reset_requested'
+        AND NEW.teacher_id = 'teacher-cash-lifecycle'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_PASSWORD_RESET_REQUEST_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const passwordResetRequestAuditFailure = await worker.fetch(
+      "http://localhost/teacher/password/request",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "teacher-cash-lifecycle@test.local" }),
+      },
+    );
+    const passwordResetRequestAuditFailureBody = await passwordResetRequestAuditFailure.text();
+    assert.equal(passwordResetRequestAuditFailure.status, 500, passwordResetRequestAuditFailureBody);
+    assert.deepEqual(passwordResetRequestState(), [{ token_count: 0, audit_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_password_reset_request_audit_insert_failure;");
+
+    const passwordResetRequestSuccess = await worker.fetch(
+      "http://localhost/teacher/password/request",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "teacher-cash-lifecycle@test.local" }),
+      },
+    );
+    const passwordResetRequestSuccessBody = await passwordResetRequestSuccess.json();
+    assert.equal(
+      passwordResetRequestSuccess.status,
+      200,
+      JSON.stringify(passwordResetRequestSuccessBody),
+    );
+    assert.equal(passwordResetRequestSuccessBody.ok, true);
+    assert.equal(passwordResetRequestSuccessBody.emailConfigured, false);
+    assert.match(passwordResetRequestSuccessBody.developmentResetUrl, /token=/);
+    assert.deepEqual(passwordResetRequestState(), [{ token_count: 1, audit_count: 1 }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_create_audit_insert_failure
       BEFORE INSERT ON audit_logs

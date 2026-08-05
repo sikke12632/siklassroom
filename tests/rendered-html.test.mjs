@@ -87,7 +87,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(passwordRequest, /teacher-password-reset-ip/);
   assert.match(passwordRequest, /INSERT INTO teacher_password_resets[\s\S]*SELECT \?, id, \?, \?, \? FROM teachers/);
   assert.match(passwordRequest, /sendTeacherPasswordReset\(email, url\)\.catch/);
-  assert.match(passwordRequest, /teacherId: teacher\?\.id \?\? null/);
+  assert.match(passwordRequest, /database\(\)\.batch/);
+  assert.match(passwordRequest, /teacher_password_reset_requested/);
+  assert.match(passwordRequest, /teacher\?\.id \?\? null/);
 });
 
 test("이메일 인증과 비밀번호 재설정 토큰은 서버에 전송되지 않는 URL fragment로 전달한다", async () => {
