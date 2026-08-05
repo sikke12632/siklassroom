@@ -36,7 +36,8 @@ const maturityBackoffWorkerPath = "tests/fixtures/deposit-maturity-backoff-worke
 function runWrangler(args, { expectSuccess = true } = {}) {
   let result;
   let output = "";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     result = spawnSync(process.execPath, [wranglerPath, ...args], {
       cwd: projectRoot,
       encoding: "utf8",
@@ -44,7 +45,11 @@ function runWrangler(args, { expectSuccess = true } = {}) {
       maxBuffer: 20 * 1024 * 1024,
     });
     output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    if (result.status === 0 || !output.includes("bad port")) break;
+    if (
+      result.status === 0
+      || (!output.includes("bad port") && !output.includes("fetch failed"))
+    ) break;
+    Atomics.wait(retrySignal, 0, 0, 250 * (attempt + 1));
   }
   assert.ok(result, "Wrangler did not start.");
   if (expectSuccess) {
