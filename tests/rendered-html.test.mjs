@@ -873,3 +873,10 @@ test("직업 설정 화면은 최초 조회 오류를 화면 안에서 다시 �
   assert.match(jobSetup, /onClick=\{load\}>다시 시도/);
   assert.match(jobSetup, /role="status">우리 반 직업을 불러오고 있어요/);
 });
+
+test("첫 직업 배정 화면은 최초 조회 오류를 화면 안에서 다시 시도할 수 있다", async () => {
+  const assignment = await readFile(new URL("../app/teacher/classes/[classId]/job-assignments/InitialJobAssignmentPortal.tsx", import.meta.url), "utf8");
+  assert.match(assignment, /aria-busy=\{busy \|\| undefined\}/);
+  assert.match(assignment, /onClick=\{load\}>다시 시도/);
+  assert.match(assignment, /role="status">달력과 첫 직업 배정 화면을 준비하고 있어요/);
+});
