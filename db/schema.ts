@@ -1025,6 +1025,58 @@ export const financeDepositProductEvents = sqliteTable("finance_deposit_product_
   check("finance_deposit_product_events_revision_ck", sql`${table.revision} >= 0`),
 ]);
 
+export const financeDepositProductLifecycleEvents = sqliteTable(
+  "finance_deposit_product_lifecycle_events",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull(),
+    productId: text("product_id").notNull(),
+    revision: integer("revision").notNull(),
+    action: text("action").notNull(),
+    captureStatus: text("capture_status").notNull(),
+    sourceEventId: text("source_event_id").references(() => financeDepositProductEvents.id),
+    productSnapshotJson: text("product_snapshot_json").notNull(),
+    actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_deposit_product_lifecycle_product_revision_uq").on(
+      table.productId,
+      table.revision,
+    ),
+    index("finance_deposit_product_lifecycle_class_created_idx").on(
+      table.classId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.productId, table.classId],
+      foreignColumns: [financeDepositProducts.id, financeDepositProducts.classId],
+      name: "finance_deposit_product_lifecycle_product_class_fk",
+    }),
+    check(
+      "finance_deposit_product_lifecycle_id_ck",
+      sql`${table.id} = 'finance:deposit-product-lifecycle:'
+        || ${table.productId} || ':' || ${table.revision}`,
+    ),
+    check(
+      "finance_deposit_product_lifecycle_state_ck",
+      sql`${table.action} IN ('issued', 'opened', 'paused')
+        AND ((${table.action} = 'issued' AND ${table.revision} = 0)
+          OR (${table.action} IN ('opened', 'paused') AND ${table.revision} > 0))
+        AND ${table.captureStatus} IN (
+          'exact', 'legacy_event', 'legacy_current_only'
+        )
+        AND ((${table.captureStatus} = 'legacy_event'
+            AND ${table.sourceEventId} IS NOT NULL)
+          OR (${table.captureStatus} IN ('exact', 'legacy_current_only')
+            AND ${table.sourceEventId} IS NULL))
+        AND json_valid(${table.productSnapshotJson}) = 1
+        AND ${table.createdAt} >= 0`,
+    ),
+  ],
+);
+
 export const financeDepositContracts = sqliteTable("finance_deposit_contracts", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),

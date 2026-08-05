@@ -637,6 +637,54 @@ test("stock ticks link the exact immutable news set instead of inferring by time
   assert.match(d1Test, /INSERT OR REPLACE INTO finance_stock_news_applications/);
 });
 
+test("deposit product publication and availability changes are captured by D1", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationName = (await readdir(migrationDirectory))
+    .find((name) => /^0031_.+\.sql$/u.test(name));
+  assert.ok(migrationName, "The deposit-product lifecycle migration must exist.");
+  const [schema, migration, runtime, audit, d1Test, migrationTest] =
+    await Promise.all([
+      readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+      readFile(new URL(migrationName, migrationDirectory), "utf8"),
+      readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+      readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+      readFile(new URL("../tests/finance-deposits-d1.test.mjs", import.meta.url), "utf8"),
+      readFile(
+        new URL(
+          "../tests/finance-deposit-product-lifecycle-migration-d1.test.mjs",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_deposit_product_lifecycle_events/);
+    assert.match(source, /legacy_event/);
+    assert.match(source, /legacy_current_only/);
+    assert.match(source, /product_snapshot_json/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_deposit_product_lifecycle_insert_guard/);
+    assert.match(source, /finance_deposit_product_lifecycle_update_guard/);
+    assert.match(source, /finance_deposit_product_lifecycle_delete_guard/);
+    assert.match(source, /finance_deposit_product_capture_issued_lifecycle/);
+    assert.match(source, /finance_deposit_product_capture_state_lifecycle/);
+    assert.match(source, /FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_deposit_product_lifecycle_events`?/);
+    assert.match(source, /FROM `?finance_deposit_product_events`? source_event/);
+    assert.match(source, /FROM `?finance_deposit_products`? product/);
+  }
+  assert.match(audit, /FROM finance_deposit_product_lifecycle_events product_event/);
+  assert.match(audit, /product_event\.product_snapshot_json/);
+  assert.match(audit, /product_event\.capture_status/);
+  assert.doesNotMatch(audit, /FROM finance_deposit_product_events product_event/);
+  assert.match(d1Test, /TEST_DEPOSIT_PRODUCT_LIFECYCLE_FAILURE/);
+  assert.match(d1Test, /INSERT OR REPLACE INTO finance_deposit_product_lifecycle_events/);
+  assert.match(migrationTest, /legacy_current_only/);
+  assert.match(migrationTest, /PRAGMA foreign_key_check/);
+});
+
 test("teacher liquidation progress and cancellation remain searchable audit events", async () => {
   const migrationDirectory = new URL("../drizzle/", import.meta.url);
   const migrationName = (await readdir(migrationDirectory))

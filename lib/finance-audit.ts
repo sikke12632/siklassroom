@@ -312,7 +312,7 @@ export async function financeAuditForRequest(request: Request) {
        UNION ALL
 
        SELECT
-         'deposit-product:' || product_event.id AS id,
+         'deposit-product-lifecycle:' || product_event.id AS id,
          product_event.class_id AS class_id,
          'deposit' AS category,
          'deposit_product_' || product_event.action AS action,
@@ -321,20 +321,30 @@ export async function financeAuditForRequest(request: Request) {
            WHEN 'opened' THEN '예금상품 판매 재개'
            ELSE '예금상품 판매 중지'
          END AS title,
-         product.name || ' · ' || product.term_weeks || '주 · 만기 이자 '
-           || printf('%.2f', product.maturity_interest_bps / 100.0) || '%' AS detail,
+         json_extract(product_event.product_snapshot_json, '$.name')
+           || ' · '
+           || json_extract(product_event.product_snapshot_json, '$.termWeeks')
+           || '주 · 만기 이자 '
+           || printf(
+             '%.2f',
+             CAST(json_extract(
+               product_event.product_snapshot_json, '$.maturityInterestBps'
+             ) AS INTEGER) / 100.0
+           ) || '%'
+           || CASE product_event.capture_status
+             WHEN 'legacy_event' THEN ' · 과거 요청 기록에서 복원'
+             WHEN 'legacy_current_only' THEN ' · 과거 현재 상태만 복원'
+             ELSE ''
+           END AS detail,
          '담임교사' AS actor_label,
          NULL AS student_name,
          NULL AS amount,
          product_event.created_at AS occurred_at,
          'completed' AS outcome,
-         product.id AS related_id,
+         product_event.product_id AS related_id,
          NULL AS previous_settings_json,
          NULL AS settings_json
-       FROM finance_deposit_product_events product_event
-       JOIN finance_deposit_products product
-         ON product.id = product_event.product_id
-         AND product.class_id = product_event.class_id
+       FROM finance_deposit_product_lifecycle_events product_event
      )
      SELECT id, category, action, title, detail, actor_label, student_name,
             amount, occurred_at, outcome, related_id,

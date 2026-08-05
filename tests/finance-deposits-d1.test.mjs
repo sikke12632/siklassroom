@@ -695,6 +695,129 @@ test("deposit products and contracts keep terms, timing, and ledger data safe in
       productEventImmutable.output,
       /FINANCE_DEPOSIT_PRODUCT_EVENT_IMMUTABLE/,
     );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT revision, action, capture_status,
+              json_extract(product_snapshot_json, '$.name') AS product_name,
+              json_extract(product_snapshot_json, '$.isOpen') AS is_open
+       FROM finance_deposit_product_lifecycle_events
+       WHERE product_id = 'product-one-week'
+       ORDER BY revision;`,
+    )), [
+      {
+        revision: 0,
+        action: "issued",
+        capture_status: "exact",
+        product_name: "One Week Savings",
+        is_open: 1,
+      },
+      {
+        revision: 1,
+        action: "paused",
+        capture_status: "exact",
+        product_name: "One Week Savings",
+        is_open: 0,
+      },
+    ]);
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_deposit_product_lifecycle_failure
+      BEFORE INSERT ON finance_deposit_product_lifecycle_events
+      WHEN NEW.product_id = 'product-lifecycle-failure'
+      BEGIN SELECT RAISE(ABORT, 'TEST_DEPOSIT_PRODUCT_LIFECYCLE_FAILURE'); END;
+    `);
+    const lifecycleFailure = executeSql(
+      persistPath,
+      `INSERT INTO finance_deposit_products (
+         id, class_id, name, description, term_weeks,
+         maturity_interest_bps, early_interest_bps, min_amount, max_amount,
+         is_open, revision, created_by_teacher_id, updated_by_teacher_id,
+         created_at, updated_at
+       ) VALUES (
+         'product-lifecycle-failure', 'class-deposits', 'Rollback Product',
+         'This insert must roll back with its missing lifecycle record.',
+         2, 100, 0, 1000, 5000, 1, 0,
+         'teacher-deposits', 'teacher-deposits', 700000003, 700000003
+       );`,
+      { expectSuccess: false },
+    );
+    assert.match(lifecycleFailure.output, /TEST_DEPOSIT_PRODUCT_LIFECYCLE_FAILURE/);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_deposit_products
+       WHERE id = 'product-lifecycle-failure';`,
+    ))[0].count, 0);
+    executeSql(persistPath, "DROP TRIGGER test_deposit_product_lifecycle_failure;");
+
+    executeSql(persistPath, `
+      INSERT INTO finance_deposit_products (
+        id, class_id, name, description, term_weeks,
+        maturity_interest_bps, early_interest_bps, min_amount, max_amount,
+        is_open, revision, created_by_teacher_id, updated_by_teacher_id,
+        created_at, updated_at
+      ) VALUES (
+        'product-lifecycle-only', 'class-deposits', 'Lifecycle Product',
+        'No request event is inserted for this database-level probe.',
+        2, 200, 50, 1000, 5000, 1, 0,
+        'teacher-deposits', 'teacher-deposits', 700000004, 700000004
+      );
+      UPDATE finance_deposit_products
+      SET is_open = 0, revision = 1,
+          updated_by_teacher_id = 'teacher-deposits', updated_at = 700000005
+      WHERE id = 'product-lifecycle-only' AND revision = 0;
+    `);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT lifecycle.revision, lifecycle.action, lifecycle.capture_status,
+              lifecycle.source_event_id,
+              (SELECT COUNT(*) FROM finance_deposit_product_events request_event
+               WHERE request_event.product_id = lifecycle.product_id)
+                AS request_event_count
+       FROM finance_deposit_product_lifecycle_events lifecycle
+       WHERE lifecycle.product_id = 'product-lifecycle-only'
+       ORDER BY lifecycle.revision;`,
+    )), [
+      {
+        revision: 0,
+        action: "issued",
+        capture_status: "exact",
+        source_event_id: null,
+        request_event_count: 0,
+      },
+      {
+        revision: 1,
+        action: "paused",
+        capture_status: "exact",
+        source_event_id: null,
+        request_event_count: 0,
+      },
+    ]);
+    const lifecycleImmutable = executeSql(
+      persistPath,
+      `UPDATE finance_deposit_product_lifecycle_events
+       SET action = 'opened' WHERE product_id = 'product-lifecycle-only'
+         AND revision = 1;`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      lifecycleImmutable.output,
+      /FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE/,
+    );
+    const lifecycleReplace = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_deposit_product_lifecycle_events
+       SELECT id, class_id, product_id, revision, action, capture_status,
+              source_event_id,
+              json_set(product_snapshot_json, '$.name', 'Forged Product'),
+              actor_teacher_id, created_at
+       FROM finance_deposit_product_lifecycle_events
+       WHERE product_id = 'product-lifecycle-only' AND revision = 1;`,
+      { expectSuccess: false },
+    );
+    assert.match(
+      lifecycleReplace.output,
+      /FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_INVALID/,
+    );
 
     const contractImmutable = executeSql(
       persistPath,
