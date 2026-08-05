@@ -19,7 +19,7 @@ export async function POST(request: Request, context: { params: Promise<{ studen
         id: studentId,
         student_number: student.student_number,
         official_name: student.official_name,
-        purpose: "activate",
+        purpose: student.status === "reset_required" ? "reset" : "activate",
         activation_url: registrationActivationUrl(new URL(request.url).origin, rawToken),
       },
     });

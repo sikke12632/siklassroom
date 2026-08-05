@@ -3253,34 +3253,35 @@ export async function closeFinanceStockNews(
   return { news: serializeNews(saved, now), deduplicated: false };
 }
 
-async function expireFinanceStockNews(db: D1Database, now: number, classId?: string) {
-  const due = await db.prepare(
-    `SELECT id, class_id, revision
-     FROM finance_stock_news
-     WHERE status = 'active' AND expires_at <= ?
-       AND (? IS NULL OR class_id = ?)
-     ORDER BY expires_at, id LIMIT 100`,
-  ).bind(now, classId ?? null, classId ?? null).all<{
-    id: string;
-    class_id: string;
-    revision: number;
-    }>();
-  let expired = 0;
-  for (const row of due.results) {
-    try {
-      const update = await db.prepare(
-        `UPDATE finance_stock_news
-         SET status = 'expired', revision = revision + 1,
-             updated_by_actor_type = 'system', updated_by_teacher_id = NULL,
-             updated_at = ?
-         WHERE id = ? AND class_id = ? AND revision = ? AND status = 'active'`,
-      ).bind(now, row.id, row.class_id, row.revision).run();
-      if (Number(update.meta.changes ?? 0) === 1) expired += 1;
-    } catch {
-      // Another request may have expired or cancelled the same news first.
-    }
-  }
-  return expired;
+async function expireFinanceStockNews(
+  db: D1Database,
+  now: number,
+  classId: string | undefined,
+  limit: number,
+) {
+  // Expire the bounded set in one D1 call. The outer status check makes a
+  // concurrent cancellation harmless even if it runs after the subquery.
+  const update = await db.prepare(
+    `UPDATE finance_stock_news
+     SET status = 'expired', revision = revision + 1,
+         updated_by_actor_type = 'system', updated_by_teacher_id = NULL,
+         updated_at = ?
+     WHERE status = 'active' AND id IN (
+       SELECT id
+       FROM finance_stock_news
+       WHERE status = 'active' AND expires_at <= ?
+         AND (? IS NULL OR class_id = ?)
+       ORDER BY expires_at, id
+       LIMIT ?
+     )`,
+  ).bind(
+    now,
+    now,
+    classId ?? null,
+    classId ?? null,
+    limit,
+  ).run();
+  return Number(update.meta.changes ?? 0);
 }
 
 function moodBiasBps(mood: string) {
@@ -3359,6 +3360,8 @@ async function stockTickEventMatchesPayload(
     && event.payload_hash === await stockTickPayloadHash(input);
 }
 
+export const FINANCE_STOCK_NEWS_PER_TICK_LIMIT = 20;
+
 async function unappliedNewsForStockTick(
   db: D1Database,
   input: { classId: string; stockId: string; now: number },
@@ -3372,12 +3375,14 @@ async function unappliedNewsForStockTick(
          SELECT 1 FROM finance_stock_news_applications application
          WHERE application.stock_id = ? AND application.news_id = news.id
        )
-     ORDER BY news.created_at, news.id`,
+     ORDER BY news.created_at, news.id
+     LIMIT ?`,
   ).bind(
     input.classId,
     input.now,
     input.now,
     input.stockId,
+    FINANCE_STOCK_NEWS_PER_TICK_LIMIT,
   ).all<TickNewsRow>();
 }
 
@@ -3752,11 +3757,12 @@ async function deferFailedFinanceStockTick(
 
 export async function processFinanceStockMarketTicks(
   db: D1Database,
-  options: { now?: number; limit?: number; classId?: string } = {},
+  options: { now?: number; limit?: number; newsLimit?: number; classId?: string } = {},
 ) {
   const now = options.now ?? Date.now();
   const limit = Math.max(1, Math.min(100, options.limit ?? 50));
-  const expiredNews = await expireFinanceStockNews(db, now, options.classId);
+  const newsLimit = Math.max(1, Math.min(100, options.newsLimit ?? limit));
+  const expiredNews = await expireFinanceStockNews(db, now, options.classId, newsLimit);
   const deferred = await db.prepare(
     `SELECT COUNT(*) AS count
      FROM finance_stock_markets market

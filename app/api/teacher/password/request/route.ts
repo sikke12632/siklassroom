@@ -53,7 +53,11 @@ export async function POST(request: Request) {
     const resetUrl = new URL("/teacher/reset", request.url);
     resetUrl.hash = new URLSearchParams({ token: rawToken }).toString();
     const url = resetUrl.toString();
-    await sendTeacherPasswordReset(email, url).catch(() => ({ sent: false }));
+    // Keep the public response indistinguishable, but never use the service as
+    // an email relay for addresses that do not belong to an eligible account.
+    if (teacher) {
+      await sendTeacherPasswordReset(email, url).catch(() => ({ sent: false }));
+    }
     const hostname = new URL(request.url).hostname;
     const developmentResetUrl = hostname === "localhost" || hostname === "127.0.0.1" ? url : undefined;
     const { RESEND_API_KEY, MAIL_FROM } = runtimeEnv();

@@ -22,9 +22,51 @@ test("theme controls retain a 44px touch target on compact and mobile layouts", 
   assert.doesNotMatch(styles, /\.theme-toggle(?:-compact)? button \{[^}]*min-(?:width|height): (?:3\d|4[0-3])px;/);
 });
 
+test("all stylesheet design tokens resolve and small text keeps readable contrast tokens", async () => {
+  const styles = await Promise.all([
+    "../app/globals.css",
+    "../app/mart/MartPortal.module.css",
+    "../app/life-checks/life-checks.module.css",
+  ].map((file) => readFile(new URL(file, import.meta.url), "utf8")));
+  const combined = styles.join("\n");
+  const definitions = new Set([...combined.matchAll(/--([A-Za-z0-9_-]+)\s*:/g)].map((match) => match[1]));
+  const uses = new Set([...combined.matchAll(/var\(--([A-Za-z0-9_-]+)/g)].map((match) => match[1]));
+  const unresolved = [...uses].filter((name) => name !== "piece" && !definitions.has(name)).sort();
+  assert.deepEqual(unresolved, []);
+  assert.match(styles[0], /--color-text-subtle: #626d79;/);
+  assert.match(styles[0], /--color-border-strong: #7f8b97;/);
+  assert.match(styles[0], /\.button-light \{[^}]*border-color: var\(--color-border-strong\)/);
+});
+
 test("the mobile entrance title wraps only between Korean words", async () => {
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   assert.match(styles, /\.neutral-entry-intro h1 \{[^}]*word-break: keep-all;/);
+  assert.doesNotMatch(styles, /html \{[^}]*min-width: 320px;/);
+  assert.match(styles, /@media \(max-width: 380px\)[\s\S]*\.student-login-page > header \{[^}]*flex-wrap: wrap;/);
+});
+
+test("mobile teachers can switch classes without stale responses mixing rosters", async () => {
+  const [portal, styles] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /aria-label="내 학급 선택"/);
+  assert.match(portal, /onClick=\{startClassCreation\}/);
+  assert.match(portal, /const sequence = \+\+classLoadSequence\.current/);
+  assert.match(portal, /if \(sequence !== classLoadSequence\.current\) return false/);
+  assert.match(portal, /classRoom\.id === selectedClassId/);
+  assert.match(styles, /\.mobile-class-controls \{[^}]*grid-column: 1 \/ -1;/);
+  assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.setup-progress \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(styles, /\.setup-progress > div:last-of-type \{ grid-column: 1 \/ -1; \}/);
+});
+
+test("마트 판매 목록은 페이지 크기와 무관하게 판매·품목을 두 번만 조회한다", async () => {
+  const mart = await readFile(new URL("../lib/mart.ts", import.meta.url), "utf8");
+  assert.match(mart, /async function saleItemsForPage/);
+  assert.match(mart, /WHERE sale_id IN \(\$\{placeholders\}\)/);
+  assert.match(mart, /\.bind\(\.\.\.saleIds\)\.all<SaleItemRow>/);
+  assert.match(mart, /const itemsBySaleId = await saleItemsForPage/);
+  assert.doesNotMatch(mart, /for \(const row of pageRows\) \{\s*const items = await saleItems/);
 });
 
 test("student roster edit inputs identify the student and field to assistive technology", async () => {
@@ -131,6 +173,8 @@ test("QR printing waits until every card image is ready", async () => {
   assert.match(printCards, /cards\.every\(\(card\) => Boolean\(images\[card\.id\]\)\)/);
   assert.match(printCards, /disabled=\{!printReady\}/);
   assert.match(printCards, /printReady \? "A4 인쇄" : generationError \? "QR 준비 실패" : "QR 준비 중…"/);
+  assert.match(printCards, /학생 로그인 QR/);
+  assert.doesNotMatch(printCards, /official_name\} 등록 QR/);
 });
 
 test("QR print dialog manages keyboard focus and Escape dismissal", async () => {
@@ -244,18 +288,25 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   ]);
   assert.match(rateLimit, /ON CONFLICT\(key\) DO UPDATE/);
   assert.match(rateLimit, /subjectThrottleKey/);
+  assert.match(rateLimit, /credentialThrottleKey/);
   assert.doesNotMatch(rateLimit, /export async function recordFailure/);
   assert.match(cryptoSource, /verifyPasswordOrDummy/);
   assert.match(cryptoSource, /DUMMY_PASSWORD_HASH/);
   assert.match(teacherLogin, /verifyPasswordOrDummy\(password, teacher\?\.password_hash\)/);
   assert.match(studentLogin, /verifyPasswordOrDummy\(password, student\?\.password_hash\)/);
   assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
+  assert.match(teacherLogin, /credentialThrottleKey\(request, "teacher-login", email\)/);
+  assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", identifier\)/);
+  assert.match(teacherLogin, /subjectThrottleKey\("teacher-login", email\)/);
+  assert.match(studentLogin, /subjectThrottleKey\("student-login", identifier\)/);
+  assert.match(studentLogin, /maxAttempts: 7,[\s\S]*windowMs: 60 \* 60 \* 1_000,[\s\S]*blockMs: 60 \* 60 \* 1_000/);
+  assert.match(teacherLogin, /maxAttempts: 50,[\s\S]*windowMs: 60 \* 60 \* 1_000,[\s\S]*blockMs: 60 \* 60 \* 1_000/);
   assert.match(adminLogin, /consumeRateLimit\(ipKey/);
   assert.match(signup, /teacher-signup-ip/);
   assert.match(signup, /windowMs: 60 \* 60 \* 1000/);
   assert.match(passwordRequest, /teacher-password-reset-ip/);
   assert.match(passwordRequest, /INSERT INTO teacher_password_resets[\s\S]*SELECT \?, id, \?, \?, \? FROM teachers/);
-  assert.match(passwordRequest, /sendTeacherPasswordReset\(email, url\)\.catch/);
+  assert.match(passwordRequest, /if \(teacher\) \{[\s\S]*sendTeacherPasswordReset\(email, url\)\.catch/);
   assert.match(passwordRequest, /database\(\)\.batch/);
   assert.match(passwordRequest, /teacher_password_reset_requested/);
   assert.match(passwordRequest, /teacher\?\.id \?\? null/);
@@ -526,6 +577,8 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
     readFile(new URL("../app/api/classes/[classId]/job-assignments/complete/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(database, /서울서이초등학교/);
+  assert.match(database, /INSERT OR IGNORE INTO schools/);
+  assert.doesNotMatch(database, /ON CONFLICT\(id\) DO UPDATE SET[\s\S]*official_name = excluded\.official_name/);
   assert.match(database, /'B10', '7091394'/);
   assert.match(schema, /studentJobAssignments/);
   assert.match(schema, /student_job_assignments_period_student_uq/);
@@ -544,6 +597,10 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(winnerPage, /결과 바로 보기/);
   assert.match(winnerPage, /당첨!/);
   assert.match(winnerPage, /WINNER_REVEAL_DELAY_MS = 450/);
+  assert.match(winnerPage, /aria-labelledby="winner-dialog-title"/);
+  assert.match(winnerPage, /event\.key === "Escape"/);
+  assert.match(winnerPage, /event\.key !== "Tab"/);
+  assert.match(winnerPage, /previousFocus\?\.isConnected/);
   assert.doesNotMatch(winnerPage, /3800/);
   assert.match(assignmentPage, /setDrawJob\(selectedJob\.name\)/);
   assert.match(assignmentApi, /requireClassManagement/);
@@ -654,9 +711,10 @@ test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설�
   assert.match(complete, /prepareSession/);
   assert.match(verify, /export async function POST/);
   assert.match(verify, /registrationResponseHeaders/);
-  assert.match(individualIssue, /purpose: "activate"/);
-  assert.doesNotMatch(individualIssue, /purpose.*"reset"/);
+  assert.match(individualIssue, /student\.status === "reset_required" \? "reset" : "activate"/);
+  assert.match(registration, /student\.status === "reset_required" \? "reset"/);
   assert.match(printCards, /평소 비밀번호로 로그인/);
+  assert.match(printCards, /card\.purpose === "reset"/);
   assert.match(activation, /window\.history\.replaceState/);
   assert.doesNotMatch(activation, /registration\/verify\?token/);
   assert.doesNotMatch(activation, /registration\/complete"?, \{ token/);
@@ -680,6 +738,7 @@ test("보관된 학급은 학생 세션을 끊고 다시 활성화해도 예전 
   assert.match(classRoute, /SELECT id FROM students WHERE class_id = \?/);
   assert.match(sessionRoute, /c\.status = 'active'/);
   assert.match(announcements, /requireStudent\(request\)/);
+  assert.match(announcements, /requireTeacher\(request\)/);
 });
 
 test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게 확정한다", async () => {
@@ -826,17 +885,26 @@ test("연속 월 평가 상태와 학생 로컬 초안을 최신 서버 상태�
   assert.match(css, /@media \(max-width: 420px\)[\s\S]*student-score-options[\s\S]*repeat\(3/);
 });
 
-test("여러 학생 QR은 한 번의 원자적 D1 배치로 발급한다", async () => {
-  const [registration, bulkQr] = await Promise.all([
+test("여러 학생 QR은 작은 원자적 묶음으로 발급하고 성공 카드를 즉시 보존한다", async () => {
+  const [registration, bulkQr, teacherPortal] = await Promise.all([
     readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/classes/[classId]/registration-tokens/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(registration, /export async function issueRegistrationTokens/);
+  assert.match(registration, /REGISTRATION_QR_ISSUE_BATCH_SIZE = 4/);
   assert.match(registration, /const statements = issued\.flatMap/);
   assert.match(registration, /await db\.batch\(statements\)/);
   assert.match(registration, /new Set\(input\.studentIds\)\.size/);
   assert.match(bulkQr, /await issueRegistrationTokens/);
+  assert.match(bulkQr, /nextAfterStudentNumber/);
+  assert.match(teacherPortal, /setCards\(\[\.\.\.nextCards\]\)/);
+  assert.match(teacherPortal, /cards\.length > 0 && !busy/);
+  assert.match(teacherPortal, /disabled=\{busy \|\| \(!pendingCount/);
+  assert.match(teacherPortal, /bulkQrResume/);
+  assert.match(teacherPortal, /앞에서 만든 QR은 바뀌지 않습니다/);
+  assert.match(registration, /student\.status === "reset_required" \? "reset"/);
   assert.doesNotMatch(bulkQr, /for \(const student[\s\S]*issueRegistrationToken/);
 });
 
@@ -852,6 +920,36 @@ test("학생 화면은 세션 확인 실패를 로그인 상태로 오인하지 
   assert.match(studentPortal, /setSessionError\("접속 상태를 확인하지 못했어요/);
   assert.match(studentPortal, /접속 상태 다시 확인/);
   assert.match(studentPortal, /setSessionRetryKey\(\(value\) => value \+ 1\)/);
+});
+
+test("학생 화면은 학생 상세 확인이 끝날 때까지 로그인 폼을 보여 주지 않는다", async () => {
+  const studentPortal = await readFile(new URL("../app/student/StudentPortal.tsx", import.meta.url), "utf8");
+  assert.match(studentPortal, /type StudentSessionStatus = "checking" \| "ready"/);
+  assert.match(studentPortal, /\.then\(async \(\{ actor \}\) =>/);
+  assert.match(studentPortal, /await api<\{ student: StudentInfo \}>\("\/api\/student\/me"/);
+  assert.match(studentPortal, /\.finally\(\(\) => \{[\s\S]*setSessionStatus\("ready"\)/);
+  assert.match(studentPortal, /sessionStatus === "checking"/);
+});
+
+test("생활확인은 실패 복귀, 서울 시각, 키보드 표와 셀별 직렬 저장을 제공한다", async () => {
+  const [portal, styles] = await Promise.all([
+    readFile(new URL("../app/life-checks/LifeCheckPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/life-checks/life-checks.module.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /href="\/student">학생 화면으로/);
+  assert.match(portal, /"\/teacher"}>교사 화면으로/);
+  assert.match(portal, /const SEOUL_TIME_ZONE = "Asia\/Seoul"/);
+  assert.match(portal, /timeZone: SEOUL_TIME_ZONE/);
+  assert.match(portal, /seoulDateTime\(event\.createdAt\)/);
+  assert.doesNotMatch(portal, /event\.createdAt\)\.toLocaleString/);
+  assert.match(portal, /role="region"[\s\S]*tabIndex=\{0\}[\s\S]*좌우로 스크롤할 수 있습니다/);
+  assert.match(styles, /\.tableWrap:focus-visible \{ outline: 3px solid var\(--color-focus\)/);
+  assert.match(styles, /@media \(max-width: 420px\)[\s\S]*\.header :global\(\.button\) \{ min-width: 44px; padding: 0; font-size: 0; \}/);
+  assert.match(portal, /createSerialTaskQueue/);
+  assert.match(portal, /expectedRevision: seriesRevisionRef\.current/);
+  assert.match(portal, /seriesRevisionRef\.current = result\.revision/);
+  assert.match(portal, /disabled=\{!canWriteSelected \|\| busy \|\| futureDate \|\| cellBusy\}/);
+  assert.match(portal, /aria-busy=\{cellBusy \|\| undefined\}/);
 });
 
 test("교사 화면은 세션과 이메일 인증 오류를 로그인 화면에서 숨기지 않는다", async () => {
@@ -872,11 +970,40 @@ test("관리자 화면은 인증 실패와 서버 확인 실패를 구분하고 
   assert.match(adminPortal, /controller\.abort\(\)/);
 });
 
+test("관리자 각 화면은 조회 실패를 복구하고 모바일 메뉴와 서울 기준 날짜를 명확히 알린다", async () => {
+  const adminPortal = await readFile(new URL("../app/ops/[operatorPath]/AdminPortal.tsx", import.meta.url), "utf8");
+  assert.match(adminPortal, /aria-label=\{item\.label\}/);
+  assert.match(adminPortal, /aria-pressed=\{tab === item\.id\}/);
+  assert.match(adminPortal, /<span aria-hidden="true">\{item\.icon\}<\/span>/);
+  assert.match(adminPortal, /function useAdminLoader/);
+  assert.match(adminPortal, /function AdminLoadState/);
+  assert.match(adminPortal, /다시 불러오기/);
+  assert.equal([...adminPortal.matchAll(/useAdminLoader\(load, onError\)/g)].length, 7);
+  assert.match(adminPortal, /const SEOUL_TIME_ZONE = "Asia\/Seoul"/);
+  assert.match(adminPortal, /timeZone: SEOUL_TIME_ZONE/);
+  assert.match(adminPortal, /seoulDateInput\(Date\.now\(\) \+ 30 \* DAY_MS\)/);
+  assert.doesNotMatch(adminPortal, /toISOString\(\)\.slice\(0, 10\)/);
+});
+
 test("직업 설정 화면은 최초 조회 오류를 화면 안에서 다시 시도할 수 있다", async () => {
   const jobSetup = await readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8");
   assert.match(jobSetup, /aria-busy=\{busy \|\| undefined\}/);
   assert.match(jobSetup, /onClick=\{load\}>다시 시도/);
   assert.match(jobSetup, /role="status">우리 반 직업을 불러오고 있어요/);
+  assert.match(jobSetup, /aria-describedby="adjust-description"/);
+  assert.match(jobSetup, /event\.key === "Escape"/);
+  assert.match(jobSetup, /event\.key !== "Tab"/);
+  assert.match(jobSetup, /adjustmentDialogRef\.current\?\.contains/);
+  assert.match(jobSetup, /previousFocus\?\.isConnected/);
+});
+
+test("금융센터 고정 메뉴의 모든 이동 대상은 메뉴 아래에 보이도록 여백을 둔다", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  for (const target of [
+    "operations", "payroll", "deposits", "stocks", "funding", "statistics", "settings", "audit",
+  ]) {
+    assert.match(styles, new RegExp(`#finance-${target}[\\s\\S]*scroll-margin-top: 176px`));
+  }
 });
 
 test("첫 직업 배정 화면은 최초 조회 오류를 화면 안에서 다시 시도할 수 있다", async () => {
@@ -905,4 +1032,18 @@ test("로그인 전환과 직업 확정 복귀는 Next 라우터로 이동하고
     assert.match(source, /router\.refresh\(\)/);
     assert.doesNotMatch(source, /window\.location\.href = "\/(student|teacher)"/);
   }
+});
+
+test("예상하지 못한 오류·없는 주소·화면 전환에도 복구 가능한 안내를 제공한다", async () => {
+  const [errorPage, notFound, loading] = await Promise.all([
+    readFile(new URL("../app/error.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/not-found.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/loading.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(errorPage, /onClick=\{reset\}>다시 시도/);
+  assert.match(errorPage, /<Link className="button button-light" href="\/">첫 화면으로<\/Link>/);
+  assert.match(notFound, /찾을 수 없는 화면이에요/);
+  assert.match(notFound, /<Link className="button button-light" href="\/teacher">교사 화면으로<\/Link>/);
+  assert.match(loading, /role="status"/);
+  assert.match(loading, /aria-live="polite"/);
 });

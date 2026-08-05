@@ -576,15 +576,14 @@ export async function financeOverviewForRequest(
   const classScope = context.financeRole === "teacher"
     || context.financeRole === "banker";
 
+  // D1 permits six simultaneous connections per invocation. Load the eight
+  // independent overview groups in two bounded waves instead of opening all
+  // of them at once (reconciliation itself uses two connections).
   const [
     walletResult,
     transactionResult,
     summary,
     reconciliation,
-    requestResult,
-    requestSummary,
-    settings,
-    bankers,
   ] = await Promise.all([
     context.financeRole === "teacher"
       ? classWallets(context.classroom.id, true)
@@ -606,6 +605,13 @@ export async function financeOverviewForRequest(
     context.financeRole === "teacher"
       ? financeReconciliation(context.classroom.id)
       : Promise.resolve(null),
+  ]);
+  const [
+    requestResult,
+    requestSummary,
+    settings,
+    bankers,
+  ] = await Promise.all([
     financeRequests(context, context.financeRole === "teacher" ? 150 : 50),
     financeRequestSummary(context),
     financeSettingsForClass(context.classroom.id),

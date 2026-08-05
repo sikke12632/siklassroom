@@ -233,7 +233,7 @@ await request("/api/registration/verify", {
 });
 await request("/api/registration/complete", {
   method: "POST",
-  body: { password: "2468" },
+  body: { password: "258025" },
 });
 const studentCookie = cookie;
 const beforeConfirmation = await request("/api/student/me");

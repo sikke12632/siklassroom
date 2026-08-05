@@ -53,6 +53,7 @@ const emptyDraft = (number = ""): DraftStudent => ({ key: crypto.randomUUID(), n
 export function TeacherPortal() {
   const router = useRouter();
   const verificationStarted = useRef(false);
+  const classLoadSequence = useRef(0);
   const [loading, setLoading] = useState(true);
   const [actor, setActor] = useState<TeacherActor | null>(null);
   const [wrongEntrance, setWrongEntrance] = useState(false);
@@ -64,6 +65,11 @@ export function TeacherPortal() {
   const [showClassForm, setShowClassForm] = useState(false);
   const [addingStudents, setAddingStudents] = useState(false);
   const [cards, setCards] = useState<RegistrationCard[]>([]);
+  const [bulkQrResume, setBulkQrResume] = useState<{
+    classId: string;
+    afterStudentNumber: number;
+    completedCount: number;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -86,9 +92,18 @@ export function TeacherPortal() {
   }, [selectedClassId]);
 
   const loadClass = useCallback(async (id: string) => {
-    const data = await api<{ class: ClassRoom; students: Student[] }>(`/api/classes/${id}/students`);
+    const sequence = ++classLoadSequence.current;
+    let data: { class: ClassRoom; students: Student[] };
+    try {
+      data = await api<{ class: ClassRoom; students: Student[] }>(`/api/classes/${id}/students`);
+    } catch (reason) {
+      if (sequence !== classLoadSequence.current) return false;
+      throw reason;
+    }
+    if (sequence !== classLoadSequence.current) return false;
     setClassRoom(data.class);
     setStudents(data.students);
+    return true;
   }, []);
 
   const loadActor = useCallback(async () => {
@@ -137,10 +152,30 @@ export function TeacherPortal() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!actor || !selectedClassId) return;
+    if (!actor || !selectedClassId) {
+      classLoadSequence.current += 1;
+      return;
+    }
     const frame = requestAnimationFrame(() => loadClass(selectedClassId).catch((reason) => setError(reason.message)));
     return () => cancelAnimationFrame(frame);
   }, [actor, selectedClassId, loadClass]);
+
+  function selectClass(id: string) {
+    classLoadSequence.current += 1;
+    setClassRoom(null);
+    setStudents([]);
+    setAddingStudents(false);
+    setShowClassForm(false);
+    setSelectedClassId(id);
+  }
+
+  function startClassCreation() {
+    classLoadSequence.current += 1;
+    setClassRoom(null);
+    setStudents([]);
+    setAddingStudents(false);
+    setShowClassForm(true);
+  }
 
   async function logout() {
     await api("/api/session", { method: "DELETE" });
@@ -256,13 +291,13 @@ export function TeacherPortal() {
         <div className="sidebar-section-title">내 학급</div>
         <nav className="class-nav">
           {classes.map((item) => (
-            <button key={item.id} className={selectedClassId === item.id && !showClassForm ? "active" : ""} onClick={() => { setShowClassForm(false); setSelectedClassId(item.id); }}>
+            <button key={item.id} className={selectedClassId === item.id && !showClassForm ? "active" : ""} onClick={() => selectClass(item.id)}>
               <span>{item.display_name || `${item.grade}학년 ${item.class_number}반`}</span>
               <small>{item.school_name} · {item.school_year}</small>
             </button>
           ))}
         </nav>
-        <button className="sidebar-add" onClick={() => setShowClassForm(true)}><Plus aria-hidden="true" /> 새 학급 만들기</button>
+        <button className="sidebar-add" onClick={startClassCreation}><Plus aria-hidden="true" /> 새 학급 만들기</button>
         <div className="sidebar-account">
           <ThemeToggle />
           <span>{actor.email}</span>
@@ -271,7 +306,26 @@ export function TeacherPortal() {
       </aside>
 
       <main className="teacher-main">
-        <header className="mobile-teacher-header"><Logo compact /><div><ThemeToggle compact /><button onClick={logout} aria-label="로그아웃"><LogOut aria-hidden="true" /></button></div></header>
+        <header className="mobile-teacher-header">
+          <Logo compact />
+          <div className="mobile-header-actions"><ThemeToggle compact /><button type="button" onClick={logout} aria-label="로그아웃"><LogOut aria-hidden="true" /></button></div>
+          <div className="mobile-class-controls">
+            <label>
+              <span className="visually-hidden">내 학급 선택</span>
+              <select
+                aria-label="내 학급 선택"
+                value={showClassForm ? "" : selectedClassId ?? ""}
+                onChange={(event) => selectClass(event.target.value)}
+              >
+                <option value="" disabled>{classes.length ? "학급을 선택해 주세요" : "등록된 학급이 없습니다"}</option>
+                {classes.map((item) => (
+                  <option key={item.id} value={item.id}>{item.display_name || `${item.grade}학년 ${item.class_number}반`} · {item.school_year}</option>
+                ))}
+              </select>
+            </label>
+            <button className="button button-light" type="button" onClick={startClassCreation}><Plus aria-hidden="true" /><span>새 학급</span></button>
+          </div>
+        </header>
         <AnnouncementBanner />
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
@@ -287,7 +341,7 @@ export function TeacherPortal() {
               setMessage("학급을 만들었어요. 이제 학생 명단을 입력해 주세요.");
             } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
           }} />
-        ) : classRoom && selectedSummary ? (
+        ) : classRoom && selectedSummary && classRoom.id === selectedClassId ? (
           <>
             <section className="dashboard-heading" id="dashboard">
               <div><p className="eyebrow">{classRoom.school_year}학년도</p><h1>{classLabel}</h1><p>{classRoom.school_name} · {classRoom.grade}학년 {classRoom.class_number}반</p></div>
@@ -341,15 +395,49 @@ export function TeacherPortal() {
                     <div><p className="eyebrow">학생 계정</p><h2>우리 반 명단</h2><p>이름이나 번호를 고쳐도 같은 학생의 기록으로 이어집니다.</p></div>
                     <div className="button-row">
                       <button className="button button-light" onClick={() => setAddingStudents((value) => !value)}>{addingStudents ? "추가 취소" : "전입생 추가"}</button>
-                      <button className="button button-primary" disabled={!pendingCount && !students.some((s) => s.status === "reset_required")} onClick={async () => {
-                        if (!confirm("등록 전 학생의 기존 QR을 새 개인 QR로 바꿀까요? 새로 발급하면 이전 QR은 무효가 됩니다.")) return;
+                      <button className="button button-primary" disabled={busy || (!pendingCount && !students.some((s) => s.status === "reset_required"))} onClick={async () => {
+                        const resume = bulkQrResume?.classId === classRoom.id ? bulkQrResume : null;
+                        if (!confirm(resume
+                          ? `${resume.completedCount}명 다음 학생부터 QR 만들기를 계속할까요? 앞에서 만든 QR은 바뀌지 않습니다.`
+                          : "등록 전·재설정 학생의 기존 QR을 새 개인 QR로 바꿀까요? 새로 발급하면 이전 QR은 무효가 됩니다.")) return;
                         setBusy(true); setError("");
+                        const nextCards: RegistrationCard[] = resume ? [...cards] : [];
+                        const previouslyCompleted = resume?.completedCount ?? 0;
+                        let newlyCompleted = 0;
                         try {
-                          const data = await postJson<{ cards: RegistrationCard[] }>(`/api/classes/${classRoom.id}/registration-tokens`, {});
-                          setCards(data.cards);
-                          setMessage(`${data.cards.length}명의 새 QR 카드를 만들었어요.`);
-                        } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
-                      }}>{busy ? "만드는 중…" : "미등록 QR 인쇄"}</button>
+                          let afterStudentNumber: number | null = resume?.afterStudentNumber ?? null;
+                          for (let page = 0; page < 30; page += 1) {
+                            const data: {
+                              cards: RegistrationCard[];
+                              nextAfterStudentNumber: number | null;
+                            } = await postJson(`/api/classes/${classRoom.id}/registration-tokens`, { afterStudentNumber });
+                            nextCards.push(...data.cards);
+                            newlyCompleted += data.cards.length;
+                            // Preserve every successful page immediately. The print
+                            // dialog stays hidden while busy, but a later network
+                            // failure can still show and print these valid new cards.
+                            setCards([...nextCards]);
+                            if (data.nextAfterStudentNumber === null) {
+                              setBulkQrResume(null);
+                              break;
+                            }
+                            afterStudentNumber = data.nextAfterStudentNumber;
+                            setBulkQrResume({
+                              classId: classRoom.id,
+                              afterStudentNumber,
+                              completedCount: previouslyCompleted + newlyCompleted,
+                            });
+                            setMessage(`새 QR 카드를 안전하게 나누어 만드는 중… ${previouslyCompleted + newlyCompleted}명`);
+                          }
+                          setCards(nextCards);
+                          setMessage(`${previouslyCompleted + newlyCompleted}명의 새 QR 카드를 만들었어요.`);
+                        } catch (reason) {
+                          const completedCount = previouslyCompleted + newlyCompleted;
+                          setError(completedCount > 0
+                            ? `${completedCount}명의 QR은 안전하게 만들었습니다. 아래 카드를 인쇄한 뒤 'QR 계속 만들기'를 눌러 다음 학생부터 이어 주세요. (${(reason as Error).message})`
+                            : (reason as Error).message);
+                        } finally { setBusy(false); }
+                      }}>{busy ? "만드는 중…" : bulkQrResume?.classId === classRoom.id ? "QR 계속 만들기" : "미등록 QR 인쇄"}</button>
                     </div>
                   </div>
                   <StudentTable classId={classRoom.id} students={students} busy={busy} onBusy={setBusy} onError={setError} onMessage={setMessage} onCards={setCards} onReload={() => { loadClass(classRoom.id); loadClasses(classRoom.id); }} />
@@ -484,7 +572,7 @@ export function TeacherPortal() {
           </>
         ) : <LoadingScreen label="학급 정보를 불러오고 있어요" />}
       </main>
-      {cards.length > 0 && <PrintCards cards={cards} classLabel={classLabel} onClose={() => setCards([])} />}
+      {cards.length > 0 && !busy && <PrintCards cards={cards} classLabel={classLabel} onClose={() => setCards([])} />}
     </div>
   );
 }

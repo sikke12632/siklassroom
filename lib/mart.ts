@@ -798,6 +798,25 @@ async function saleItems(db: D1Database, saleId: string) {
   ).bind(saleId).all<SaleItemRow>();
 }
 
+async function saleItemsForPage(
+  db: D1Database,
+  saleIds: readonly string[],
+) {
+  const itemsBySaleId = new Map<string, SaleItemRow[]>();
+  for (const saleId of saleIds) itemsBySaleId.set(saleId, []);
+  if (!saleIds.length) return itemsBySaleId;
+  const placeholders = saleIds.map(() => "?").join(", ");
+  const rows = await db.prepare(
+    `SELECT id, sale_id, class_id, product_id, product_name_snapshot,
+            unit_price_snapshot, quantity, line_total, created_at
+     FROM mart_sale_items
+     WHERE sale_id IN (${placeholders})
+     ORDER BY sale_id, product_name_snapshot, id`,
+  ).bind(...saleIds).all<SaleItemRow>();
+  for (const item of rows.results) itemsBySaleId.get(item.sale_id)?.push(item);
+  return itemsBySaleId;
+}
+
 function serializeSale(row: SaleRow, items: readonly SaleItemRow[]) {
   const receiptDate = new Date(Number(row.created_at) + 9 * 60 * 60 * 1_000)
     .toISOString().slice(0, 10).replaceAll("-", "");
@@ -907,11 +926,11 @@ export async function martSalesForRequest(request: Request) {
   ).bind(...bindings, query.limit + 1).all<SaleRow>();
   const hasMore = rows.results.length > query.limit;
   const pageRows = rows.results.slice(0, query.limit);
-  const sales = [];
-  for (const row of pageRows) {
-    const items = await saleItems(db, row.id);
-    sales.push(serializeSale(row, items.results));
-  }
+  const itemsBySaleId = await saleItemsForPage(
+    db,
+    pageRows.map((row) => row.id),
+  );
+  const sales = pageRows.map((row) => serializeSale(row, itemsBySaleId.get(row.id) ?? []));
   const last = pageRows.at(-1);
   return {
     context: serializeContext(context),

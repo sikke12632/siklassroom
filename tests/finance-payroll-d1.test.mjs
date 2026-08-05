@@ -259,7 +259,7 @@ test("월별 직업 급여는 마감·학생별 항목·원장 거래를 한 번
   }
 });
 
-test("payroll rechecks current denominations before new and incomplete payouts", {
+test("payroll rechecks new payouts and unfinished runs protect their denominations", {
   timeout: 120_000,
 }, async () => {
   const persistPath = await mkdtemp(
@@ -329,7 +329,7 @@ test("payroll rechecks current denominations before new and incomplete payouts",
       WHERE class_id IN ('class-payroll-new', 'class-payroll-retry', 'class-payroll-done');
 
       UPDATE finance_settings
-      SET denominations_json = '[1000]', revision = 1,
+      SET denominations_json = '[500]', revision = 1,
           updated_by_teacher_id = 'teacher-denomination', updated_at = 21
       WHERE class_id IN ('class-payroll-new', 'class-payroll-retry', 'class-payroll-done');
 
@@ -385,6 +385,22 @@ test("payroll rechecks current denominations before new and incomplete payouts",
       WHERE id = 'tx-payroll-done';
     `);
 
+    executeSql(persistPath, `
+      UPDATE finance_settings
+      SET denominations_json = '[1000]', revision = revision + 1, updated_at = 50
+      WHERE class_id IN ('class-payroll-new', 'class-payroll-done');
+    `);
+    executeSql(persistPath, `
+      UPDATE finance_settings
+      SET denominations_json = '[1000]', revision = revision + 1, updated_at = 50
+      WHERE class_id = 'class-payroll-retry';
+    `, { expectSuccess: false });
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT denominations_json FROM finance_settings
+       WHERE class_id = 'class-payroll-retry';`,
+    )), [{ denominations_json: "[500]" }]);
+
     worker = await (await import("wrangler")).unstable_dev(
       denominationWorkerPath,
       {
@@ -425,11 +441,9 @@ test("payroll rechecks current denominations before new and incomplete payouts",
       "class-payroll-retry",
       "closure-payroll-retry",
     );
-    assert.equal(incompleteRetry.response.status, 409);
-    assert.equal(
-      incompleteRetry.body.code,
-      "FINANCE_PAYROLL_DENOMINATION_MISMATCH",
-    );
+    assert.equal(incompleteRetry.response.status, 200);
+    assert.equal(incompleteRetry.body.deduplicated, true);
+    assert.equal(incompleteRetry.body.payroll.status, "ready");
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       `SELECT

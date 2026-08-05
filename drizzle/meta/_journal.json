@@ -260,6 +260,20 @@
       "when": 1785929572441,
       "tag": "0036_life_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1785942000000,
+      "tag": "0037_system_admin_audit_append_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1785943000000,
+      "tag": "0038_finance_payroll_lifecycle_guards",
+      "breakpoints": true
     }
   ]
 }

@@ -88,6 +88,10 @@ export function registrationClaimMarker() {
   return -value;
 }
 
+// Bulk QR replacement touches several immutable security records per student.
+// Keep each Worker request small; the teacher screen continues with a cursor.
+export const REGISTRATION_QR_ISSUE_BATCH_SIZE = 4;
+
 export async function issueRegistrationToken(input: {
   studentId: string;
   teacherId: string;
@@ -108,14 +112,26 @@ export async function issueRegistrationTokens(input: {
 }) {
   await ensureSchema();
   if (!input.studentIds.length) return [];
+  if (input.studentIds.length > REGISTRATION_QR_ISSUE_BATCH_SIZE) {
+    throw new ApiError(
+      400,
+      `QR은 한 번에 ${REGISTRATION_QR_ISSUE_BATCH_SIZE}명씩 발급해 주세요.`,
+      "QR_ISSUE_BATCH_TOO_LARGE",
+    );
+  }
   if (new Set(input.studentIds).size !== input.studentIds.length) {
     throw new ApiError(400, "같은 학생의 QR을 한 번에 두 번 발급할 수 없습니다.", "DUPLICATE_STUDENT_ID");
   }
   const db = database();
   const placeholders = input.studentIds.map(() => "?").join(", ");
   const result = await db.prepare(
-    `SELECT id, qr_generation FROM students WHERE class_id = ? AND id IN (${placeholders})`,
-  ).bind(input.classId, ...input.studentIds).all<{ id: string; qr_generation: number }>();
+    `SELECT id, qr_generation, status
+     FROM students WHERE class_id = ? AND id IN (${placeholders})`,
+  ).bind(input.classId, ...input.studentIds).all<{
+    id: string;
+    qr_generation: number;
+    status: string;
+  }>();
   const students = new Map(result.results.map((student) => [student.id, student]));
   if (students.size !== input.studentIds.length) {
     throw new ApiError(404, "학생을 찾을 수 없습니다.", "STUDENT_NOT_FOUND");
@@ -128,6 +144,7 @@ export async function issueRegistrationTokens(input: {
       studentId,
       previousGeneration: student.qr_generation,
       generation: student.qr_generation + 1,
+      purpose: student.status === "reset_required" ? "reset" as const : "activate" as const,
       rawToken,
       tokenHash: await sha256(rawToken),
       guardId: crypto.randomUUID(),
@@ -162,14 +179,22 @@ export async function issueRegistrationTokens(input: {
     ),
     db.prepare(
       `INSERT INTO registration_tokens (id, student_id, token_hash, purpose, generation, expires_at, created_at)
-       VALUES (?, ?, ?, 'activate', ?, ?, ?)`,
-    ).bind(crypto.randomUUID(), item.studentId, item.tokenHash, item.generation, now + REGISTRATION_QR_LIFETIME_MS, now),
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      item.studentId,
+      item.tokenHash,
+      item.purpose,
+      item.generation,
+      now + REGISTRATION_QR_LIFETIME_MS,
+      now,
+    ),
     db.prepare(
       `INSERT INTO audit_logs (id, teacher_id, class_id, student_id, action, detail, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       crypto.randomUUID(), input.teacherId, input.classId, item.studentId,
-      "student_qr_issued", JSON.stringify({ generation: item.generation, purpose: "identity" }), now,
+      "student_qr_issued", JSON.stringify({ generation: item.generation, purpose: item.purpose }), now,
     ),
     db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(item.guardId),
   ]);
@@ -181,7 +206,7 @@ export async function issueRegistrationTokens(input: {
     }
     throw error;
   }
-  return issued.map(({ studentId, rawToken }) => ({ studentId, rawToken }));
+  return issued.map(({ studentId, rawToken, purpose }) => ({ studentId, rawToken, purpose }));
 }
 
 export async function issueStudentQrResetGrant(input: {

@@ -160,12 +160,12 @@ const parallelActivation = await Promise.all([
   fetch(`${baseUrl}/api/registration/complete`, {
     method: "POST",
     headers: { cookie: firstVerification.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ password: "1357" }),
+    body: JSON.stringify({ password: "135790" }),
   }),
   fetch(`${baseUrl}/api/registration/complete`, {
     method: "POST",
     headers: { cookie: firstVerification.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ password: "1357" }),
+    body: JSON.stringify({ password: "135790" }),
   }),
 ]);
 assert.deepEqual(parallelActivation.map((response) => response.status).sort(), [200, 410]);
@@ -178,13 +178,13 @@ const loginVerification = await verifyQr(originalToken, "login");
 await request("/api/registration/complete", {
   cookie: loginVerification.cookie,
   method: "POST",
-  body: { password: "2468" },
+  body: { password: "258025" },
   expected: 401,
 });
 const qrLogin = await request("/api/registration/complete", {
   cookie: loginVerification.cookie,
   method: "POST",
-  body: { password: "1357" },
+  body: { password: "135790" },
 });
 const secondStudentCookie = responseCookie(qrLogin.response);
 await request("/api/student/me", { cookie: secondStudentCookie });
@@ -199,7 +199,7 @@ assert.ok(grant.data.expiresAt > Date.now());
 await request("/api/registration/complete", {
   cookie: staleLoginVerification.cookie,
   method: "POST",
-  body: { password: "1357" },
+  body: { password: "135790" },
   expected: 410,
 });
 
@@ -209,12 +209,12 @@ const parallelReset = await Promise.all([
   fetch(`${baseUrl}/api/registration/complete`, {
     method: "POST",
     headers: { cookie: resetVerification.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ password: "2468" }),
+    body: JSON.stringify({ password: "258025" }),
   }),
   fetch(`${baseUrl}/api/registration/complete`, {
     method: "POST",
     headers: { cookie: competingResetVerification.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ password: "2468" }),
+    body: JSON.stringify({ password: "258025" }),
   }),
 ]);
 assert.deepEqual(parallelReset.map((response) => response.status).sort(), [200, 410]);
@@ -227,7 +227,7 @@ await request("/api/student/me", { cookie: resetStudentCookie });
 await request("/api/registration/complete", {
   cookie: resetVerification.cookie,
   method: "POST",
-  body: { password: "8642" },
+  body: { password: "864209" },
   expected: 410,
 });
 
@@ -235,13 +235,13 @@ const afterResetLogin = await verifyQr(originalToken, "login");
 await request("/api/registration/complete", {
   cookie: afterResetLogin.cookie,
   method: "POST",
-  body: { password: "1357" },
+  body: { password: "135790" },
   expected: 401,
 });
 await request("/api/registration/complete", {
   cookie: afterResetLogin.cookie,
   method: "POST",
-  body: { password: "2468" },
+  body: { password: "258025" },
 });
 
 await request(`/api/students/${student.id}/qr-reset-grant`, {
@@ -260,13 +260,13 @@ const [racingPasswordLogin, racingReset] = await Promise.all([
       grade: classCreated.data.class.grade,
       classNumber: classCreated.data.class.class_number,
       studentNumber: student.student_number,
-      password: "2468",
+      password: "258025",
     }),
   }),
   fetch(`${baseUrl}/api/registration/complete`, {
     method: "POST",
     headers: { cookie: raceResetVerification.cookie, "content-type": "application/json" },
-    body: JSON.stringify({ password: "8642" }),
+    body: JSON.stringify({ password: "864209" }),
   }),
 ]);
 assert.equal(racingReset.status, 200);
@@ -283,7 +283,7 @@ await request("/api/student/login", {
     grade: classCreated.data.class.grade,
     classNumber: classCreated.data.class.class_number,
     studentNumber: student.student_number,
-    password: "2468",
+    password: "258025",
   },
   expected: 401,
 });
@@ -298,7 +298,7 @@ const replacementToken = activationTokenFrom(replacement.data.card.activation_ur
 await request("/api/registration/complete", {
   cookie: challengeBeforeRotation.cookie,
   method: "POST",
-  body: { password: "8642" },
+  body: { password: "864209" },
   expected: 410,
 });
 await request("/api/registration/verify", {
@@ -310,7 +310,7 @@ const replacementVerification = await verifyQr(replacementToken, "login");
 const replacementPinLogin = await request("/api/registration/complete", {
   cookie: replacementVerification.cookie,
   method: "POST",
-  body: { password: "8642" },
+  body: { password: "864209" },
 });
 const replacementPinCookie = responseCookie(replacementPinLogin.response);
 await request(`/api/students/${student.id}/qr-reset-grant`, {
@@ -322,20 +322,20 @@ const replacementReset = await verifyQr(replacementToken, "reset");
 await request("/api/registration/complete", {
   cookie: replacementReset.cookie,
   method: "POST",
-  body: { password: "9753" },
+  body: { password: "975310" },
 });
 await request("/api/student/me", { cookie: replacementPinCookie, expected: 401 });
 await request("/api/registration/complete", {
   cookie: replacementReset.cookie,
   method: "POST",
-  body: { password: "8642" },
+  body: { password: "864209" },
   expected: 410,
 });
 const replacementLogin = await verifyQr(replacementToken, "login");
 await request("/api/registration/complete", {
   cookie: replacementLogin.cookie,
   method: "POST",
-  body: { password: "9753" },
+  body: { password: "975310" },
 });
 
 const limitedStudent = roster.data.students[1];
@@ -344,7 +344,7 @@ const limitedActivation = await verifyQr(limitedToken, "activate");
 await request("/api/registration/complete", {
   cookie: limitedActivation.cookie,
   method: "POST",
-  body: { password: "1357" },
+  body: { password: "135790" },
 });
 const distributedStudentLogins = await Promise.all(Array.from({ length: 8 }, (_, index) => fetch(
   `${baseUrl}/api/student/login`,

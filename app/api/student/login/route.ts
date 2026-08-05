@@ -2,7 +2,12 @@ import { prepareSession } from "@/lib/auth";
 import { database, ensureSchema, isOperationGuardFailure } from "@/lib/database";
 import { verifyPasswordOrDummy } from "@/lib/crypto";
 import { integerInRange, normalizeSchool } from "@/lib/identity";
-import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
+import {
+  consumeRateLimit,
+  credentialThrottleKey,
+  subjectThrottleKey,
+  throttleKey,
+} from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 export async function POST(request: Request) {
@@ -26,9 +31,17 @@ export async function POST(request: Request) {
     }
     const identifier = `${schoolNormalized}|${schoolYear}|${grade}|${classNumber}|${studentNumber}`;
     const ipKey = await throttleKey(request, "student-login-ip", "all");
-    const key = await subjectThrottleKey("student-login", identifier);
-    await consumeRateLimit(ipKey, { maxAttempts: 120 });
+    const key = await credentialThrottleKey(request, "student-login", identifier);
+    const subjectKey = await subjectThrottleKey("student-login", identifier);
+    await consumeRateLimit(ipKey, { maxAttempts: 500 });
     await consumeRateLimit(key, { maxAttempts: 7 });
+    // The IP-specific key avoids classroom-wide lockouts, while this account-wide
+    // one-hour ceiling stops distributed brute-force attempts against legacy PINs.
+    await consumeRateLimit(subjectKey, {
+      maxAttempts: 7,
+      windowMs: 60 * 60 * 1_000,
+      blockMs: 60 * 60 * 1_000,
+    });
     await ensureSchema();
     const studentRows = await database().prepare(
       `SELECT s.id, s.password_hash, s.status, s.credential_revision, s.qr_generation
@@ -74,6 +87,7 @@ export async function POST(request: Request) {
           session.expiresAt, session.createdAt, session.createdAt,
         ),
         database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(key),
+        database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(subjectKey),
         database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
       ]);
     } catch (error) {

@@ -7,6 +7,7 @@ import {
   lifeCheckYears,
   parseLifeCheckMonth,
 } from "../app/life-checks/life-check-navigation";
+import { createSerialTaskQueue } from "../app/life-checks/serial-task-queue";
 import {
   LIFE_CHECK_INFO,
   baseLifeCheckReward,
@@ -30,6 +31,32 @@ test("생활확인 연도 선택은 월을 보존하고 2020~2100 범위를 벗�
   assert.equal(years[0], LIFE_CHECK_MAX_YEAR);
   assert.equal(years.at(-1), LIFE_CHECK_MIN_YEAR);
   assert.equal(years.length, LIFE_CHECK_MAX_YEAR - LIFE_CHECK_MIN_YEAR + 1);
+});
+
+test("빠르게 누른 여러 생활확인 셀은 revision 순서대로 하나씩 저장한다", async () => {
+  const queue = createSerialTaskQueue();
+  const receivedRevisions: number[] = [];
+  let revision = 7;
+  let active = 0;
+  let maxActive = 0;
+
+  const save = () => queue.run(async () => {
+    const expectedRevision = revision;
+    receivedRevisions.push(expectedRevision);
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await Promise.resolve();
+    revision = expectedRevision + 1;
+    active -= 1;
+    return revision;
+  });
+
+  assert.deepEqual(await Promise.all([save(), save(), save()]), [8, 9, 10]);
+  assert.deepEqual(receivedRevisions, [7, 8, 9]);
+  assert.equal(maxActive, 1);
+
+  await assert.rejects(queue.run(async () => { throw new Error("저장 실패"); }), /저장 실패/);
+  assert.equal(await queue.run(async () => "다음 저장"), "다음 저장");
 });
 
 test("생활확인 담당 직업을 현재 직업 템플릿과 고정한다", () => {

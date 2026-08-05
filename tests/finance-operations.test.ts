@@ -20,6 +20,43 @@ import {
   normalizeFinanceReversal,
 } from "../lib/finance-request-rules";
 
+test("1분 금융 자동화는 D1 한도 안에서 한 종류씩 작은 배치로 처리한다", async () => {
+  const [worker, funding, stocks] = await Promise.all([
+    readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-funding.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(worker, /Math\.floor\(now \/ 60_000\) % FINANCE_AUTOMATION_PHASES/);
+  assert.match(worker, /settleDueDepositContracts\(db, \{ now, limit: 2 \}\)/);
+  assert.match(worker, /processFinanceStockMarketTicks\(db, \{ now, limit: 2, newsLimit: 2 \}\)/);
+  assert.match(stocks, /UPDATE finance_stock_news[\s\S]*LIMIT \?/);
+  assert.match(stocks, /FINANCE_STOCK_NEWS_PER_TICK_LIMIT = 20/);
+  assert.match(stocks, /unappliedNewsForStockTick[\s\S]*ORDER BY news\.created_at, news\.id[\s\S]*LIMIT \?/);
+  assert.match(worker, /processDueFundingCampaigns\(db, \{[\s\S]*limit: 1,[\s\S]*refundLimit: 1/);
+  assert.match(worker, /processPendingFinancePayroll\(\)/);
+  assert.doesNotMatch(worker, /Promise\.allSettled/);
+  assert.match(funding, /refundLimit\?: number/);
+  assert.match(funding, /refundFundingCampaign\([\s\S]*refundLimit/);
+});
+
+test("월급과 펀딩 환불은 Free-plan D1 한도 안에서 나누어 이어 처리한다", async () => {
+  const [payroll, payrollPanel, fundingRules, overview] = await Promise.all([
+    readFile(new URL("../lib/finance-payroll.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/finance/FinancePayrollPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-funding-rules.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-overview.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(payroll, /FINANCE_PAYROLL_POST_BATCH_SIZE = 3/);
+  assert.match(payroll, /ORDER BY student_number, student_id[\s\S]*LIMIT \?/);
+  assert.match(payroll, /export async function processPendingFinancePayroll/);
+  assert.match(payrollPanel, /result\.payroll\.status === "completed"/);
+  assert.match(payrollPanel, /const maxAttempts = 40/);
+  assert.match(payroll, /postImmediately: false/);
+  assert.match(fundingRules, /FINANCE_FUNDING_PROCESS_BATCH_SIZE = 4/);
+  assert.match(payroll, /closures\.results\.slice\(index, index \+ 4\)/);
+  assert.match(overview, /independent overview groups in two bounded waves/);
+});
+
 test("사용 가능 금액은 지갑 잔액에서 처리 전 출금 신청액을 정확히 보관한다", async () => {
   assert.deepEqual(calculateFinanceWalletAvailability(1_000, 800), {
     balance: 1_000,
@@ -673,10 +710,11 @@ test("stock news publication and closure remain append-only audit events", async
       /NEW\.`?id`? != 'finance:stock-news-event:'[\s\S]*NEW\.`?news_id`?[\s\S]*NEW\.`?revision`?/,
     );
   }
-  assert.ok(
-    (service.match(/Number\(update\.meta\.changes \?\? 0\) === 1/g) ?? [])
-      .length >= 2,
-    "Cancellation and expiration must both verify that their guarded update won the race.",
+  assert.match(service, /Number\(update\.meta\.changes \?\? 0\) === 1/);
+  assert.match(
+    service,
+    /UPDATE finance_stock_news[\s\S]*WHERE status = 'active' AND id IN \([\s\S]*return Number\(update\.meta\.changes \?\? 0\)/,
+    "Expiration must remain one guarded atomic update and report only rows it changed.",
   );
   assert.match(audit, /FROM finance_stock_news_events news_event/);
   assert.match(audit, /'stock-news-event:' \|\| news_event\.id/);

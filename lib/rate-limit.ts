@@ -19,6 +19,9 @@ function clientAddress(request: Request) {
 export async function throttleKey(request: Request, scope: string, identifier: string) {
   return sha256(`${scope}|${identifier}|${clientAddress(request)}`);
 }
+export async function credentialThrottleKey(request: Request, scope: string, identifier: string) {
+  return sha256(`credential|${scope}|${identifier}|${clientAddress(request)}`);
+}
 export async function subjectThrottleKey(scope: string, identifier: string) {
   return sha256(`subject|${scope}|${identifier}`);
 }

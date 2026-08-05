@@ -9,6 +9,7 @@ import {
 } from "@/lib/registration";
 import { consumeRateLimit, subjectThrottleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
+import { isSafeNewStudentPassword, isValidExistingStudentPassword } from "@/lib/student-password";
 
 function guardCondition(mode: "activate" | "login" | "reset", hasGrant: boolean) {
   const common = `
@@ -45,13 +46,24 @@ export async function POST(request: Request) {
   try {
     const body = await readJson<{ password?: string }>(request);
     const password = String(body.password ?? "");
-    if (!/^\d{4,12}$/.test(password)) {
-      throw new ApiError(400, "비밀번호는 기억하기 쉬운 숫자 4~12자리로 입력해 주세요.", "INVALID_STUDENT_PASSWORD");
+    if (!isValidExistingStudentPassword(password)) {
+      throw new ApiError(400, "비밀번호는 숫자 4~12자리로 입력해 주세요.", "INVALID_STUDENT_PASSWORD");
     }
     const challenge = await registrationChallenge(request);
+    if (challenge.challenge_mode !== "login" && !isSafeNewStudentPassword(password)) {
+      throw new ApiError(
+        400,
+        "새 비밀번호는 같은 숫자나 연속 숫자를 피해서 숫자 6~12자리로 만들어 주세요.",
+        "INVALID_STUDENT_PASSWORD",
+      );
+    }
     if (challenge.challenge_mode === "login") {
       throttle = await subjectThrottleKey("registration-complete", challenge.student_id);
-      await consumeRateLimit(throttle, { maxAttempts: 7 });
+      await consumeRateLimit(throttle, {
+        maxAttempts: 7,
+        windowMs: 60 * 60 * 1_000,
+        blockMs: 60 * 60 * 1_000,
+      });
     }
 
     if (challenge.challenge_mode === "login" && !(await verifyPassword(password, challenge.password_hash))) {

@@ -102,10 +102,14 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
             <div className="qr-card-heading"><span>직업교실</span><small>학생 개인 QR</small></div>
             <div className="qr-student"><b>{card.student_number}번</b><strong>{card.official_name}</strong></div>
             <div className="qr-code-wrap">
-              {images[card.id] ? <Image src={images[card.id]} alt={`${card.student_number}번 ${card.official_name} 등록 QR`} width={320} height={320} unoptimized /> : <div className="qr-loading">QR 만드는 중</div>}
+              {images[card.id] ? <Image src={images[card.id]} alt={`${card.student_number}번 ${card.official_name} 학생 로그인 QR`} width={320} height={320} unoptimized /> : <div className="qr-loading">QR 만드는 중</div>}
             </div>
             <p>{classLabel}</p>
-            <ol><li>휴대전화로 QR을 찍어요.</li><li>처음 등록하거나 평소 비밀번호로 로그인해요.</li><li>비밀번호를 잊으면 선생님께 10분 재설정 허용을 요청해요.</li></ol>
+            <ol>
+              <li>휴대전화로 QR을 찍어요.</li>
+              <li>{card.purpose === "reset" ? "새 비밀번호를 만든 뒤 로그인해요." : "처음 등록하거나 평소 비밀번호로 로그인해요."}</li>
+              <li>비밀번호를 잊으면 선생님께 10분 재설정 허용을 요청해요.</li>
+            </ol>
             <div className="one-time-key">학급 운영 중 다시 쓸 수 있는 개인 카드</div>
           </article>
         ))}

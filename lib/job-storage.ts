@@ -16,6 +16,10 @@ import { ApiError } from "./responses";
 
 export { validateJobDrafts } from "./job-draft-rules";
 
+// Bump this key whenever JOB_TEMPLATES changes so every database receives the new defaults once.
+const JOB_TEMPLATE_SEED_KEY = "2026-08-job-template-seed-v1";
+let jobTemplatesReady: Promise<void> | null = null;
+
 type SetupRow = {
   class_id: string;
   status: "not_started" | "draft" | "completed";
@@ -56,24 +60,42 @@ function parseJson<T>(value: string | null, fallback: T): T {
 
 export async function ensureJobCenterSchema() {
   await ensureSchema();
-  const db = database();
-  await db.batch(JOB_TEMPLATES.map((template) => db.prepare(
-    `INSERT INTO job_templates (
-       id, name, short_description, detailed_tasks, category,
-       recommended_min_members, recommended_max_members, icon_key, default_priority, is_active
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-     ON CONFLICT(id) DO NOTHING`,
-  ).bind(
-    template.id,
-    template.name,
-    template.shortDescription,
-    template.detailedTasks,
-    template.category,
-    template.recommendedMinMembers,
-    template.recommendedMaxMembers,
-    template.iconKey,
-    template.defaultPriority,
-  )));
+  if (!jobTemplatesReady) {
+    jobTemplatesReady = (async () => {
+      const db = database();
+      const seeded = await db.prepare(
+        "SELECT 1 AS seeded FROM system_migrations WHERE key = ? LIMIT 1",
+      ).bind(JOB_TEMPLATE_SEED_KEY).first<{ seeded: number }>();
+      if (seeded?.seeded) return;
+      const now = Date.now();
+      await db.batch([
+        ...JOB_TEMPLATES.map((template) => db.prepare(
+          `INSERT INTO job_templates (
+             id, name, short_description, detailed_tasks, category,
+             recommended_min_members, recommended_max_members, icon_key, default_priority, is_active
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+           ON CONFLICT(id) DO NOTHING`,
+        ).bind(
+          template.id,
+          template.name,
+          template.shortDescription,
+          template.detailedTasks,
+          template.category,
+          template.recommendedMinMembers,
+          template.recommendedMaxMembers,
+          template.iconKey,
+          template.defaultPriority,
+        )),
+        db.prepare(
+          "INSERT OR IGNORE INTO system_migrations (key, applied_at) VALUES (?, ?)",
+        ).bind(JOB_TEMPLATE_SEED_KEY, now),
+      ]);
+    })().catch((error) => {
+      jobTemplatesReady = null;
+      throw error;
+    });
+  }
+  await jobTemplatesReady;
 }
 
 export async function loadJobTemplates(options: { activeOnly?: boolean } = {}): Promise<JobTemplate[]> {

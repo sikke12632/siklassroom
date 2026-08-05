@@ -1,8 +1,26 @@
 import { requireClassManagement } from "@/lib/auth";
 import { database, ensureSchema, isOperationGuardFailure } from "@/lib/database";
+import {
+  MAX_ACTIVE_CLASSES_PER_TEACHER,
+  MAX_TOTAL_CLASSES_PER_TEACHER,
+} from "@/lib/class-limits";
 import { cleanDisplayText, currentSchoolYear, integerInRange, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { seoulServerTime } from "@/lib/seoul-time";
+
+async function assertTeacherClassCapacity(teacherId: string) {
+  const counts = await database().prepare(
+    `SELECT COUNT(*) AS total_count,
+            SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_count
+     FROM classes WHERE teacher_id = ?`,
+  ).bind(teacherId).first<{ total_count: number; active_count: number | null }>();
+  if (Number(counts?.active_count ?? 0) >= MAX_ACTIVE_CLASSES_PER_TEACHER) {
+    throw new ApiError(409, "사용 중인 학급은 최대 10개까지 만들 수 있어요. 쓰지 않는 학급을 먼저 보관해 주세요.", "ACTIVE_CLASS_LIMIT_REACHED");
+  }
+  if (Number(counts?.total_count ?? 0) >= MAX_TOTAL_CLASSES_PER_TEACHER) {
+    throw new ApiError(409, "학급 기록이 50개에 도달했어요. 관리자에게 정리를 요청해 주세요.", "CLASS_LIMIT_REACHED");
+  }
+}
 
 export async function GET(request: Request) {
   try {
@@ -144,6 +162,7 @@ export async function POST(request: Request) {
     if (!schoolName || !schoolNormalized) throw new ApiError(400, "학교명을 입력해 주세요.", "SCHOOL_REQUIRED");
     if (!schoolYear || !grade || !classNumber) throw new ApiError(400, "학년도·학년·반을 다시 확인해 주세요.", "INVALID_CLASS_INFO");
     await ensureSchema();
+    await assertTeacherClassCapacity(teacherId);
     const duplicate = await database().prepare(
       `SELECT id FROM classes WHERE school_normalized = ? AND school_year = ? AND grade = ? AND class_number = ?`,
     ).bind(schoolNormalized, schoolYear, grade, classNumber).first();
@@ -158,8 +177,15 @@ export async function POST(request: Request) {
            SELECT CASE WHEN NOT EXISTS (
              SELECT 1 FROM classes
              WHERE school_normalized = ? AND school_year = ? AND grade = ? AND class_number = ?
-           ) THEN ? ELSE NULL END, 'class_create', ?`,
-        ).bind(schoolNormalized, schoolYear, grade, classNumber, guardId, now),
+           ) AND (SELECT COUNT(*) FROM classes WHERE teacher_id = ? AND status = 'active') < ?
+             AND (SELECT COUNT(*) FROM classes WHERE teacher_id = ?) < ?
+           THEN ? ELSE NULL END, 'class_create', ?`,
+        ).bind(
+          schoolNormalized, schoolYear, grade, classNumber,
+          teacherId, MAX_ACTIVE_CLASSES_PER_TEACHER,
+          teacherId, MAX_TOTAL_CLASSES_PER_TEACHER,
+          guardId, now,
+        ),
         database().prepare(
           `INSERT INTO classes
            (id, teacher_id, school_name, school_normalized, school_id, manual_school_request_id,
@@ -184,6 +210,7 @@ export async function POST(request: Request) {
       ]);
     } catch (error) {
       if (isOperationGuardFailure(error)) {
+        await assertTeacherClassCapacity(teacherId);
         throw new ApiError(409, "같은 학교의 같은 학년도·학년·반이 이미 만들어져 있어요.", "CLASS_EXISTS");
       }
       throw error;

@@ -19,6 +19,7 @@ import { POST as submitStudentJobEvaluation } from "../../app/api/student/job-ev
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
+import { processPendingFinancePayroll } from "../../lib/finance-payroll";
 import { issueEmailVerification } from "../../lib/teacher-verification";
 import { POST as requestTeacherPasswordReset } from "../../app/api/teacher/password/request/route";
 
@@ -369,6 +370,9 @@ const financeCashLifecycleWorker = {
       }
       await resolvePendingRequest(scope);
       return Response.json({ resolved: true });
+    }
+    if (url.pathname === "/test/process-payroll" && request.method === "POST") {
+      return Response.json(await processPendingFinancePayroll());
     }
 
     const requestedScope = request.headers.get(

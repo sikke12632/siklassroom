@@ -169,7 +169,7 @@ type ApiPayload = {
 
 type CloseMonthlySourceResponse = {
   payroll?: {
-    status: "completed" | "attention";
+    status: "completed" | "processing" | "attention";
     message?: string;
   };
 };
@@ -572,6 +572,11 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
         setStorageWarning(
           closeResult.payroll.message
             || "직업 월급 자동 지급을 마치지 못했습니다. 금융센터의 직업 월급에서 다시 지급해 주세요.",
+        );
+      } else if (closeResult.payroll?.status === "processing") {
+        setStorageWarning(
+          closeResult.payroll.message
+            || "직업 월급은 안전하게 나누어 자동 지급 중입니다.",
         );
       }
     } catch (reason) {

@@ -332,20 +332,36 @@ export function FinancePayrollPanel({
     setBusy(slot);
     setNotice(null);
     try {
-      await postJson(
-        `/api/finance/payrolls?classId=${encodeURIComponent(classId)}`,
-        {
-          closureId: payroll.closureId,
-          expectedSettingsRevision: data.settings.revision,
-          idempotencyKey: key,
-        },
-      );
-      keys.current.delete(slot);
-      setConfirmClosureId(null);
-      setNotice({
-        tone: "success",
-        message: `${payroll.sourceYear}년 ${payroll.sourceMonth}월 직업 월급을 모두 지급했습니다.`,
-      });
+      let result: { payroll: Payroll; deduplicated: boolean } | null = null;
+      const maxAttempts = 40;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        result = await postJson<{ payroll: Payroll; deduplicated: boolean }>(
+          `/api/finance/payrolls?classId=${encodeURIComponent(classId)}`,
+          {
+            closureId: payroll.closureId,
+            expectedSettingsRevision: data.settings.revision,
+            idempotencyKey: key,
+          },
+        );
+        if (result.payroll.status === "completed") break;
+        setNotice({
+          tone: "info",
+          message: `월급을 안전하게 나누어 지급하고 있습니다. (${result.payroll.postedCount}/${result.payroll.recipientCount}명)`,
+        });
+      }
+      if (result?.payroll.status === "completed") {
+        keys.current.delete(slot);
+        setConfirmClosureId(null);
+        setNotice({
+          tone: "success",
+          message: `${payroll.sourceYear}년 ${payroll.sourceMonth}월 직업 월급을 모두 지급했습니다.`,
+        });
+      } else {
+        setNotice({
+          tone: "info",
+          message: "남은 월급은 서버가 자동으로 이어서 지급합니다. 잠시 후 새로고침해 주세요.",
+        });
+      }
       await load(true);
       await onRefresh?.();
     } catch (error) {

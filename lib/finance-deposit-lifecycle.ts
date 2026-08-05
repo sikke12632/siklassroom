@@ -96,7 +96,40 @@ async function pendingCashRequestCount(input: {
   return Number(row?.count ?? 0);
 }
 
+async function pendingPayrollCount(input: {
+  classId: string;
+  studentId?: string;
+}) {
+  await ensureSchema();
+  if (input.studentId) {
+    const row = await database().prepare(
+      `SELECT COUNT(*) AS count
+       FROM finance_payroll_items item
+       JOIN finance_payroll_runs payroll
+         ON payroll.id = item.run_id AND payroll.class_id = item.class_id
+       WHERE item.class_id = ? AND item.student_id = ?
+         AND item.status = 'pending'
+         AND payroll.status IN ('prepared', 'posting')`,
+    ).bind(input.classId, input.studentId).first<{ count: number }>();
+    return Number(row?.count ?? 0);
+  }
+  const row = await database().prepare(
+    `SELECT COUNT(*) AS count
+     FROM finance_payroll_runs payroll
+     WHERE payroll.class_id = ?
+       AND payroll.status IN ('prepared', 'posting')`,
+  ).bind(input.classId).first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 export async function assertClassCanBeArchived(classId: string) {
+  if (await pendingPayrollCount({ classId }) > 0) {
+    throw new ApiError(
+      409,
+      "아직 지급 중인 직업 월급이 있어 학급을 보관할 수 없습니다. 금융센터에서 지급 완료를 확인해 주세요.",
+      "FINANCE_PAYROLL_PENDING_CLASS",
+    );
+  }
   const pendingRequestCount = await pendingCashRequestCount({ classId });
   if (pendingRequestCount > 0) {
     throw new ApiError(
@@ -132,6 +165,13 @@ export async function assertStudentCanBeExcluded(
   classId: string,
   studentId: string,
 ) {
+  if (await pendingPayrollCount({ classId, studentId }) > 0) {
+    throw new ApiError(
+      409,
+      "이 학생에게 아직 지급하지 않은 직업 월급이 있어 명단에서 제외할 수 없습니다. 월급 지급을 먼저 완료해 주세요.",
+      "FINANCE_PAYROLL_PENDING_STUDENT",
+    );
+  }
   const pendingRequestCount = await pendingCashRequestCount({
     classId,
     studentId,
@@ -168,6 +208,20 @@ export async function assertStudentCanBeExcluded(
 
 export function mapFinanceDepositLifecycleError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FINANCE_PAYROLL_PENDING_CLASS")) {
+    throw new ApiError(
+      409,
+      "아직 지급 중인 직업 월급이 있어 학급을 보관할 수 없습니다. 금융센터에서 지급 완료를 확인해 주세요.",
+      "FINANCE_PAYROLL_PENDING_CLASS",
+    );
+  }
+  if (message.includes("FINANCE_PAYROLL_PENDING_STUDENT")) {
+    throw new ApiError(
+      409,
+      "이 학생에게 아직 지급하지 않은 직업 월급이 있어 명단에서 제외할 수 없습니다. 월급 지급을 먼저 완료해 주세요.",
+      "FINANCE_PAYROLL_PENDING_STUDENT",
+    );
+  }
   if (message.includes("FINANCE_REQUEST_PENDING_CLASS")) {
     throw new ApiError(
       409,

@@ -2,7 +2,9 @@ import { ApiError } from "./responses";
 
 export const MART_SALES_DEFAULT_LIMIT = 50;
 export const MART_SALES_MAX_LIMIT = 100;
-export const MART_SALES_EXPORT_MAX_ROWS = 50_000;
+// A smaller export cap prevents a long-lived class from materializing tens of
+// thousands of joined rows in one Worker. Teachers can split by date range.
+export const MART_SALES_EXPORT_MAX_ROWS = 5_000;
 
 export type MartSaleStatusFilter = "all" | "completed" | "cancelled";
 

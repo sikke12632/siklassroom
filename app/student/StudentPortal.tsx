@@ -22,9 +22,10 @@ type StudentInfo = {
 };
 
 const preferenceKey = "job_classroom_student_class_v1";
+type StudentSessionStatus = "checking" | "ready";
 
 export function StudentPortal() {
-  const [loading, setLoading] = useState(true);
+  const [sessionStatus, setSessionStatus] = useState<StudentSessionStatus>("checking");
   const [student, setStudent] = useState<StudentInfo | null>(null);
   const [teacherSession, setTeacherSession] = useState(false);
   const [schoolName, setSchoolName] = useState("");
@@ -59,16 +60,19 @@ export function StudentPortal() {
       });
     });
     api<{ actor: (StudentInfo & { type: "student" }) | { type: "teacher" } | null }>("/api/session", { signal: controller.signal })
-      .then(({ actor }) => {
+      .then(async ({ actor }) => {
         setSessionError("");
+        setTeacherSession(actor?.type === "teacher");
         if (actor?.type === "student") {
-          api<{ student: StudentInfo }>("/api/student/me", { signal: controller.signal })
-            .then((data) => setStudent(data.student))
-            .catch((reason) => {
-              if ((reason as Error).name !== "AbortError") setStudent(actor);
-            });
+          try {
+            const data = await api<{ student: StudentInfo }>("/api/student/me", { signal: controller.signal });
+            setStudent(data.student);
+          } catch (reason) {
+            if ((reason as Error).name !== "AbortError") setStudent(actor);
+          }
+        } else {
+          setStudent(null);
         }
-        if (actor?.type === "teacher") setTeacherSession(true);
       })
       .catch((reason) => {
         if ((reason as Error).name !== "AbortError") {
@@ -76,7 +80,7 @@ export function StudentPortal() {
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (!controller.signal.aborted) setSessionStatus("ready");
       });
     return () => {
       cancelAnimationFrame(frame);
@@ -111,7 +115,7 @@ export function StudentPortal() {
     setStudent(null); setTeacherSession(false); setStudentNumber(""); setPassword("");
   }
 
-  if (loading) return <div className="student-loading"><span><BookOpen aria-hidden="true" /></span><p>우리 반을 찾고 있어요</p></div>;
+  if (sessionStatus === "checking") return <div className="student-loading" role="status"><span><BookOpen aria-hidden="true" /></span><p>우리 반을 찾고 있어요</p></div>;
   if (teacherSession) return (
     <main className="student-page"><header><Logo compact /><ThemeToggle compact /></header><section className="student-message-card"><span className="message-icon"><GraduationCap aria-hidden="true" /></span><h1>선생님으로 로그인되어 있어요</h1><p>교사 화면으로 돌아가거나 로그아웃한 뒤 학생으로 들어와 주세요.</p><a className="button button-primary button-large" href="/teacher">교사 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></section></main>
   );
@@ -183,7 +187,7 @@ export function StudentPortal() {
           <div className="session-check-error">
             <Notice message={sessionError} tone="error" />
             <button className="button button-light" type="button" onClick={() => {
-              setLoading(true);
+              setSessionStatus("checking");
               setSessionError("");
               setSessionRetryKey((value) => value + 1);
             }}>접속 상태 다시 확인</button>

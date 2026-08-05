@@ -27,6 +27,9 @@ import { financeSettingsForClass } from "./finance-settings";
 import { ApiError } from "./responses";
 
 const PAYROLL_LOCK_TIMEOUT_MS = 2 * 60 * 1_000;
+// Four recipients keep one request below the D1 Free-plan query budget even
+// after ownership, reconciliation, idempotency, and response reads are counted.
+export const FINANCE_PAYROLL_POST_BATCH_SIZE = 3;
 
 type SalarySettingsRow = {
   class_id: string;
@@ -344,6 +347,19 @@ export async function updateFinanceSalarySettings(
   );
   if (replay) return settingsReplay(replay, payloadHash);
 
+  const unfinishedPayroll = await database().prepare(
+    `SELECT COUNT(*) AS count
+     FROM finance_payroll_runs
+     WHERE class_id = ? AND status IN ('prepared', 'posting')`,
+  ).bind(context.classroom.id).first<{ count: number }>();
+  if (Number(unfinishedPayroll?.count ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      "지급 중인 직업 월급을 먼저 완료한 뒤 월급 기준을 바꿔 주세요.",
+      "FINANCE_PAYROLL_PENDING_SETTINGS",
+    );
+  }
+
   const current = await salarySettingsRow(context.classroom.id);
   if (Number(current.revision) !== normalized.expectedRevision) {
     throw new ApiError(
@@ -408,6 +424,13 @@ export async function updateFinanceSalarySettings(
         409,
         "다른 화면에서 월급 설정이 먼저 바뀌었습니다. 최신 설정을 다시 확인해 주세요.",
         "FINANCE_SALARY_SETTINGS_STALE",
+      );
+    }
+    if (String(error).includes("FINANCE_PAYROLL_PENDING_SETTINGS")) {
+      throw new ApiError(
+        409,
+        "지급 중인 직업 월급을 먼저 완료한 뒤 월급 기준을 바꿔 주세요.",
+        "FINANCE_PAYROLL_PENDING_SETTINGS",
       );
     }
     throw error;
@@ -640,13 +663,19 @@ export async function financePayrollsForRequest(request: Request) {
   requireTeacher(context);
   const settings = await salarySettingsRow(context.classroom.id);
   const closures = await closureRows(context.classroom.id);
-  const payrolls = await Promise.all(closures.results.map(async (closure) => {
-    const run = await payrollRunByIdentity({
-      classId: context.classroom.id,
-      closureId: closure.id,
-    });
-    return payrollView(closure, settings, run);
-  }));
+  const payrolls: FinancePayrollView[] = [];
+  // Keep at most four payroll lookups active so a 12-month history cannot
+  // exceed Cloudflare D1's six simultaneous-connection limit.
+  for (let index = 0; index < closures.results.length; index += 4) {
+    const page = closures.results.slice(index, index + 4);
+    payrolls.push(...await Promise.all(page.map(async (closure) => {
+      const run = await payrollRunByIdentity({
+        classId: context.classroom.id,
+        closureId: closure.id,
+      });
+      return payrollView(closure, settings, run);
+    })));
+  }
   return {
     settings: settingsView(settings),
     payrolls,
@@ -841,6 +870,17 @@ async function preparePayroll(input: {
     if (concurrent) {
       return { run: runReplay(concurrent, payloadHash), closure, deduplicated: true };
     }
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      message.includes("FINANCE_PAYROLL_PREPARE_STALE")
+      || message.includes("FINANCE_PAYROLL_RECIPIENT_STALE")
+    ) {
+      throw new ApiError(
+        409,
+        "학급·학생·화폐 설정이 달라졌습니다. 최신 상태를 확인한 뒤 월급 지급을 다시 시작해 주세요.",
+        "FINANCE_PAYROLL_PREPARE_STALE",
+      );
+    }
     throw error;
   }
   const run = await payrollRunByIdentity({ classId: input.classId, runId });
@@ -942,8 +982,13 @@ async function postPreparedPayroll(input: {
             created_at, posted_at, updated_at
      FROM finance_payroll_items
      WHERE run_id = ? AND class_id = ? AND status = 'pending'
-     ORDER BY student_number, student_id`,
-  ).bind(input.run.id, input.run.class_id).all<PayrollItemRow>();
+     ORDER BY student_number, student_id
+     LIMIT ?`,
+  ).bind(
+    input.run.id,
+    input.run.class_id,
+    FINANCE_PAYROLL_POST_BATCH_SIZE,
+  ).all<PayrollItemRow>();
 
   try {
     for (const item of pending.results) {
@@ -1011,15 +1056,77 @@ async function postPreparedPayroll(input: {
     throw error;
   }
 
-  const completed = await refreshRunProgress(input.run.class_id, input.run.id);
-  if (!completed || completed.status !== "completed") {
+  const progressed = await refreshRunProgress(input.run.class_id, input.run.id);
+  if (!progressed) {
     throw new ApiError(
-      409,
-      "일부 학생의 월급 지급을 마치지 못했습니다. 같은 버튼을 눌러 이어서 지급해 주세요.",
-      "FINANCE_PAYROLL_PARTIAL",
+      500,
+      "월급 지급 진행 상태를 확인하지 못했습니다.",
+      "FINANCE_PAYROLL_UNAVAILABLE",
     );
   }
-  return completed;
+  return progressed;
+}
+
+/** Continue one incomplete payroll in a small, retry-safe scheduled chunk. */
+export async function processPendingFinancePayroll() {
+  await ensureSchema();
+  const now = Date.now();
+  const run = await database().prepare(
+    `SELECT payroll.id, payroll.class_id, payroll.closure_id,
+            payroll.source_period_id, payroll.source_year, payroll.source_month,
+            payroll.salary_settings_revision, payroll.salary_settings_json,
+            payroll.status, payroll.recipient_count, payroll.posted_count,
+            payroll.total_amount, payroll.idempotency_key, payroll.payload_hash,
+            payroll.initiated_by_teacher_id, payroll.created_at,
+            payroll.posted_at, payroll.updated_at
+     FROM finance_payroll_runs payroll
+     JOIN classes classroom ON classroom.id = payroll.class_id
+     WHERE classroom.status = 'active'
+       AND (
+         payroll.status = 'prepared'
+         OR (payroll.status = 'posting' AND payroll.updated_at < ?)
+       )
+     ORDER BY payroll.updated_at, payroll.id
+     LIMIT 1`,
+  ).bind(now - PAYROLL_LOCK_TIMEOUT_MS).first<PayrollRunRow>();
+  if (!run) return { processed: 0, completed: 0, remaining: 0, failed: 0 };
+
+  try {
+    const closure = await closureRow(run.class_id, run.closure_id);
+    if (!closure) {
+      throw new ApiError(
+        409,
+        "자동 지급을 이어갈 월 마감 기록을 찾을 수 없습니다.",
+        "FINANCE_PAYROLL_CLOSURE_NOT_FOUND",
+      );
+    }
+    await assertSalaryAmountsMatchCurrentDenominations(
+      run.class_id,
+      parseStoredSettings(run.salary_settings_json),
+    );
+    await assertLedgerReady(run.class_id);
+    const progressed = await postPreparedPayroll({ run, closure });
+    return {
+      processed: 1,
+      completed: progressed.status === "completed" ? 1 : 0,
+      remaining: progressed.status === "completed" ? 0 : 1,
+      failed: 0,
+    };
+  } catch (error) {
+    // Move a permanently failing run behind other classes instead of letting
+    // the oldest row starve every later payroll on each cron invocation.
+    await database().prepare(
+      `UPDATE finance_payroll_runs
+       SET updated_at = ?
+       WHERE id = ? AND class_id = ? AND status IN ('prepared', 'posting')`,
+    ).bind(Date.now(), run.id, run.class_id).run().catch(() => undefined);
+    console.error("finance payroll continuation deferred", {
+      runId: run.id,
+      classId: run.class_id,
+      error,
+    });
+    return { processed: 1, completed: 0, remaining: 1, failed: 1 };
+  }
 }
 
 async function executePayroll(input: {
@@ -1028,6 +1135,7 @@ async function executePayroll(input: {
   expectedSettingsRevision: number | null;
   idempotencyKey: string;
   initiatedByTeacherId: string | null;
+  postImmediately?: boolean;
 }) {
   const existing = await payrollRunByIdentity({
     classId: input.classId,
@@ -1057,10 +1165,12 @@ async function executePayroll(input: {
       );
       await assertLedgerReady(input.classId);
     }
-    const completed = await postPreparedPayroll({ run: existing, closure });
+    const progressed = input.postImmediately === false
+      ? existing
+      : await postPreparedPayroll({ run: existing, closure });
     const currentSettings = await salarySettingsRow(input.classId);
     return {
-      payroll: await payrollView(closure, currentSettings, completed),
+      payroll: await payrollView(closure, currentSettings, progressed),
       deduplicated: true,
     };
   }
@@ -1088,9 +1198,11 @@ async function executePayroll(input: {
     idempotencyKey: input.idempotencyKey,
     initiatedByTeacherId: input.initiatedByTeacherId,
   });
-  const completed = await postPreparedPayroll(prepared);
+  const progressed = input.postImmediately === false
+    ? prepared.run
+    : await postPreparedPayroll(prepared);
   return {
-    payroll: await payrollView(prepared.closure, settings, completed),
+    payroll: await payrollView(prepared.closure, settings, progressed),
     deduplicated: prepared.deduplicated || prepared.run.status === "completed",
   };
 }
@@ -1137,5 +1249,8 @@ export async function autoPayFinancePayrollForClosure(input: {
     expectedSettingsRevision: null,
     idempotencyKey: `salary-auto:${input.closureId}`,
     initiatedByTeacherId: null,
+    // The month-close request has already performed many D1 operations. Only
+    // prepare the immutable run here; cron continues posting in fresh calls.
+    postImmediately: false,
   });
 }

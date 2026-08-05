@@ -1,5 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
+import { MAX_ACTIVE_CLASSES_PER_TEACHER } from "@/lib/class-limits";
 import { database, isOperationGuardFailure } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import {
@@ -54,6 +55,20 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
     if (status === "archived" && current.status !== "archived") {
       await assertClassCanBeArchived(classId);
     }
+    const restoring = current.status === "archived" && status === "active";
+    if (restoring) {
+      const count = await database().prepare(
+        `SELECT COUNT(*) AS count FROM classes
+         WHERE teacher_id = ? AND status = 'active'`,
+      ).bind(teacherId).first<{ count: number }>();
+      if (Number(count?.count ?? 0) >= MAX_ACTIVE_CLASSES_PER_TEACHER) {
+        throw new ApiError(
+          409,
+          "사용 중인 학급은 최대 10개까지 둘 수 있어요. 다른 학급을 먼저 보관해 주세요.",
+          "ACTIVE_CLASS_LIMIT_REACHED",
+        );
+      }
+    }
     const now = Date.now();
     const guardId = crypto.randomUUID();
     const auditDetail = {
@@ -74,6 +89,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
                AND current.school_year = ? AND current.grade = ?
                AND current.class_number = ? AND current.display_name IS ?
                AND current.status = ? AND current.updated_at = ?
+               AND (
+                 current.status <> 'archived' OR ? <> 'active'
+                 OR (SELECT COUNT(*) FROM classes active_class
+                     WHERE active_class.teacher_id = current.teacher_id
+                       AND active_class.status = 'active') < ?
+               )
                AND NOT EXISTS (
                  SELECT 1 FROM classes conflict
                  WHERE conflict.school_normalized = ? AND conflict.school_year = ?
@@ -92,6 +113,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
           current.display_name,
           current.status,
           current.updated_at,
+          status,
+          MAX_ACTIVE_CLASSES_PER_TEACHER,
           schoolNormalized,
           schoolYear,
           grade,
@@ -153,6 +176,19 @@ export async function PATCH(request: Request, context: { params: Promise<{ class
       await database().batch(statements);
     } catch (error) {
       if (isOperationGuardFailure(error)) {
+        if (restoring) {
+          const count = await database().prepare(
+            `SELECT COUNT(*) AS count FROM classes
+             WHERE teacher_id = ? AND status = 'active'`,
+          ).bind(teacherId).first<{ count: number }>();
+          if (Number(count?.count ?? 0) >= MAX_ACTIVE_CLASSES_PER_TEACHER) {
+            throw new ApiError(
+              409,
+              "사용 중인 학급은 최대 10개까지 둘 수 있어요. 다른 학급을 먼저 보관해 주세요.",
+              "ACTIVE_CLASS_LIMIT_REACHED",
+            );
+          }
+        }
         throw new ApiError(409, "다른 화면에서 학급 정보가 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.", "CLASS_STALE");
       }
       mapFinanceDepositLifecycleError(error);

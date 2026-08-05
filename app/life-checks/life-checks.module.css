@@ -22,6 +22,7 @@
 .sectionHeading h2 { margin-bottom: 0; }
 .sectionHeading > span, .sectionHeading > strong { background: var(--color-icon-soft); color: var(--color-icon); padding: 7px 11px; border-radius: var(--radius-pill); }
 .tableWrap { overflow: auto; border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
+.tableWrap:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
 .checkTable { width: max-content; min-width: 100%; border-collapse: collapse; background: var(--color-surface-raised); }
 .checkTable th, .checkTable td { border-bottom: 1px solid var(--color-border); padding: 9px; text-align: center; white-space: nowrap; }
 .checkTable thead th { position: sticky; top: 0; z-index: 2; background: var(--color-surface-subtle); font-size: var(--text-sm); }
@@ -33,6 +34,7 @@
 .checkCell input:checked + span { border-color: var(--color-success); background: var(--color-success-soft); color: var(--color-success); }
 .checkCell input:focus-visible + span { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .checkCell input:disabled + span { opacity: .58; cursor: not-allowed; }
+.checkCellBusy span { cursor: progress; }
 .checkCell svg { width: 20px; height: 20px; }
 .rewardList { list-style: none; margin: 16px 0; padding: 0; display: grid; gap: 8px; }
 .rewardList li { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(220px, 2fr) auto; gap: 12px; align-items: center; padding: 11px 13px; border: 1px solid var(--color-border); border-radius: var(--radius-md); }
@@ -46,11 +48,18 @@
 .empty { padding: 18px; text-align: center; color: var(--color-text-muted); }
 .statePage { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 24px; text-align: center; }
 .statePage > svg { width: 48px; height: 48px; color: var(--color-icon); }
+.stateActions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 @media (max-width: 800px) {
   .controls { grid-template-columns: 1fr; }
   .hero, .sectionHeading { align-items: stretch; flex-direction: column; }
   .rewardList li, .auditPanel li { grid-template-columns: 1fr; gap: 3px; }
-  .header .button { padding-inline: 10px; }
+  .header :global(.button) { padding-inline: 10px; }
+}
+@media (max-width: 420px) {
+  .header { gap: 8px; }
+  .header > div { gap: 6px; }
+  .header :global(.button) { min-width: 44px; padding: 0; font-size: 0; }
+  .header :global(.button) svg { margin: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .page * { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }

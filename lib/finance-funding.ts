@@ -1588,16 +1588,34 @@ async function refundFundingCampaign(
   };
 }
 
+async function deferFundingCampaign(
+  db: D1Database,
+  campaignId: string,
+  now: number,
+) {
+  await db.prepare(
+    `UPDATE finance_funding_campaigns
+     SET updated_at = ?
+     WHERE id = ?
+       AND status IN ('active', 'paused', 'funded', 'refunding')`,
+  ).bind(now, campaignId).run().catch(() => undefined);
+}
+
 export async function processDueFundingCampaigns(
   db: D1Database,
   options: {
     now?: number;
     limit?: number;
+    refundLimit?: number;
     classId?: string;
   } = {},
 ) {
   const now = Number(options.now ?? Date.now());
   const limit = Math.max(1, Math.min(100, Math.trunc(options.limit ?? 20)));
+  const refundLimit = Math.max(
+    1,
+    Math.min(FINANCE_FUNDING_PROCESS_BATCH_SIZE, Math.trunc(options.refundLimit ?? FINANCE_FUNDING_PROCESS_BATCH_SIZE)),
+  );
   const classId = options.classId?.trim() || null;
   const dueRows = await db.prepare(
     `SELECT ${CAMPAIGN_COLUMNS}
@@ -1605,7 +1623,7 @@ export async function processDueFundingCampaigns(
      WHERE campaign.status IN ('active', 'paused')
        AND campaign.deadline_at <= ?
        AND (? IS NULL OR campaign.class_id = ?)
-     ORDER BY campaign.deadline_at, campaign.id
+     ORDER BY campaign.updated_at, campaign.deadline_at, campaign.id
      LIMIT ?`,
   ).bind(now, classId, classId, limit).all<CampaignRow>();
   let transitioned = 0;
@@ -1619,13 +1637,14 @@ export async function processDueFundingCampaigns(
       transitioned += 1;
     } catch (error) {
       failed += 1;
+      await deferFundingCampaign(db, campaign.id, now);
       console.error("funding deadline transition deferred", { campaignId: campaign.id, error });
     }
   }
   const fundedRows = await db.prepare(
     `SELECT id FROM finance_funding_campaigns
      WHERE status = 'funded' AND (? IS NULL OR class_id = ?)
-     ORDER BY funded_at, id LIMIT ?`,
+     ORDER BY updated_at, funded_at, id LIMIT ?`,
   ).bind(classId, classId, limit).all<{ id: string }>();
   for (const row of fundedRows.results) {
     try {
@@ -1633,6 +1652,7 @@ export async function processDueFundingCampaigns(
       if (result.settled) settled += 1;
     } catch (error) {
       failed += 1;
+      await deferFundingCampaign(db, row.id, now);
       console.error("funding payout deferred", { campaignId: row.id, error });
     }
   }
@@ -1646,10 +1666,11 @@ export async function processDueFundingCampaigns(
       db,
       row.id,
       now,
-      FINANCE_FUNDING_PROCESS_BATCH_SIZE,
+      refundLimit,
     );
     refunded += result.refunded;
     failed += result.failed;
+    if (result.failed > 0) await deferFundingCampaign(db, row.id, now);
     if (result.completed) completed += 1;
   }
   return {

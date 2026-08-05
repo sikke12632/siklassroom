@@ -3,7 +3,9 @@ import { FINANCE_MAX_ABSOLUTE_AMOUNT } from "./finance-ledger-rules";
 export const FINANCE_FUNDING_MIN_DURATION_DAYS = 1;
 export const FINANCE_FUNDING_MAX_DURATION_DAYS = 31;
 export const FINANCE_FUNDING_DAY_MS = 24 * 60 * 60 * 1_000;
-export const FINANCE_FUNDING_PROCESS_BATCH_SIZE = 8;
+// Keep teacher-triggered cancellation below the D1 Free-plan query budget.
+// Larger campaigns continue automatically in later scheduled chunks.
+export const FINANCE_FUNDING_PROCESS_BATCH_SIZE = 4;
 const FINANCE_FUNDING_SEOUL_OFFSET_MS = 9 * 60 * 60 * 1_000;
 
 export const FINANCE_FUNDING_STATUSES = [

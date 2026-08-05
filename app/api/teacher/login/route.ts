@@ -2,7 +2,12 @@ import { createGuardedTeacherSession } from "@/lib/auth";
 import { database, ensureSchema } from "@/lib/database";
 import { verifyPasswordOrDummy } from "@/lib/crypto";
 import { normalizeEmail } from "@/lib/identity";
-import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
+import {
+  consumeRateLimit,
+  credentialThrottleKey,
+  subjectThrottleKey,
+  throttleKey,
+} from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { isOpenTeacherRegistration } from "@/lib/open-registration";
 import { teacherAccountIssue } from "@/lib/teacher-access-rules";
@@ -13,9 +18,15 @@ export async function POST(request: Request) {
     const email = normalizeEmail(body.email);
     const password = String(body.password ?? "");
     const ipKey = await throttleKey(request, "teacher-login-ip", "all");
-    const key = await subjectThrottleKey("teacher-login", email);
-    await consumeRateLimit(ipKey, { maxAttempts: 60 });
+    const key = await credentialThrottleKey(request, "teacher-login", email);
+    const subjectKey = await subjectThrottleKey("teacher-login", email);
+    await consumeRateLimit(ipKey, { maxAttempts: 120 });
     await consumeRateLimit(key, { maxAttempts: 7 });
+    await consumeRateLimit(subjectKey, {
+      maxAttempts: 50,
+      windowMs: 60 * 60 * 1_000,
+      blockMs: 60 * 60 * 1_000,
+    });
     await ensureSchema();
     const teacher = await database().prepare(
       `SELECT id, email, password_hash, status, email_verified_at, teacher_access_status,
@@ -55,7 +66,7 @@ export async function POST(request: Request) {
       passwordHash: teacher.password_hash,
       credentialRevision: teacher.credential_revision,
       request,
-      clearThrottleKeys: [key],
+      clearThrottleKeys: [key, subjectKey],
       activateOpenRegistration,
     });
     return json({

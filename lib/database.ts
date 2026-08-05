@@ -14,6 +14,12 @@ export type RuntimeEnv = {
 };
 
 let schemaReady: Promise<void> | null = null;
+let schemaProvidedByMigrations = false;
+
+// Bump this filename whenever a migration adds or changes runtime schema.
+// A database with this migration already applied does not need hundreds of
+// defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0038_finance_payroll_lifecycle_guards.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -108,6 +114,25 @@ const schemaStatements = [
     BEFORE DELETE ON audit_logs
     BEGIN
       SELECT RAISE(ABORT, 'AUDIT_LOG_IMMUTABLE');
+    END`,
+  `CREATE TABLE IF NOT EXISTS system_admin_audit_logs (
+    id TEXT PRIMARY KEY, admin_key TEXT NOT NULL, action TEXT NOT NULL,
+    target_type TEXT, target_id TEXT, before_json TEXT, after_json TEXT,
+    success INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS system_admin_audit_created_idx
+    ON system_admin_audit_logs(created_at)`,
+  `CREATE INDEX IF NOT EXISTS system_admin_audit_target_idx
+    ON system_admin_audit_logs(target_type, target_id)`,
+  `CREATE TRIGGER IF NOT EXISTS system_admin_audit_logs_update_guard
+    BEFORE UPDATE ON system_admin_audit_logs
+    BEGIN
+      SELECT RAISE(ABORT, 'SYSTEM_ADMIN_AUDIT_LOG_IMMUTABLE');
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS system_admin_audit_logs_delete_guard
+    BEFORE DELETE ON system_admin_audit_logs
+    BEGIN
+      SELECT RAISE(ABORT, 'SYSTEM_ADMIN_AUDIT_LOG_IMMUTABLE');
     END`,
   `CREATE TABLE IF NOT EXISTS job_templates (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, short_description TEXT NOT NULL,
@@ -382,10 +407,32 @@ export function database(): D1Database {
   return db;
 }
 
+async function hasLatestRuntimeMigration(db: D1Database) {
+  try {
+    const row = await db.prepare(
+      "SELECT 1 AS applied FROM d1_migrations WHERE name = ? LIMIT 1",
+    ).bind(LATEST_RUNTIME_SCHEMA_MIGRATION).first<{ applied: number }>();
+    return Boolean(row?.applied);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("no such table") && message.includes("d1_migrations")) return false;
+    throw error;
+  }
+}
+
+export function runtimeSchemaProvidedByMigrations() {
+  return schemaProvidedByMigrations;
+}
+
 export async function ensureSchema(): Promise<void> {
   if (!schemaReady) {
     schemaReady = (async () => {
       const db = database();
+      if (await hasLatestRuntimeMigration(db)) {
+        schemaProvidedByMigrations = true;
+        return;
+      }
+      schemaProvidedByMigrations = false;
       await db.batch([
         db.prepare(schemaStatements[0]),
         db.prepare(schemaStatements[1]),
@@ -429,6 +476,7 @@ export async function ensureSchema(): Promise<void> {
       await bootstrapInitialSchools(db);
     })().catch((error) => {
       schemaReady = null;
+      schemaProvidedByMigrations = false;
       throw error;
     });
   }
@@ -501,25 +549,13 @@ async function bootstrapInitialSchools(db: D1Database) {
   const schoolId = "school:B10:7091394";
   await db.batch([
     db.prepare(
-      `INSERT INTO schools (
+      `INSERT OR IGNORE INTO schools (
          id, office_code, school_code, official_name, normalized_name, search_name,
          school_level, province_name, district_name, road_address, status, source,
          source_updated_at, created_at, updated_at
        ) VALUES (?, 'B10', '7091394', '서울서이초등학교', '서울서이초등학교', '서울서이초',
                  '초등학교', '서울특별시', '서울특별시강남서초교육지원청',
-                 '서울특별시 서초구 서운로 35', 'active', 'neis', ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         official_name = excluded.official_name,
-         normalized_name = excluded.normalized_name,
-         search_name = excluded.search_name,
-         school_level = excluded.school_level,
-         province_name = excluded.province_name,
-         district_name = excluded.district_name,
-         road_address = excluded.road_address,
-         status = 'active',
-         source = 'neis',
-         source_updated_at = excluded.source_updated_at,
-         updated_at = excluded.updated_at`,
+                 '서울특별시 서초구 서운로 35', 'active', 'neis', ?, ?, ?)`,
     ).bind(schoolId, now, now, now),
     db.prepare(
       `INSERT OR IGNORE INTO school_aliases

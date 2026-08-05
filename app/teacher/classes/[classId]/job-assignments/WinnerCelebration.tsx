@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Crown, Sparkles, Volume2, VolumeX } from "lucide-react";
 
 const WINNER_REVEAL_DELAY_MS = 450;
@@ -49,10 +49,56 @@ export function WinnerCelebration({
   const [skipRequested, setSkipRequested] = useState(false);
   const [sound, setSound] = useState(false);
   const [shuffleIndex, setShuffleIndex] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const firstControlRef = useRef<HTMLButtonElement>(null);
+  const closeActionRef = useRef(onClose);
   const names = useMemo(
     () => candidateNames.length ? candidateNames : [winner?.name ?? "추첨 준비 중"],
     [candidateNames, winner?.name],
   );
+
+  useEffect(() => {
+    closeActionRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusFrame = window.requestAnimationFrame(() => firstControlRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeActionRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls.at(-1)!;
+      if (!dialogRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
 
   useEffect(() => {
     if (revealed) return;
@@ -76,7 +122,15 @@ export function WinnerCelebration({
   }, [revealed, sound]);
 
   return (
-    <div className={`winner-overlay ${revealed ? "revealed" : "shuffling"}`} role="dialog" aria-modal="true" aria-label="당첨자 발표">
+    <div
+      ref={dialogRef}
+      className={`winner-overlay ${revealed ? "revealed" : "shuffling"}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="winner-dialog-title"
+      aria-describedby="winner-dialog-status"
+    >
+      <h2 id="winner-dialog-title" className="visually-hidden">직업 추첨 결과</h2>
       <div className="winner-rays" aria-hidden="true" />
       {Array.from({ length: 30 }, (_, index) => (
         <i
@@ -87,7 +141,7 @@ export function WinnerCelebration({
         />
       ))}
       <div className="winner-tools">
-        <button onClick={() => setSound((value) => !value)}>
+        <button ref={firstControlRef} onClick={() => setSound((value) => !value)}>
           {sound ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
           소리 {sound ? "켜짐" : "꺼짐"}
         </button>
@@ -102,7 +156,7 @@ export function WinnerCelebration({
           </button>
         )}
       </div>
-      <div className="winner-stage" aria-live="polite">
+      <div id="winner-dialog-status" className="winner-stage" aria-live="polite">
         {!revealed || !winner ? (
           <>
             <Sparkles aria-hidden="true" />

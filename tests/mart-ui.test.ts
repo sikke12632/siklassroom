@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { MART_SALES_EXPORT_MAX_ROWS } from "../lib/mart-history";
 import {
   MartApiError,
   adjustMartInventory,
@@ -227,6 +228,7 @@ test("재고 부족·중복·오래된 화면 오류를 교실용 문구로 안�
 });
 
 test("교사용 판매 CSV는 UTF-8 BOM과 필수 기록 열을 포함한다", () => {
+  assert.equal(MART_SALES_EXPORT_MAX_ROWS, 5_000);
   const csv = buildMartSalesCsv([sale("sale-csv", "student-1")]);
   assert.equal(csv.charCodeAt(0), 0xfeff);
   assert.match(csv, /"학생명","상품","수량","금액","상태","취소사유","시간"/);

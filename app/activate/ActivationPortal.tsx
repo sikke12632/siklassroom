@@ -6,6 +6,7 @@ import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
 import { postJson } from "@/lib/client-api";
+import { isSafeNewStudentPassword, isValidExistingStudentPassword } from "@/lib/student-password";
 
 type ActivationInfo = {
   student: {
@@ -57,8 +58,10 @@ export function ActivationPortal() {
       setError("두 비밀번호가 달라요. 똑같이 입력해 주세요.");
       return;
     }
-    if (!/^\d{4,12}$/.test(password)) {
-      setError("숫자 4~12자리로 입력해 주세요.");
+    if (info?.mode === "login" ? !isValidExistingStudentPassword(password) : !isSafeNewStudentPassword(password)) {
+      setError(info?.mode === "login"
+        ? "숫자 4~12자리로 입력해 주세요."
+        : "같은 숫자나 연속 숫자를 피해서 숫자 6~12자리로 만들어 주세요.");
       return;
     }
     setBusy(true);
@@ -112,7 +115,7 @@ export function ActivationPortal() {
                 <h2>{heading}</h2>
                 <p>{isLogin
                   ? "QR은 학생을 찾는 카드예요. 평소 쓰던 비밀번호를 입력하면 안전하게 들어갈 수 있어요."
-                  : "친구에게 알려주지 않을 숫자 4~12자리를 정해 주세요."}</p>
+                  : "친구에게 알려주지 않을 숫자 6~12자리를 정해 주세요."}</p>
               </div>
               <label>{isLogin ? "현재 비밀번호" : "새 비밀번호"}
                 <input
@@ -120,7 +123,7 @@ export function ActivationPortal() {
                   inputMode="numeric"
                   value={password}
                   onChange={(event) => setPassword(event.target.value.replace(/\D/g, "").slice(0, 12))}
-                  placeholder="숫자 4자리 이상"
+                  placeholder={isLogin ? "숫자 4자리 이상" : "숫자 6자리 이상"}
                   autoComplete={isLogin ? "current-password" : "new-password"}
                   autoFocus
                   required

@@ -429,6 +429,24 @@ test("생활확인은 직업 권한·학급 격리·중복 방지·기록 전용
     assert.equal(ordinaryWithPayout.body.payout.totalAmount, 100);
     assert.deepEqual(ordinaryWithPayout.body.recentEvents, []);
 
+    executeSql(
+      persistPath,
+      "UPDATE students SET status = 'excluded' WHERE id = 'student-ordinary';",
+    );
+    const staleRosterComplete = await call(worker, tokens.tooth, `/payout/${payoutId}`, {
+      method: "PATCH",
+      body: body({
+        action: "complete", expectedRevision: 1,
+        requestId: "tooth-payout-stale-roster",
+      }),
+    });
+    assert.equal(staleRosterComplete.response.status, 409);
+    assert.equal(staleRosterComplete.body.code, "LIFE_CHECK_PAYOUT_OUTDATED");
+    executeSql(
+      persistPath,
+      "UPDATE students SET status = 'active' WHERE id = 'student-ordinary';",
+    );
+
     const completePayload = {
       action: "complete", expectedRevision: 1, requestId: "tooth-payout-complete",
     };

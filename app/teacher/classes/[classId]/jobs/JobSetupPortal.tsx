@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BriefcaseBusiness, PencilLine, Sparkles } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
@@ -100,6 +100,8 @@ export function JobSetupPortal({ classId }: { classId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const adjustmentDialogRef = useRef<HTMLDivElement>(null);
+  const adjustmentCancelRef = useRef<HTMLButtonElement>(null);
 
   const hydrate = useCallback((next: SetupResponse) => {
     setData(next);
@@ -127,6 +129,46 @@ export function JobSetupPortal({ classId }: { classId: string }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [load]);
+
+  useEffect(() => {
+    if (!preview) return;
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const focusFrame = window.requestAnimationFrame(() => adjustmentCancelRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPreview(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(
+        adjustmentDialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls.at(-1)!;
+      if (!adjustmentDialogRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, [preview]);
 
   const capacity = useMemo(() => sumCapacity(jobs), [jobs]);
   const capacityGap = data ? data.studentCount - capacity : 0;
@@ -569,16 +611,23 @@ export function JobSetupPortal({ classId }: { classId: string }) {
             </aside>
 
             {preview && (
-              <div className="adjust-preview" role="dialog" aria-modal="true" aria-labelledby="adjust-title">
+              <div
+                ref={adjustmentDialogRef}
+                className="adjust-preview"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="adjust-title"
+                aria-describedby="adjust-description"
+              >
                 <div>
                   <p className="eyebrow">변경안 미리보기</p>
                   <h2 id="adjust-title">학생 {data.studentCount}명에 맞춘 결과예요</h2>
-                  <ul>{preview.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                  <ul id="adjust-description">{preview.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
                   <div className="preview-comparison">
                     <span>현재 <b>{capacity}자리</b></span><i>→</i><span>변경 후 <b>{sumCapacity(preview.jobs)}자리</b></span>
                   </div>
                   <div className="stage-actions">
-                    <button className="button button-light" onClick={() => setPreview(null)}>취소</button>
+                    <button ref={adjustmentCancelRef} className="button button-light" onClick={() => setPreview(null)}>취소</button>
                     <button className="button button-primary" onClick={applyAdjustment}>이 변경안 적용</button>
                   </div>
                 </div>

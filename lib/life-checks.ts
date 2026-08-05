@@ -243,6 +243,23 @@ function idempotencyConflict(): never {
   );
 }
 
+function isPayoutIntegrityFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("LIFE_CHECK_PAYOUT_STATE_INVALID")
+    || message.includes("LIFE_CHECK_PAYOUT_STALE_OR_INVALID");
+}
+
+function isRecordIntegrityFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("LIFE_CHECK_RECORD_SCOPE_DENIED")
+    || message.includes("LIFE_CHECK_RECORD_STALE_OR_DENIED")
+    || message.includes("LIFE_CHECK_EVENT_STATE_INVALID");
+}
+
+function payoutItemsMatchCurrentRoster(storedItemsJson: string, currentItems: PayoutItem[]) {
+  return JSON.stringify(safeJsonItems(storedItemsJson)) === JSON.stringify(currentItems);
+}
+
 async function recordReplay(classId: string, idempotencyKey: string) {
   return database().prepare(
     `SELECT check_type, check_date, student_id, passed, reason,
@@ -773,6 +790,13 @@ export async function setLifeCheckRecord(request: Request, body: {
     if (isOperationGuardFailure(error)) {
       throw new ApiError(409, "다른 화면에서 기록이 먼저 바뀌었어요. 최신 내용을 불러와 주세요.", "LIFE_CHECK_STALE");
     }
+    if (isRecordIntegrityFailure(error)) {
+      throw new ApiError(
+        409,
+        "학생 명단이나 담당 권한이 바뀌었어요. 최신 내용을 다시 불러와 주세요.",
+        "LIFE_CHECK_STALE",
+      );
+    }
     throw error;
   }
   return { duplicate: false, revision: nextRevision };
@@ -998,6 +1022,13 @@ export async function prepareLifeCheckPayout(request: Request, body: {
       }
       throw new ApiError(409, "지급 명단이 다른 화면에서 먼저 바뀌었어요.", "LIFE_CHECK_PAYOUT_STALE");
     }
+    if (isPayoutIntegrityFailure(error)) {
+      throw new ApiError(
+        409,
+        "학생 명단이나 담당 권한이 바뀌었어요. 최신 지급 명단을 다시 만들어 주세요.",
+        "LIFE_CHECK_PAYOUT_OUTDATED",
+      );
+    }
     throw error;
   }
   return {
@@ -1098,6 +1129,21 @@ export async function updateLifeCheckPayout(
       || calendarRevision !== Number(current.source_calendar_revision)
     ) {
       throw new ApiError(409, "확인 기록이 바뀌어 지급 명단을 다시 만들어야 해요.", "LIFE_CHECK_PAYOUT_OUTDATED");
+    }
+    const month = `${current.payout_year}-${String(current.payout_month).padStart(2, "0")}`;
+    const latest = await monthData({
+      context: { ...context, permissions: { ...context.permissions, canViewClass: true } },
+      type: current.check_type,
+      monthValue: month,
+      period: current.payout_period,
+    });
+    const latestItems = latest.items.filter((item) => item.amount > 0);
+    if (!payoutItemsMatchCurrentRoster(current.items_json, latestItems)) {
+      throw new ApiError(
+        409,
+        "학생 명단이 바뀌어 지급 명단을 다시 만들어야 해요.",
+        "LIFE_CHECK_PAYOUT_OUTDATED",
+      );
     }
   }
   const now = Date.now();
@@ -1200,6 +1246,13 @@ export async function updateLifeCheckPayout(
         }
       }
       throw new ApiError(409, "지급 기록이 다른 화면에서 먼저 바뀌었어요.", "LIFE_CHECK_PAYOUT_STALE");
+    }
+    if (isPayoutIntegrityFailure(error)) {
+      throw new ApiError(
+        409,
+        "학생 명단이나 담당 권한이 바뀌었어요. 최신 지급 명단을 다시 만들어 주세요.",
+        "LIFE_CHECK_PAYOUT_OUTDATED",
+      );
     }
     throw error;
   }

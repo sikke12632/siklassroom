@@ -1,6 +1,6 @@
 import { getSession, requireClassManagement, requireStudent } from "./auth";
 import { ownedClass } from "./authorization";
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, runtimeSchemaProvidedByMigrations } from "./database";
 import { currentStudentJob } from "./finance-access";
 import {
   LIFE_CHECK_INFO,
@@ -49,6 +49,7 @@ let lifeSchemaReady: Promise<void> | null = null;
 
 export async function ensureLifeCheckSchema() {
   await ensureSchema();
+  if (runtimeSchemaProvidedByMigrations()) return;
   if (!lifeSchemaReady) {
     lifeSchemaReady = database().batch(
       LIFE_CHECK_SCHEMA_STATEMENTS.map((statement) => database().prepare(statement)),

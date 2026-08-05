@@ -20,6 +20,15 @@ import { autoPayFinancePayrollForClosure } from "./finance-payroll";
 async function automaticPayrollAfterClosure(classId: string, closureId: string) {
   try {
     const result = await autoPayFinancePayrollForClosure({ classId, closureId });
+    if (result.payroll.status !== "completed") {
+      return {
+        status: "processing" as const,
+        payrollId: result.payroll.id,
+        recipientCount: result.payroll.recipientCount,
+        totalAmount: result.payroll.totalAmount,
+        message: "직업 월급은 안전하게 나누어 자동 지급 중입니다.",
+      };
+    }
     return {
       status: "completed" as const,
       payrollId: result.payroll.id,

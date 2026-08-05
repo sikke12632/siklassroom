@@ -4,6 +4,7 @@ import handler from "vinext/server/app-router-entry";
 import { settleDueDepositContracts } from "../lib/finance-deposits";
 import { processFinanceStockMarketTicks } from "../lib/finance-stocks";
 import { processDueFundingCampaigns } from "../lib/finance-funding";
+import { processPendingFinancePayroll } from "../lib/finance-payroll";
 
 interface Env {
   ASSETS: Fetcher;
@@ -26,6 +27,41 @@ interface ScheduledController {
   cron: string;
   scheduledTime: number;
   noRetry(): void;
+}
+
+const FINANCE_AUTOMATION_PHASES = 4;
+
+async function runScheduledFinanceAutomation(db: D1Database, now: number) {
+  const phase = Math.floor(now / 60_000) % FINANCE_AUTOMATION_PHASES;
+  if (phase === 0) {
+    const result = await settleDueDepositContracts(db, { now, limit: 2 });
+    if (result.failed > 0 || result.deferred > 0 || result.retrySchedulingFailed > 0) {
+      console.error("finance deposit maturity processing incomplete", result);
+    }
+    return;
+  }
+  if (phase === 1) {
+    const result = await processFinanceStockMarketTicks(db, { now, limit: 2, newsLimit: 2 });
+    if (result.failed > 0 || result.retrySchedulingFailed > 0) {
+      console.error("finance stock tick processing incomplete", result);
+    }
+    return;
+  }
+  if (phase === 2) {
+    const result = await processDueFundingCampaigns(db, {
+      now,
+      limit: 1,
+      refundLimit: 1,
+    });
+    if (result.failed > 0) {
+      console.error("finance funding processing incomplete", result);
+    }
+    return;
+  }
+  const result = await processPendingFinancePayroll();
+  if (result.remaining > 0 || result.failed > 0) {
+    console.error("finance payroll processing will continue", result);
+  }
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the
@@ -84,49 +120,9 @@ const worker = {
 
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const now = Math.max(Date.now(), controller.scheduledTime);
-    ctx.waitUntil(
-      Promise.allSettled([
-        settleDueDepositContracts(env.DB, { now, limit: 100 }),
-        processFinanceStockMarketTicks(env.DB, { now, limit: 100 }),
-        processDueFundingCampaigns(env.DB, { now, limit: 100 }),
-      ]).then(([depositResult, stockResult, fundingResult]) => {
-        if (depositResult.status === "rejected") {
-          console.error("finance deposit maturity processing failed", depositResult.reason);
-        } else if (
-          depositResult.value.failed > 0
-          || depositResult.value.deferred > 0
-          || depositResult.value.retrySchedulingFailed > 0
-        ) {
-          console.error("finance deposit maturity processing incomplete", {
-            due: depositResult.value.due,
-            settled: depositResult.value.settled,
-            failed: depositResult.value.failed,
-            deferred: depositResult.value.deferred,
-            retrySchedulingFailed: depositResult.value.retrySchedulingFailed,
-          });
-        }
-        if (stockResult.status === "rejected") {
-          console.error("finance stock tick processing failed", stockResult.reason);
-        } else if (
-          stockResult.value.failed > 0
-          || stockResult.value.retrySchedulingFailed > 0
-        ) {
-          console.error("finance stock tick processing incomplete", {
-            due: stockResult.value.due,
-            ticked: stockResult.value.ticked,
-            skipped: stockResult.value.skipped,
-            failed: stockResult.value.failed,
-            deferred: stockResult.value.deferred,
-            retrySchedulingFailed: stockResult.value.retrySchedulingFailed,
-          });
-        }
-        if (fundingResult.status === "rejected") {
-          console.error("finance funding processing failed", fundingResult.reason);
-        } else if (fundingResult.value.failed > 0) {
-          console.error("finance funding processing incomplete", fundingResult.value);
-        }
-      }),
-    );
+    ctx.waitUntil(runScheduledFinanceAutomation(env.DB, now).catch((error) => {
+      console.error("finance scheduled automation failed", error);
+    }));
   },
 };
 

@@ -2376,6 +2376,19 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    const payrollContinuation = await worker.fetch(
+      "http://test.local/test/process-payroll",
+      { method: "POST" },
+    );
+    const payrollContinuationBody = await payrollContinuation.json();
+    assert.equal(payrollContinuation.status, 200, JSON.stringify(payrollContinuationBody));
+    assert.deepEqual(payrollContinuationBody, {
+      processed: 1,
+      completed: 1,
+      remaining: 0,
+      failed: 0,
+    });
+
     const monthlyStartState = () => lastResults(executeSql(
       persistPath,
       `SELECT

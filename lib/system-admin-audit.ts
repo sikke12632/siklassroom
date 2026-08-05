@@ -10,10 +10,41 @@ export type AdminAuditInput = {
   success?: boolean;
 };
 
-function safeJson(value: unknown) {
+const SENSITIVE_AUDIT_METADATA_KEYS = new Set([
+  "password",
+  "passwordhash",
+  "currentpassword",
+  "newpassword",
+  "passwordconfirmation",
+  "token",
+  "accesstoken",
+  "refreshtoken",
+  "sessiontoken",
+  "csrftoken",
+  "verificationtoken",
+  "resettoken",
+  "registrationtoken",
+  "apikey",
+  "authorization",
+  "proxyauthorization",
+  "cookie",
+  "setcookie",
+  "secret",
+  "clientsecret",
+  "code",
+  "invitecode",
+  "verificationcode",
+  "resetcode",
+]);
+
+function normalizedMetadataKey(key: string) {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+export function serializeSystemAdminAuditMetadata(value: unknown) {
   if (value === undefined) return null;
   const serialized = JSON.stringify(value, (key, item) => {
-    if (["password", "token", "code", "cookie", "csrfToken"].includes(key)) return "[REDACTED]";
+    if (SENSITIVE_AUDIT_METADATA_KEYS.has(normalizedMetadataKey(key))) return "[REDACTED]";
     return item;
   });
   return typeof serialized === "string" ? serialized.slice(0, 4000) : null;
@@ -30,8 +61,8 @@ export function systemAdminAuditStatement(input: AdminAuditInput, createdAt = Da
     input.action,
     input.targetType ?? null,
     input.targetId ?? null,
-    safeJson(input.before),
-    safeJson(input.after),
+    serializeSystemAdminAuditMetadata(input.before),
+    serializeSystemAdminAuditMetadata(input.after),
     input.success === false ? 0 : 1,
     createdAt,
   );

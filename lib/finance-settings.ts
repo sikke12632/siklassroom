@@ -160,6 +160,13 @@ function settingsRuleError(error: unknown): never {
 
 function mapSettingsDatabaseError(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FINANCE_PAYROLL_PENDING_DENOMINATIONS")) {
+    throw new ApiError(
+      409,
+      "지급 중인 직업 월급을 먼저 완료한 뒤 화폐 권종을 바꿔 주세요.",
+      "FINANCE_PAYROLL_PENDING_DENOMINATIONS",
+    );
+  }
   if (message.includes("FINANCE_SETTINGS_STALE")) {
     throw new ApiError(
       409,
