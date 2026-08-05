@@ -834,3 +834,10 @@ test("여러 학생 QR은 한 번의 원자적 D1 배치로 발급한다", async
   assert.match(bulkQr, /await issueRegistrationTokens/);
   assert.doesNotMatch(bulkQr, /for \(const student[\s\S]*issueRegistrationToken/);
 });
+
+test("QR 인쇄 미리보기는 배경 스크롤을 막고 인쇄할 때만 해제한다", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /body\.qr-printing \{ overflow: hidden; \}/);
+  assert.match(styles, /\.print-overlay[^}]*overscroll-behavior: contain/);
+  assert.match(styles, /@media print[\s\S]*body\.qr-printing \{ overflow: visible !important; \}/);
+});

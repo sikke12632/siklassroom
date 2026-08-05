@@ -911,7 +911,8 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 }
 
 /* Print cards */
-.print-overlay { position: fixed; inset: 0; z-index: 100; overflow: auto; background: var(--color-bg); }
+body.qr-printing { overflow: hidden; }
+.print-overlay { position: fixed; inset: 0; z-index: 100; overflow: auto; overscroll-behavior: contain; background: var(--color-bg); }
 .print-toolbar { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 14px 24px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); }
 .print-toolbar strong, .print-toolbar span { display: block; }
 .print-toolbar span { color: var(--color-text-muted); font-size: var(--text-xs); }
@@ -1103,6 +1104,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 @media print {
   @page { size: A4; margin: 10mm; }
   html, body { min-height: 0 !important; background: #ffffff !important; color: #10233b !important; }
+  body.qr-printing { overflow: visible !important; }
   body.qr-printing .teacher-shell { display: block !important; min-height: 0 !important; background: #ffffff !important; }
   body.qr-printing .teacher-shell > :not(.print-overlay) { display: none !important; }
   .no-print { display: none !important; }
