@@ -393,7 +393,7 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.doesNotMatch(winnerPage, /3800/);
   assert.match(assignmentPage, /setDrawJob\(selectedJob\.name\)/);
   assert.match(assignmentApi, /requireClassManagement/);
-  assert.match(assignmentApi, /ownedClass/);
+  assert.match(assignmentApi, /ownedActiveClass/);
   assert.match(completeApi, /completeInitialAssignments/);
   assert.match(completeApi, /expectedRevision/);
   assert.match(completeApi, /assignments/);
@@ -418,6 +418,28 @@ test("학생 일괄 등록은 보관 학급과 동시 번호 중복을 원자적
   assert.match(route, /isOperationGuardFailure/);
   assert.match(route, /"STUDENT_NUMBER_EXISTS"/);
   assert.match(route, /"CLASS_ARCHIVED"/);
+});
+
+test("보관된 학급은 조회와 복원 외의 교사 변경 요청을 받지 않는다", async () => {
+  const classesDirectory = fileURLToPath(new URL("../app/api/classes", import.meta.url));
+  const files = await routeFiles(classesDirectory);
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    const changesClassData = /export\s+async\s+function\s+(POST|PUT|DELETE)/.test(source);
+    const isClassStatusRoute = file.endsWith(path.join("[classId]", "route.ts"));
+    if (changesClassData && source.includes("ownedClass(") && !isClassStatusRoute) {
+      assert.match(source, /ownedActiveClass/, file);
+    }
+  }
+  const studentMutationFiles = [
+    "../app/api/students/[studentId]/route.ts",
+    "../app/api/students/[studentId]/registration-token/route.ts",
+    "../app/api/students/[studentId]/qr-reset-grant/route.ts",
+  ];
+  for (const relative of studentMutationFiles) {
+    const source = await readFile(new URL(relative, import.meta.url), "utf8");
+    assert.match(source, /ownedActiveStudent/, relative);
+  }
 });
 
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
@@ -531,7 +553,7 @@ test("지난달 결과로 다음 달 직업을 한 명씩 고르고 안전하게
   assert.match(boardApi, /ownedClass/);
   for (const mutationApi of [closeApi, startApi, shuffleApi, completeApi]) {
     assert.match(mutationApi, /requireClassManagement/);
-    assert.match(mutationApi, /ownedClass/);
+    assert.match(mutationApi, /ownedActiveClass/);
   }
   assert.match(shuffleApi, /expectedRevision/);
   assert.match(completeApi, /expectedRevision/);
@@ -599,7 +621,7 @@ test("학생 직업평가를 안전하게 모아 최종등급과 자동 무작�
   assert.match(monthlyService, /shuffleChoiceOrderWithinGrades/);
   for (const mutationApi of [openApi, closeApi, finalizeApi]) {
     assert.match(mutationApi, /requireClassManagement/);
-    assert.match(mutationApi, /ownedClass/);
+    assert.match(mutationApi, /ownedActiveClass/);
     assert.match(mutationApi, /readJson/);
   }
 });

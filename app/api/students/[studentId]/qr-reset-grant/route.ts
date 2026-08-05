@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedStudent } from "@/lib/authorization";
+import { ownedActiveStudent } from "@/lib/authorization";
 import { issueStudentQrResetGrant } from "@/lib/registration";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
@@ -8,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ studen
     const { teacherId } = await requireClassManagement(request);
     await readJson<Record<string, never>>(request);
     const { studentId } = await context.params;
-    const student = await ownedStudent(teacherId, studentId);
+    const student = await ownedActiveStudent(teacherId, studentId);
     const grant = await issueStudentQrResetGrant({
       studentId,
       teacherId,

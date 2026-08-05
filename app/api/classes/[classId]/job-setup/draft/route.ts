@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedClass } from "@/lib/authorization";
+import { ownedActiveClass } from "@/lib/authorization";
 import type { ClassJobDraft, SetupMode, SurveyAnswers } from "@/lib/job-catalog";
 import { eligibleStudentCount, saveJobDraft } from "@/lib/job-storage";
 import { apiFailure, json, readJson } from "@/lib/responses";
@@ -16,7 +16,7 @@ export async function PUT(request: Request, context: { params: Promise<{ classId
   try {
     const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
-    await ownedClass(teacherId, classId);
+    await ownedActiveClass(teacherId, classId);
     const body = await readJson<DraftBody>(request);
     const studentCount = await eligibleStudentCount(classId);
     const setup = await saveJobDraft({

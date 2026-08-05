@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedClass } from "@/lib/authorization";
+import { ownedActiveClass } from "@/lib/authorization";
 import { adjustJobsToStudentCount, type ClassJobDraft } from "@/lib/job-catalog";
 import { scopeAdjustedJobIds } from "@/lib/job-draft-rules";
 import {
@@ -14,7 +14,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
   try {
     const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
-    await ownedClass(teacherId, classId);
+    await ownedActiveClass(teacherId, classId);
     const studentCount = await eligibleStudentCount(classId);
     if (studentCount < 1) {
       throw new ApiError(422, "학생을 한 명 이상 등록한 뒤 자동 맞춤을 사용할 수 있어요.", "NO_STUDENTS");

@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedStudent } from "@/lib/authorization";
+import { ownedActiveStudent } from "@/lib/authorization";
 import { issueRegistrationToken, registrationActivationUrl } from "@/lib/registration";
 import { apiFailure, assertSameOriginRequest, json } from "@/lib/responses";
 
@@ -8,7 +8,7 @@ export async function POST(request: Request, context: { params: Promise<{ studen
     assertSameOriginRequest(request);
     const { teacherId } = await requireClassManagement(request);
     const { studentId } = await context.params;
-    const student = await ownedStudent(teacherId, studentId);
+    const student = await ownedActiveStudent(teacherId, studentId);
     const rawToken = await issueRegistrationToken({
       studentId,
       teacherId,

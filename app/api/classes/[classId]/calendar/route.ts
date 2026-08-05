@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedClass } from "@/lib/authorization";
+import { ownedActiveClass, ownedClass } from "@/lib/authorization";
 import { loadClassCalendar, saveClassCalendar } from "@/lib/class-calendar";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
@@ -20,7 +20,7 @@ export async function PUT(request: Request, context: { params: Promise<{ classId
   try {
     const { teacherId } = await requireClassManagement(request);
     const { classId } = await context.params;
-    await ownedClass(teacherId, classId);
+    await ownedActiveClass(teacherId, classId);
     const body = await readJson<{
       expectedRevision?: unknown;
       schoolYear?: unknown;

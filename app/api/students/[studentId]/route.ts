@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { ownedStudent } from "@/lib/authorization";
+import { ownedActiveStudent } from "@/lib/authorization";
 import { database } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import {
@@ -12,7 +12,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
   try {
     const { teacherId } = await requireClassManagement(request);
     const { studentId } = await context.params;
-    const current = await ownedStudent(teacherId, studentId);
+    const current = await ownedActiveStudent(teacherId, studentId);
     const body = await readJson<{ number?: number; name?: string; status?: string }>(request);
     const numberProvided = body.number !== undefined;
     const nameProvided = body.name !== undefined;
