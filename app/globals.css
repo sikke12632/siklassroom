@@ -286,7 +286,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .auth-card { padding: 34px; }
 .auth-card h2 { margin: 26px 0 20px; font-size: 1.6rem; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: var(--radius-md); background: var(--color-surface-subtle); }
-.segmented button { min-height: 40px; border: 0; border-radius: var(--radius-sm); color: var(--color-text-muted); background: transparent; font-weight: 600; }
+.segmented button { min-height: 44px; border: 0; border-radius: var(--radius-sm); color: var(--color-text-muted); background: transparent; font-weight: 600; }
 .segmented button.active { color: var(--color-primary); background: var(--color-surface-raised); box-shadow: var(--shadow-card); }
 .form-stack { display: grid; gap: 15px; }
 .dev-reset-link { padding: 10px 12px; border-radius: var(--radius-md); color: var(--color-info); background: var(--color-info-soft); text-align: center; font-size: var(--text-sm); font-weight: 600; }
@@ -2171,7 +2171,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
 .finance-request-cancel { min-width: 150px; text-align: right; }
 .finance-inline-confirm { display: grid; justify-items: end; gap: 8px; }
 .finance-inline-confirm > div { display: flex; gap: 7px; }
-.finance-inline-confirm .button { min-height: 40px; padding: 7px 10px; font-size: var(--text-xs); }
+.finance-inline-confirm .button { min-height: 44px; padding: 8px 10px; font-size: var(--text-xs); }
 
 .finance-danger-button {
   color: var(--color-danger);
@@ -2282,7 +2282,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   gap: 7px;
 }
 .finance-quick-amounts .button {
-  min-height: 42px;
+  min-height: 44px;
   padding: 8px 12px;
   font-size: var(--text-sm);
 }

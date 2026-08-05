@@ -72,6 +72,13 @@ test("admin filters and job template controls have names and 44px touch targets"
   assert.match(styles, /\.admin-table-wrap td button, \.admin-review-actions button, \.one-time-secret button \{ min-height: 44px;/);
 });
 
+test("authentication and finance action controls retain a 44px touch target", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.segmented button \{ min-height: 44px;/);
+  assert.match(styles, /\.finance-inline-confirm \.button \{ min-height: 44px;/);
+  assert.match(styles, /\.finance-quick-amounts \.button \{\s*min-height: 44px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
