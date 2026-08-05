@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
@@ -24,6 +25,7 @@ function tokenFromLocation() {
 }
 
 export function ActivationPortal() {
+  const router = useRouter();
   const [info, setInfo] = useState<ActivationInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [password, setPassword] = useState("");
@@ -62,7 +64,8 @@ export function ActivationPortal() {
     setBusy(true);
     try {
       await postJson("/api/registration/complete", { password });
-      window.location.href = "/student";
+      router.replace("/student");
+      router.refresh();
     } catch (reason) {
       setError((reason as Error).message);
     } finally {

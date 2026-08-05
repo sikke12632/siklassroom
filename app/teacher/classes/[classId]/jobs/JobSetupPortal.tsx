@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { BriefcaseBusiness, PencilLine, Sparkles } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
@@ -82,6 +83,7 @@ function classLabel(classRoom: SetupResponse["class"] | null) {
 }
 
 export function JobSetupPortal({ classId }: { classId: string }) {
+  const router = useRouter();
   const [data, setData] = useState<SetupResponse | null>(null);
   const [mode, setMode] = useState<SetupMode | null>(null);
   const [step, setStep] = useState(1);
@@ -310,7 +312,8 @@ export function JobSetupPortal({ classId }: { classId: string }) {
         jobs,
         acknowledgeAssignmentImpact,
       });
-      window.location.href = "/teacher";
+      router.replace("/teacher");
+      router.refresh();
     } catch (reason) {
       setError((reason as Error).message);
     } finally {

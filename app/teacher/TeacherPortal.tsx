@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
@@ -50,6 +51,7 @@ const currentYear = new Date().getFullYear();
 const emptyDraft = (number = ""): DraftStudent => ({ key: crypto.randomUUID(), number, name: "" });
 
 export function TeacherPortal() {
+  const router = useRouter();
   const verificationStarted = useRef(false);
   const [loading, setLoading] = useState(true);
   const [actor, setActor] = useState<TeacherActor | null>(null);
@@ -142,7 +144,8 @@ export function TeacherPortal() {
 
   async function logout() {
     await api("/api/session", { method: "DELETE" });
-    window.location.href = "/teacher";
+    router.replace("/teacher");
+    router.refresh();
   }
 
   async function retrySession() {

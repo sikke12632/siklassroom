@@ -887,3 +887,17 @@ test("다음 달 직업 선정 화면은 최초 조회 오류를 화면 안에�
   assert.match(monthly, /onClick=\{\(\) => void load\(true\)\}>다시 시도/);
   assert.match(monthly, /role="status">지난달 결과와 다음 달 선택 순서를 준비하고 있어요/);
 });
+
+test("로그인 전환과 직업 확정 복귀는 Next 라우터로 이동하고 인증 상태를 새로 읽는다", async () => {
+  const [activation, teacher, jobSetup] = await Promise.all([
+    readFile(new URL("../app/activate/ActivationPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8"),
+  ]);
+  for (const source of [activation, teacher, jobSetup]) {
+    assert.match(source, /useRouter/);
+    assert.match(source, /router\.replace/);
+    assert.match(source, /router\.refresh\(\)/);
+    assert.doesNotMatch(source, /window\.location\.href = "\/(student|teacher)"/);
+  }
+});
