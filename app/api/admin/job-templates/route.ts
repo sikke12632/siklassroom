@@ -1,8 +1,8 @@
-import { database } from "@/lib/database";
+import { database, isOperationGuardFailure } from "@/lib/database";
 import { integerInRange } from "@/lib/identity";
 import { ensureJobCenterSchema } from "@/lib/job-storage";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
-import { auditSystemAdmin } from "@/lib/system-admin-audit";
+import { systemAdminAuditStatement } from "@/lib/system-admin-audit";
 import { requireSystemAdmin } from "@/lib/system-admin-auth";
 
 export async function GET(request: Request) {
@@ -40,26 +40,72 @@ export async function PATCH(request: Request) {
     const before = await database().prepare(
       `SELECT id, is_active, recommended_min_members, recommended_max_members, default_priority
        FROM job_templates WHERE id = ?`,
-    ).bind(id).first();
+    ).bind(id).first<{
+      id: string;
+      is_active: number;
+      recommended_min_members: number;
+      recommended_max_members: number;
+      default_priority: number;
+    }>();
     if (!before) throw new ApiError(404, "기본 직업을 찾을 수 없습니다.", "JOB_TEMPLATE_NOT_FOUND");
-    await database().prepare(
-      `UPDATE job_templates SET is_active = ?, recommended_min_members = ?,
-       recommended_max_members = ?, default_priority = ? WHERE id = ?`,
-    ).bind(body.isActive ? 1 : 0, min, max, priority, id).run();
     const after = {
       is_active: body.isActive ? 1 : 0,
       recommended_min_members: min,
       recommended_max_members: max,
       default_priority: priority,
     };
-    await auditSystemAdmin({
-      adminKey: admin.adminKey,
-      action: "job_template_settings_changed",
-      targetType: "job_template",
-      targetId: id,
-      before,
-      after,
-    });
+    const guardId = crypto.randomUUID();
+    const now = Date.now();
+    try {
+      await database().batch([
+        database().prepare(
+          `INSERT INTO registration_operation_guards (id, operation, created_at)
+           SELECT CASE WHEN EXISTS (
+             SELECT 1 FROM job_templates
+             WHERE id = ? AND is_active = ? AND recommended_min_members = ?
+               AND recommended_max_members = ? AND default_priority = ?
+           ) THEN ? ELSE NULL END, 'admin_job_template_update', ?`,
+        ).bind(
+          id,
+          before.is_active,
+          before.recommended_min_members,
+          before.recommended_max_members,
+          before.default_priority,
+          guardId,
+          now,
+        ),
+        database().prepare(
+          `UPDATE job_templates SET is_active = ?, recommended_min_members = ?,
+           recommended_max_members = ?, default_priority = ?
+           WHERE id = ? AND is_active = ? AND recommended_min_members = ?
+             AND recommended_max_members = ? AND default_priority = ?`,
+        ).bind(
+          after.is_active,
+          min,
+          max,
+          priority,
+          id,
+          before.is_active,
+          before.recommended_min_members,
+          before.recommended_max_members,
+          before.default_priority,
+        ),
+        systemAdminAuditStatement({
+          adminKey: admin.adminKey,
+          action: "job_template_settings_changed",
+          targetType: "job_template",
+          targetId: id,
+          before,
+          after,
+        }, now),
+        database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+      ]);
+    } catch (error) {
+      if (isOperationGuardFailure(error)) {
+        throw new ApiError(409, "다른 관리자 화면에서 기본 직업 설정이 먼저 바뀌었습니다.", "JOB_TEMPLATE_STALE");
+      }
+      throw error;
+    }
     return json({ ok: true, template: { id, ...after } });
   } catch (error) {
     return apiFailure(error);

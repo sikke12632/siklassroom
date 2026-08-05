@@ -257,6 +257,18 @@ test("관리자 학교 요청 처리는 상태 변경과 감사 기록을 한 �
   assert.doesNotMatch(route, /auditSystemAdmin\(/);
 });
 
+test("관리자 기본 직업 변경은 동시 수정과 감사 누락을 막는다", async () => {
+  const route = await readFile(
+    new URL("../app/api/admin/job-templates/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /admin_job_template_update/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /JOB_TEMPLATE_STALE/);
+  assert.match(route, /systemAdminAuditStatement/);
+  assert.doesNotMatch(route, /auditSystemAdmin\(/);
+});
+
 test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
   const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
