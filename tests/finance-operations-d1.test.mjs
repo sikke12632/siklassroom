@@ -28,13 +28,24 @@ const cashLifecycleConfigPath = path.join(
 );
 
 function runWrangler(args, { expectSuccess = true } = {}) {
-  const result = spawnSync(process.execPath, [wranglerPath, ...args], {
-    cwd: projectRoot,
-    encoding: "utf8",
-    env: process.env,
-    maxBuffer: 20 * 1024 * 1024,
-  });
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  let result;
+  let output = "";
+  const retrySignal = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    result = spawnSync(process.execPath, [wranglerPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    if (
+      result.status === 0
+      || (!output.includes("bad port") && !output.includes("fetch failed"))
+    ) break;
+    Atomics.wait(retrySignal, 0, 0, 250 * (attempt + 1));
+  }
+  assert.ok(result, "Wrangler did not start.");
   if (expectSuccess) {
     assert.equal(
       result.status,
@@ -2561,7 +2572,11 @@ test("unresolved cash requests atomically block class archive and student exclus
       },
     );
     const archivedMetadataBody = await archivedMetadataUpdate.text();
-    assert.equal(archivedMetadataUpdate.status, 200, archivedMetadataBody);
+    assert.equal(archivedMetadataUpdate.status, 409, archivedMetadataBody);
+    assert.deepEqual(JSON.parse(archivedMetadataBody), {
+      error: "보관된 학급은 먼저 다시 활성화해 주세요.",
+      code: "CLASS_ARCHIVED",
+    });
     assert.deepEqual(classState(), [{
       class_status: "archived",
       student_status: "active",
@@ -2574,7 +2589,7 @@ test("unresolved cash requests atomically block class archive and student exclus
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       `SELECT display_name FROM classes WHERE id = 'class-cash-archive';`,
-    )), [{ display_name: "Archived lifecycle class" }]);
+    )), [{ display_name: null }]);
 
     const invalidClassStatus = await worker.fetch(
       "http://test.local/classes/class-cash-archive",
@@ -2625,7 +2640,8 @@ test("unresolved cash requests atomically block class archive and student exclus
       "1",
       archivedMetadataRaceBody,
     );
-    assert.equal(archivedMetadataRace.status, 200, archivedMetadataRaceBody);
+    assert.equal(archivedMetadataRace.status, 409, archivedMetadataRaceBody);
+    assert.equal(JSON.parse(archivedMetadataRaceBody).code, "CLASS_STALE");
     assert.deepEqual(classState(), [{
       class_status: "archived",
       student_status: "active",
@@ -2643,7 +2659,7 @@ test("unresolved cash requests atomically block class archive and student exclus
          AND action = 'class_updated'
          AND json_extract(detail, '$.displayName') = 'Metadata after archive race'
          AND json_type(detail, '$.status') IS NULL;`,
-    )), [{ matching_count: 1 }]);
+    )), [{ matching_count: 0 }]);
 
     const activatedMetadataRace = await worker.fetch(
       "http://test.local/classes/class-cash-archive",
@@ -2663,7 +2679,8 @@ test("unresolved cash requests atomically block class archive and student exclus
       "1",
       activatedMetadataRaceBody,
     );
-    assert.equal(activatedMetadataRace.status, 200, activatedMetadataRaceBody);
+    assert.equal(activatedMetadataRace.status, 409, activatedMetadataRaceBody);
+    assert.equal(JSON.parse(activatedMetadataRaceBody).code, "CLASS_ARCHIVED");
     assert.deepEqual(classState(), [{
       class_status: "active",
       student_status: "active",
@@ -2681,7 +2698,7 @@ test("unresolved cash requests atomically block class archive and student exclus
          AND action = 'class_updated'
          AND json_extract(detail, '$.displayName') = 'Metadata after activate race'
          AND json_type(detail, '$.status') IS NULL;`,
-    )), [{ matching_count: 1 }]);
+    )), [{ matching_count: 0 }]);
 
     const excludeResponse = await worker.fetch(
       "http://test.local/students/student-cash-exclude",
@@ -2826,7 +2843,8 @@ test("unresolved cash requests atomically block class archive and student exclus
       "1",
       excludedMetadataRaceBody,
     );
-    assert.equal(excludedMetadataRace.status, 200, excludedMetadataRaceBody);
+    assert.equal(excludedMetadataRace.status, 409, excludedMetadataRaceBody);
+    assert.equal(JSON.parse(excludedMetadataRaceBody).code, "STUDENT_STALE");
     assert.deepEqual(studentState(), [{
       class_status: "active",
       student_status: "excluded",
@@ -2857,9 +2875,10 @@ test("unresolved cash requests atomically block class archive and student exclus
     );
     assert.equal(
       activatedStudentMetadataRace.status,
-      200,
+      409,
       activatedStudentMetadataRaceBody,
     );
+    assert.equal(JSON.parse(activatedStudentMetadataRaceBody).code, "STUDENT_STALE");
     assert.deepEqual(studentState(), [{
       class_status: "active",
       student_status: "active",
@@ -2877,7 +2896,7 @@ test("unresolved cash requests atomically block class archive and student exclus
          AND action = 'student_updated'
          AND json_extract(detail, '$.officialName') = 'Student after activate race'
          AND json_type(detail, '$.status') IS NULL;`,
-    )), [{ matching_count: 1 }]);
+    )), [{ matching_count: 0 }]);
 
     const pendingStudent = await worker.fetch(
       "http://test.local/students/student-cash-exclude",
@@ -2933,14 +2952,15 @@ test("unresolved cash requests atomically block class archive and student exclus
       "1",
       nameAfterNumberRaceBody,
     );
-    assert.equal(nameAfterNumberRace.status, 200, nameAfterNumberRaceBody);
+    assert.equal(nameAfterNumberRace.status, 409, nameAfterNumberRaceBody);
+    assert.equal(JSON.parse(nameAfterNumberRaceBody).code, "STUDENT_STALE");
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       `SELECT student_number, official_name
        FROM students WHERE id = 'student-cash-exclude';`,
     )), [{
       student_number: 9,
-      official_name: "Name after number race",
+      official_name: "Excluded metadata student",
     }]);
 
     const numberAfterNameRace = await worker.fetch(
@@ -2961,13 +2981,14 @@ test("unresolved cash requests atomically block class archive and student exclus
       "1",
       numberAfterNameRaceBody,
     );
-    assert.equal(numberAfterNameRace.status, 200, numberAfterNameRaceBody);
+    assert.equal(numberAfterNameRace.status, 409, numberAfterNameRaceBody);
+    assert.equal(JSON.parse(numberAfterNameRaceBody).code, "STUDENT_STALE");
     assert.deepEqual(lastResults(executeSql(
       persistPath,
       `SELECT student_number, official_name
        FROM students WHERE id = 'student-cash-exclude';`,
     )), [{
-      student_number: 8,
+      student_number: 9,
       official_name: "Concurrent student name",
     }]);
 
