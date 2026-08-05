@@ -857,3 +857,12 @@ test("교사 화면은 세션과 이메일 인증 오류를 로그인 화면에�
   assert.match(teacherPortal, /접속 상태 다시 확인/);
   assert.match(teacherPortal, /onRetrySession=\{retrySession\}/);
 });
+
+test("관리자 화면은 인증 실패와 서버 확인 실패를 구분하고 재시도를 제공한다", async () => {
+  const adminPortal = await readFile(new URL("../app/ops/[operatorPath]/AdminPortal.tsx", import.meta.url), "utf8");
+  assert.match(adminPortal, /response\.status === 401/);
+  assert.match(adminPortal, /if \(!response\.ok\) throw new Error/);
+  assert.match(adminPortal, /setSessionError\("관리자 접속 상태를 확인하지 못했습니다/);
+  assert.match(adminPortal, /접속 상태 다시 확인/);
+  assert.match(adminPortal, /controller\.abort\(\)/);
+});

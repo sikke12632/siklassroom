@@ -61,6 +61,8 @@ export function AdminPortal() {
   const [tab, setTab] = useState<Tab>("home");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [sessionError, setSessionError] = useState("");
+  const [sessionRetryKey, setSessionRetryKey] = useState(0);
 
   const request = useCallback(async <T,>(url: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -73,19 +75,30 @@ export function AdminPortal() {
   }, [csrfToken]);
 
   useEffect(() => {
-    fetch("/api/admin/auth/session", { credentials: "same-origin", cache: "no-store" })
+    const controller = new AbortController();
+    fetch("/api/admin/auth/session", { credentials: "same-origin", cache: "no-store", signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) return null;
+        if (response.status === 401) return null;
+        if (!response.ok) throw new Error("관리자 접속 상태를 확인하지 못했습니다.");
         return response.json() as Promise<{ csrfToken: string }>;
       })
       .then((data) => {
+        setSessionError("");
         if (data) {
           setCsrfToken(data.csrfToken);
           setAuthenticated(true);
         }
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .catch((reason) => {
+        if ((reason as Error).name !== "AbortError") {
+          setSessionError("관리자 접속 상태를 확인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [sessionRetryKey]);
 
   async function logout() {
     await request("/api/admin/auth/session", { method: "DELETE" }).catch(() => null);
@@ -94,6 +107,16 @@ export function AdminPortal() {
   }
 
   if (loading) return <main className="admin-loading"><p>관리자 세션을 확인하고 있습니다.</p></main>;
+  if (sessionError) return (
+    <main className="admin-loading">
+      <p role="alert">{sessionError}</p>
+      <button className="button button-light" type="button" onClick={() => {
+        setLoading(true);
+        setSessionError("");
+        setSessionRetryKey((value) => value + 1);
+      }}>접속 상태 다시 확인</button>
+    </main>
+  );
   if (!authenticated) {
     return <AdminLogin onLogin={(token) => { setCsrfToken(token); setAuthenticated(true); }} />;
   }
