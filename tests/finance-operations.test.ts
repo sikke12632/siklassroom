@@ -597,6 +597,46 @@ test("stock news publication and closure remain append-only audit events", async
   assert.doesNotMatch(audit, /FROM finance_stock_news news\b/);
 });
 
+test("stock ticks link the exact immutable news set instead of inferring by time", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationName = (await readdir(migrationDirectory))
+    .find((name) => /^0030_.+\.sql$/u.test(name));
+  assert.ok(migrationName, "The stock-news application migration must exist.");
+  const [schema, migration, runtime, service, audit, d1Test] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL(migrationName, migrationDirectory), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+    readFile(new URL("../tests/finance-stocks-d1.test.mjs", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_stock_news_applications/);
+    assert.match(source, /legacy_inferred/);
+    assert.match(source, /stock_event_id/);
+    assert.match(source, /news_payload_hash/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_stock_news_applications_insert_guard/);
+    assert.match(source, /finance_stock_news_applications_update_guard/);
+    assert.match(source, /finance_stock_news_applications_delete_guard/);
+    assert.match(source, /FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_stock_news_applications`?/);
+    assert.match(source, /finance-stock-news-applications-v1/);
+  }
+  assert.match(service, /stockTickNewsFingerprint/);
+  assert.match(service, /newsAppliedToStockEvent/);
+  assert.match(service, /unappliedNewsForStockTick/);
+  assert.match(service, /NOT EXISTS \([\s\S]*finance_stock_news_applications application/);
+  assert.doesNotMatch(service, /created_at > COALESCE\(\(\s*SELECT MAX\(event\.created_at\)/);
+  assert.match(audit, /FROM finance_stock_news_applications application/);
+  assert.match(audit, /stock_news_application_legacy_inferred/);
+  assert.match(d1Test, /TEST_STOCK_NEWS_APPLICATION_FAILURE/);
+  assert.match(d1Test, /applicationLinkStatus/);
+  assert.match(d1Test, /INSERT OR REPLACE INTO finance_stock_news_applications/);
+});
+
 test("teacher liquidation progress and cancellation remain searchable audit events", async () => {
   const migrationDirectory = new URL("../drizzle/", import.meta.url);
   const migrationName = (await readdir(migrationDirectory))

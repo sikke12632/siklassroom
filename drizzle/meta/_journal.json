@@ -211,6 +211,13 @@
       "when": 1785849551080,
       "tag": "0029_old_quasar",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1785889150345,
+      "tag": "0030_lethal_puma",
+      "breakpoints": true
     }
   ]
 }

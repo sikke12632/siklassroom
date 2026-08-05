@@ -1602,6 +1602,59 @@ export const financeStockNewsEvents = sqliteTable(
   ],
 );
 
+export const financeStockNewsApplications = sqliteTable(
+  "finance_stock_news_applications",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    stockId: text("stock_id").notNull(),
+    stockEventId: text("stock_event_id").notNull().references(() => financeStockEvents.id),
+    stockEventRevision: integer("stock_event_revision").notNull(),
+    newsId: text("news_id").notNull().references(() => financeStockNews.id),
+    newsRevision: integer("news_revision").notNull(),
+    linkStatus: text("link_status").notNull(),
+    impactBps: integer("impact_bps").notNull(),
+    newsPayloadHash: text("news_payload_hash").notNull(),
+    appliedAt: integer("applied_at").notNull(),
+    recordedAt: integer("recorded_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_news_applications_stock_news_uq").on(
+      table.stockId,
+      table.newsId,
+    ),
+    uniqueIndex("finance_stock_news_applications_event_news_uq").on(
+      table.stockEventId,
+      table.newsId,
+    ),
+    index("finance_stock_news_applications_class_applied_idx").on(
+      table.classId,
+      table.appliedAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.stockId, table.classId],
+      foreignColumns: [financeStocks.id, financeStocks.classId],
+      name: "finance_stock_news_applications_stock_class_fk",
+    }),
+    check(
+      "finance_stock_news_applications_id_ck",
+      sql`${table.id} = 'finance:stock-news-application:'
+        || ${table.stockId} || ':' || ${table.newsId}`,
+    ),
+    check(
+      "finance_stock_news_applications_state_ck",
+      sql`${table.linkStatus} IN ('exact', 'legacy_inferred')
+        AND ${table.stockEventRevision} > 0
+        AND ${table.newsRevision} = 0
+        AND ${table.impactBps} BETWEEN -10000 AND 10000
+        AND LENGTH(TRIM(${table.newsPayloadHash})) BETWEEN 8 AND 500
+        AND ${table.appliedAt} >= 0
+        AND ${table.recordedAt} >= ${table.appliedAt}`,
+    ),
+  ],
+);
+
 export const financeStockHoldings = sqliteTable("finance_stock_holdings", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull(),

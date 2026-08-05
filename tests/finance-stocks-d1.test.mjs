@@ -1923,12 +1923,56 @@ test("position value limits protect teacher prices, real buys, and idempotent ca
        WHERE holding.student_id = 'student-limit';`,
     )), beforeBlockedBuy);
 
+    executeSql(persistPath, `
+      INSERT INTO finance_stock_news (
+        id, class_id, title, content, impact_bps, status, revision,
+        idempotency_key, payload_hash, created_by_teacher_id,
+        updated_by_actor_type, updated_by_teacher_id,
+        created_at, expires_at, updated_at
+      )
+      SELECT 'news-position-limit-first', 'class-stocks',
+             'Same millisecond news',
+             'This news must be linked even when its timestamp equals the prior tick.',
+             500, 'active', 0, 'stock-news:create:position-limit-first',
+             'hash:stock-news:create:position-limit-first',
+             'teacher-stocks', 'teacher', 'teacher-stocks',
+             latest.created_at, latest.created_at + 86400000, latest.created_at
+      FROM (
+        SELECT MAX(created_at) AS created_at
+        FROM finance_stock_events WHERE stock_id = 'stock-class'
+      ) latest;
+      CREATE TRIGGER test_stock_news_application_failure
+      BEFORE INSERT ON finance_stock_news_applications
+      WHEN NEW.news_id = 'news-position-limit-first'
+      BEGIN SELECT RAISE(ABORT, 'TEST_STOCK_NEWS_APPLICATION_FAILURE'); END;
+    `);
     const tickInput = {
       action: "tick",
       expectedStockRevision: 1,
       expectedMarketRevision: 1,
       idempotencyKey: "stock-position-limit-capped-tick-1",
     };
+    const failedApplicationResponse = await worker.fetch(
+      "http://test.local/tick?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify(tickInput),
+      },
+    );
+    assert.equal(failedApplicationResponse.status, 500);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.revision,
+              (SELECT COUNT(*) FROM finance_stock_events
+               WHERE idempotency_key = 'stock-position-limit-capped-tick-1')
+                AS tick_event_count,
+              (SELECT COUNT(*) FROM finance_stock_news_applications
+               WHERE news_id = 'news-position-limit-first')
+                AS application_count
+       FROM finance_stocks stock WHERE stock.id = 'stock-class';`,
+    )), [{ revision: 1, tick_event_count: 0, application_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_stock_news_application_failure;");
     const firstTickResponse = await worker.fetch(
       "http://test.local/tick?classId=class-stocks",
       {
@@ -1962,6 +2006,57 @@ test("position value limits protect teacher prices, real buys, and idempotent ca
     assert.equal(afterFirstTick[0].event_count, 3);
     assert.equal(afterFirstTick[0].tick_event_count, 1);
     assert.equal(afterFirstTick[0].tick_event_revision, 2);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT application.news_id, application.link_status,
+              application.stock_event_revision,
+              event.action AS event_action,
+              event.idempotency_key AS event_idempotency_key,
+              application.applied_at = event.created_at AS matching_time
+       FROM finance_stock_news_applications application
+       JOIN finance_stock_events event ON event.id = application.stock_event_id
+       WHERE application.stock_id = 'stock-class';`,
+    )), [{
+      news_id: "news-position-limit-first",
+      link_status: "exact",
+      stock_event_revision: 2,
+      event_action: "news_tick",
+      event_idempotency_key: "stock-position-limit-capped-tick-1",
+      matching_time: 1,
+    }]);
+
+    executeSql(persistPath, `
+      INSERT INTO finance_stock_news (
+        id, class_id, title, content, impact_bps, status, revision,
+        idempotency_key, payload_hash, created_by_teacher_id,
+        updated_by_actor_type, updated_by_teacher_id,
+        created_at, expires_at, updated_at
+      )
+      SELECT 'news-position-limit-second', 'class-stocks',
+             'News published before a retry',
+             'This news belongs to the next tick, not the retried request.',
+             -300, 'active', 0, 'stock-news:create:position-limit-second',
+             'hash:stock-news:create:position-limit-second',
+             'teacher-stocks', 'teacher', 'teacher-stocks',
+             event.created_at, event.created_at + 86400000, event.created_at
+      FROM finance_stock_events event
+      WHERE event.idempotency_key = 'stock-position-limit-capped-tick-1';
+      INSERT INTO finance_stock_news (
+        id, class_id, title, content, impact_bps, status, revision,
+        idempotency_key, payload_hash, created_by_teacher_id,
+        updated_by_actor_type, updated_by_teacher_id,
+        created_at, expires_at, updated_at
+      )
+      SELECT 'news-position-limit-third', 'class-stocks',
+             'Another pending news item',
+             'Multiple news items must share one exact tick atomically.',
+             100, 'active', 0, 'stock-news:create:position-limit-third',
+             'hash:stock-news:create:position-limit-third',
+             'teacher-stocks', 'teacher', 'teacher-stocks',
+             event.created_at, event.created_at + 86400000, event.created_at
+      FROM finance_stock_events event
+      WHERE event.idempotency_key = 'stock-position-limit-capped-tick-1';
+    `);
 
     const retryTickResponse = await worker.fetch(
       "http://test.local/tick?classId=class-stocks",
@@ -1989,6 +2084,131 @@ test("position value limits protect teacher prices, real buys, and idempotent ca
        JOIN finance_stock_markets market ON market.class_id = stock.class_id
        WHERE stock.id = 'stock-class';`,
     )), afterFirstTick);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_stock_news_applications
+       WHERE news_id IN (
+         'news-position-limit-second', 'news-position-limit-third'
+       );`,
+    ))[0].count, 0);
+
+    const secondTickResponse = await worker.fetch(
+      "http://test.local/tick?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify({
+          action: "tick",
+          expectedStockRevision: 2,
+          expectedMarketRevision: 1,
+          idempotencyKey: "stock-position-limit-capped-tick-2",
+        }),
+      },
+    );
+    const secondTick = await secondTickResponse.json();
+    assert.equal(secondTickResponse.status, 200, JSON.stringify(secondTick));
+    assert.equal(secondTick.deduplicated, false);
+    assert.equal(secondTick.stock.revision, 3);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT application.news_id, application.link_status,
+              event.idempotency_key AS event_idempotency_key
+       FROM finance_stock_news_applications application
+       JOIN finance_stock_events event ON event.id = application.stock_event_id
+       WHERE application.stock_id = 'stock-class'
+       ORDER BY application.news_id;`,
+    )), [
+      {
+        news_id: "news-position-limit-first",
+        link_status: "exact",
+        event_idempotency_key: "stock-position-limit-capped-tick-1",
+      },
+      {
+        news_id: "news-position-limit-second",
+        link_status: "exact",
+        event_idempotency_key: "stock-position-limit-capped-tick-2",
+      },
+      {
+        news_id: "news-position-limit-third",
+        link_status: "exact",
+        event_idempotency_key: "stock-position-limit-capped-tick-2",
+      },
+    ]);
+
+    const newsReadResponse = await worker.fetch(
+      "http://test.local/read?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify({ action: "read" }),
+      },
+    );
+    const newsRead = await newsReadResponse.json();
+    assert.equal(newsReadResponse.status, 200, JSON.stringify(newsRead));
+    assert.deepEqual(newsRead.news.map((news) => ({
+      id: news.id,
+      status: news.status,
+      applicationLinkStatus: news.applicationLinkStatus,
+    })), [
+      {
+        id: "news-position-limit-third",
+        status: "applied",
+        applicationLinkStatus: "exact",
+      },
+      {
+        id: "news-position-limit-second",
+        status: "applied",
+        applicationLinkStatus: "exact",
+      },
+      {
+        id: "news-position-limit-first",
+        status: "applied",
+        applicationLinkStatus: "exact",
+      },
+    ]);
+
+    const newsAuditResponse = await worker.fetch(
+      "http://test.local/audit?classId=class-stocks&category=stock&query=Same%20millisecond",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: teacherCookie },
+        body: JSON.stringify({ action: "audit" }),
+      },
+    );
+    const newsAudit = await newsAuditResponse.json();
+    assert.equal(newsAuditResponse.status, 200, JSON.stringify(newsAudit));
+    assert.ok(newsAudit.events.some((event) => (
+      event.action === "stock_news_applied"
+      && event.relatedId === "news-position-limit-first"
+    )));
+
+    const applicationUpdate = executeSql(
+      persistPath,
+      `UPDATE finance_stock_news_applications SET impact_bps = 999
+       WHERE news_id = 'news-position-limit-first';`,
+      { expectSuccess: false },
+    );
+    assert.match(applicationUpdate.output, /FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE/);
+    const applicationReplace = executeSql(
+      persistPath,
+      `INSERT OR REPLACE INTO finance_stock_news_applications (
+         id, class_id, stock_id, stock_event_id, stock_event_revision,
+         news_id, news_revision, link_status, impact_bps,
+         news_payload_hash, applied_at, recorded_at
+       )
+       SELECT id, class_id, stock_id, stock_event_id, stock_event_revision,
+              news_id, news_revision, link_status, 999,
+              news_payload_hash, applied_at, recorded_at
+       FROM finance_stock_news_applications
+       WHERE news_id = 'news-position-limit-first';`,
+      { expectSuccess: false },
+    );
+    assert.match(applicationReplace.output, /FINANCE_STOCK_NEWS_APPLICATION_INVALID/);
+    assert.equal(lastResults(executeSql(
+      persistPath,
+      `SELECT impact_bps FROM finance_stock_news_applications
+       WHERE news_id = 'news-position-limit-first';`,
+    ))[0].impact_bps, 500);
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

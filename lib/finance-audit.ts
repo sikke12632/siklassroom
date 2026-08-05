@@ -434,6 +434,42 @@ export async function financeAuditForRequest(request: Request) {
        UNION ALL
 
        SELECT
+         'stock-news-application:' || application.id AS id,
+         application.class_id AS class_id,
+         'stock' AS category,
+         CASE application.link_status
+           WHEN 'exact' THEN 'stock_news_applied'
+           ELSE 'stock_news_application_legacy_inferred'
+         END AS action,
+         CASE application.link_status
+           WHEN 'exact' THEN '주식 뉴스 시세 반영'
+           ELSE '과거 뉴스 반영 연결(추정)'
+         END AS title,
+         published.title || ' · 영향 '
+           || printf('%.2f', application.impact_bps / 100.0) || '% · 시세 기록 '
+           || application.stock_event_revision
+           || CASE application.link_status
+             WHEN 'legacy_inferred' THEN ' · 과거 기록은 정확한 연결 확인 불가'
+             ELSE ''
+           END AS detail,
+         '주식 자동 시스템' AS actor_label,
+         NULL AS student_name,
+         NULL AS amount,
+         application.applied_at AS occurred_at,
+         'completed' AS outcome,
+         application.news_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_news_applications application
+       JOIN finance_stock_news_events published
+         ON published.news_id = application.news_id
+        AND published.class_id = application.class_id
+        AND published.action = 'published'
+        AND published.revision = application.news_revision
+
+       UNION ALL
+
+       SELECT
          'stock-liquidation-event:' || liquidation_event.id AS id,
          liquidation_event.class_id AS class_id,
          'stock' AS category,

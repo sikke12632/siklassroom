@@ -1,8 +1,10 @@
 import {
+  financeStocksForRequest,
   tickFinanceStockForRequest,
   tradeFinanceStock,
   updateFinanceStock,
 } from "../../lib/finance-stocks";
+import { financeAuditForRequest } from "../../lib/finance-audit";
 import { ApiError } from "../../lib/responses";
 
 const stockPositionLimitWorker = {
@@ -10,6 +12,12 @@ const stockPositionLimitWorker = {
     try {
       const input = await request.json() as Record<string, unknown>;
       const action = typeof input.action === "string" ? input.action : "";
+      if (action === "read") {
+        return Response.json(await financeStocksForRequest(request));
+      }
+      if (action === "audit") {
+        return Response.json(await financeAuditForRequest(request));
+      }
       if (action === "update") {
         return Response.json(
           await updateFinanceStock(request, "stock-class", input),

@@ -349,10 +349,10 @@ const schemaStatements = [
     FOREIGN KEY (used_by_teacher_id) REFERENCES teachers(id)
   )`,
   `CREATE INDEX IF NOT EXISTS teacher_invite_codes_status_idx ON teacher_invite_codes(status, expires_at)`,
-  ...FINANCE_SCHEMA_STATEMENTS,
   `CREATE TABLE IF NOT EXISTS system_migrations (
     key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL
   )`,
+  ...FINANCE_SCHEMA_STATEMENTS,
   `CREATE TRIGGER IF NOT EXISTS teacher_email_verified_after_token_use
     AFTER UPDATE OF used_at ON teacher_email_verifications
     WHEN NEW.used_at IS NOT NULL AND OLD.used_at IS NULL

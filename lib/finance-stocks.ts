@@ -293,6 +293,17 @@ type NewsRow = {
   cancelled_at: number | null;
   cancellation_reason: string | null;
   updated_at: number;
+  application_link_status?: string | null;
+  applied_stock_event_id?: string | null;
+  application_applied_at?: number | null;
+};
+
+type TickNewsRow = {
+  id: string;
+  revision: number;
+  impact_bps: number;
+  payload_hash: string;
+  link_status?: string;
 };
 
 function ruleError(error: unknown): never {
@@ -572,12 +583,13 @@ function serializeStockLiquidationOperation(row: StockLiquidationOperationRow) {
   };
 }
 
-function serializeNews(row: NewsRow, now: number, lastTickAt = 0) {
+function serializeNews(row: NewsRow, now: number) {
+  const applicationLinkStatus = row.application_link_status ?? null;
   const status = row.status === "active" && Number(row.expires_at) <= now
     ? "expired"
-    : row.status === "active" && Number(row.created_at) <= lastTickAt
+    : row.status === "active" && applicationLinkStatus
       ? "applied"
-    : row.status;
+      : row.status;
   return {
     id: row.id,
     title: row.title,
@@ -589,6 +601,11 @@ function serializeNews(row: NewsRow, now: number, lastTickAt = 0) {
     expiresAt: Number(row.expires_at),
     cancelledAt: row.cancelled_at === null ? null : Number(row.cancelled_at),
     cancellationReason: row.cancellation_reason,
+    applicationLinkStatus,
+    appliedStockEventId: row.applied_stock_event_id ?? null,
+    appliedAt: row.application_applied_at == null
+      ? null
+      : Number(row.application_applied_at),
   };
 }
 
@@ -1139,13 +1156,21 @@ async function latestStockEvents(
 
 async function latestNews(db: D1Database, classId: string, limit: number) {
   return db.prepare(
-    `SELECT id, class_id, title, content, impact_bps, status, revision,
-            idempotency_key, payload_hash,
-            cancellation_idempotency_key, cancellation_payload_hash,
-            cancellation_reason, created_at, expires_at, cancelled_at, updated_at
-     FROM finance_stock_news
-     WHERE class_id = ?
-     ORDER BY created_at DESC, id DESC LIMIT ?`,
+    `SELECT news.id, news.class_id, news.title, news.content,
+            news.impact_bps, news.status, news.revision,
+            news.idempotency_key, news.payload_hash,
+            news.cancellation_idempotency_key,
+            news.cancellation_payload_hash, news.cancellation_reason,
+            news.created_at, news.expires_at, news.cancelled_at, news.updated_at,
+            application.link_status AS application_link_status,
+            application.stock_event_id AS applied_stock_event_id,
+            application.applied_at AS application_applied_at
+     FROM finance_stock_news news
+     LEFT JOIN finance_stock_news_applications application
+       ON application.class_id = news.class_id
+      AND application.news_id = news.id
+     WHERE news.class_id = ?
+     ORDER BY news.created_at DESC, news.id DESC LIMIT ?`,
   ).bind(classId, limit).all<NewsRow>();
 }
 
@@ -1169,14 +1194,6 @@ function priceHistory(events: StockEventRow[]) {
       return [];
     }
   }).reverse();
-}
-
-function latestPriceTickAt(events: StockEventRow[]) {
-  return events.reduce((latest, event) => (
-    ["price_changed", "automatic_tick", "news_tick"].includes(event.action)
-      ? Math.max(latest, Number(event.created_at))
-      : latest
-  ), 0);
 }
 
 export async function financeStocksForRequest(request: Request) {
@@ -1279,7 +1296,7 @@ export async function financeStocksForRequest(request: Request) {
       ? liquidationOperations.map(serializeStockLiquidationOperation)
       : [],
     trades: trades.map(serializeTrade),
-    news: newsResult.results.map((row) => serializeNews(row, now, latestPriceTickAt(events))),
+    news: newsResult.results.map((row) => serializeNews(row, now)),
   };
 }
 
@@ -3283,7 +3300,7 @@ async function deterministicNoiseBps(seed: string) {
   return (value % 301) - 150;
 }
 
-async function stockTickPayloadHash(input: {
+type StockTickPayloadInput = {
   classId: string;
   stockId: string;
   stockRevision: number;
@@ -3291,8 +3308,77 @@ async function stockTickPayloadHash(input: {
   actorType: "teacher" | "system";
   actorTeacherId: string | null;
   requestedAction: "price_changed" | "automatic_tick" | "news_tick";
-}) {
-  return sha256(stableFinanceJson(input));
+};
+
+function stockTickNewsFingerprint(news: TickNewsRow[]) {
+  return news
+    .map((item) => ({
+      newsId: item.id,
+      newsRevision: Number(item.revision),
+      impactBps: Number(item.impact_bps),
+      payloadHash: item.payload_hash,
+    }))
+    .sort((left, right) => (
+      left.newsId === right.newsId ? 0 : left.newsId < right.newsId ? -1 : 1
+    ));
+}
+
+async function stockTickPayloadHash(
+  input: StockTickPayloadInput,
+  news: TickNewsRow[] = [],
+) {
+  const fingerprint = stockTickNewsFingerprint(news);
+  return sha256(stableFinanceJson(
+    fingerprint.length > 0 ? { ...input, news: fingerprint } : input,
+  ));
+}
+
+async function newsAppliedToStockEvent(
+  db: D1Database,
+  stockEventId: string,
+) {
+  return db.prepare(
+    `SELECT news_id AS id, news_revision AS revision,
+            impact_bps, news_payload_hash AS payload_hash, link_status
+     FROM finance_stock_news_applications
+     WHERE stock_event_id = ?
+     ORDER BY news_id`,
+  ).bind(stockEventId).all<TickNewsRow>();
+}
+
+async function stockTickEventMatchesPayload(
+  db: D1Database,
+  event: StockEventRow,
+  input: StockTickPayloadInput,
+) {
+  const linkedNews = (await newsAppliedToStockEvent(db, event.id)).results;
+  if (event.payload_hash === await stockTickPayloadHash(input, linkedNews)) {
+    return true;
+  }
+  return linkedNews.every((news) => news.link_status === "legacy_inferred")
+    && event.payload_hash === await stockTickPayloadHash(input);
+}
+
+async function unappliedNewsForStockTick(
+  db: D1Database,
+  input: { classId: string; stockId: string; now: number },
+) {
+  return db.prepare(
+    `SELECT news.id, news.revision, news.impact_bps, news.payload_hash
+     FROM finance_stock_news news
+     WHERE news.class_id = ? AND news.status = 'active'
+       AND news.created_at <= ? AND news.expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM finance_stock_news_applications application
+         WHERE application.stock_id = ? AND application.news_id = news.id
+       )
+     ORDER BY news.created_at, news.id`,
+  ).bind(
+    input.classId,
+    input.now,
+    input.now,
+    input.stockId,
+  ).all<TickNewsRow>();
 }
 
 function roundedStockPrice(
@@ -3322,7 +3408,7 @@ async function tickStockWithDb(
     reasonPrefix: string;
   },
 ) {
-  const payloadHash = await stockTickPayloadHash({
+  const tickPayloadInput: StockTickPayloadInput = {
     classId: input.stock.class_id,
     stockId: input.stock.id,
     stockRevision: Number(input.stock.revision),
@@ -3330,7 +3416,7 @@ async function tickStockWithDb(
     actorType: input.actorType,
     actorTeacherId: input.actorTeacherId,
     requestedAction: input.action,
-  });
+  };
   const duplicate = await stockEventByIdempotency(
     db,
     input.stock.class_id,
@@ -3339,7 +3425,7 @@ async function tickStockWithDb(
   if (duplicate) {
     if (
       duplicate.stock_id !== input.stock.id
-      || duplicate.payload_hash !== payloadHash
+      || !(await stockTickEventMatchesPayload(db, duplicate, tickPayloadInput))
       || duplicate.actor_type !== input.actorType
       || (duplicate.action !== input.action && duplicate.action !== "news_tick")
     ) {
@@ -3358,28 +3444,12 @@ async function tickStockWithDb(
     };
   }
   const step = await denominationStepForClass(db, input.stock.class_id);
-  const [newsImpact, recentFlow, maximumHolding] = await Promise.all([
-    db.prepare(
-      `SELECT COALESCE(SUM(impact_bps), 0) AS impact, COUNT(*) AS news_count
-       FROM finance_stock_news
-       WHERE class_id = ? AND status = 'active'
-         AND created_at <= ? AND expires_at > ?
-         AND created_at > COALESCE((
-           SELECT MAX(event.created_at)
-           FROM finance_stock_events event
-           WHERE event.class_id = ? AND event.stock_id = ?
-             AND event.action IN ('price_changed', 'automatic_tick', 'news_tick')
-         ), 0)`,
-    ).bind(
-      input.stock.class_id,
-      input.now,
-      input.now,
-      input.stock.class_id,
-      input.stock.id,
-    ).first<{
-      impact: number;
-      news_count: number;
-    }>(),
+  const [newsResult, recentFlow, maximumHolding] = await Promise.all([
+    unappliedNewsForStockTick(db, {
+      classId: input.stock.class_id,
+      stockId: input.stock.id,
+      now: input.now,
+    }),
     db.prepare(
       `SELECT COALESCE(SUM(CASE side WHEN 'buy' THEN quantity ELSE -quantity END), 0) AS flow,
               COALESCE(SUM(quantity), 0) AS volume
@@ -3400,6 +3470,12 @@ async function tickStockWithDb(
       input.stock.id,
     ).first<{ maximum_quantity: number }>(),
   ]);
+  const applicableNews = newsResult.results;
+  const payloadHash = await stockTickPayloadHash(tickPayloadInput, applicableNews);
+  const newsImpactBps = applicableNews.reduce(
+    (sum, news) => sum + Number(news.impact_bps),
+    0,
+  );
   const volume = Number(recentFlow?.volume ?? 0);
   const flowBps = volume > 0
     ? Math.max(-200, Math.min(200, Math.round((Number(recentFlow?.flow ?? 0) * 200) / volume)))
@@ -3411,7 +3487,7 @@ async function tickStockWithDb(
     moodBiasBps(input.market.market_mood)
       + noiseBps
       + flowBps
-      + Math.max(-500, Math.min(500, Number(newsImpact?.impact ?? 0))),
+      + Math.max(-500, Math.min(500, newsImpactBps)),
   ));
   const nextPrice = roundedStockPrice(
     Number(input.stock.current_price),
@@ -3436,7 +3512,7 @@ async function tickStockWithDb(
       / Number(input.stock.current_price),
   );
   const reason = `${input.reasonPrefix} · ${input.market.market_mood} · 계산 신호 ${(changeBps / 100).toFixed(2)}% · 실제 변동 ${(appliedChangeBps / 100).toFixed(2)}%`;
-  const eventAction = Number(newsImpact?.news_count ?? 0) > 0
+  const eventAction = applicableNews.length > 0
     ? "news_tick"
     : input.action;
   const nextStock: StockRow = {
@@ -3448,6 +3524,7 @@ async function tickStockWithDb(
     revision: Number(input.stock.revision) + 1,
     updated_at: input.now,
   };
+  const stockEventId = crypto.randomUUID();
   const statements: D1PreparedStatement[] = [
     db.prepare(
       `UPDATE finance_stocks
@@ -3471,7 +3548,7 @@ async function tickStockWithDb(
          stock_snapshot_json, actor_type, actor_teacher_id, created_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
-      crypto.randomUUID(),
+      stockEventId,
       input.stock.class_id,
       input.stock.id,
       nextStock.revision,
@@ -3485,6 +3562,30 @@ async function tickStockWithDb(
       input.actorTeacherId,
       input.now,
     ),
+    ...(applicableNews.length > 0 ? [db.prepare(
+      `INSERT INTO finance_stock_news_applications (
+         id, class_id, stock_id, stock_event_id, stock_event_revision,
+         news_id, news_revision, link_status, impact_bps,
+         news_payload_hash, applied_at, recorded_at
+       )
+       SELECT 'finance:stock-news-application:' || ? || ':'
+                || json_extract(selected.value, '$.newsId'),
+              ?, ?, ?, ?, json_extract(selected.value, '$.newsId'),
+              CAST(json_extract(selected.value, '$.newsRevision') AS INTEGER),
+              'exact',
+              CAST(json_extract(selected.value, '$.impactBps') AS INTEGER),
+              json_extract(selected.value, '$.payloadHash'), ?, ?
+       FROM json_each(?) selected`,
+    ).bind(
+      input.stock.id,
+      input.stock.class_id,
+      input.stock.id,
+      stockEventId,
+      nextStock.revision,
+      input.now,
+      input.now,
+      stableFinanceJson(stockTickNewsFingerprint(applicableNews)),
+    )] : []),
   ];
   if (input.market.is_open) {
     statements.push(
@@ -3506,7 +3607,7 @@ async function tickStockWithDb(
     if (
       concurrent
       && concurrent.stock_id === input.stock.id
-      && concurrent.payload_hash === payloadHash
+      && await stockTickEventMatchesPayload(db, concurrent, tickPayloadInput)
       && concurrent.actor_type === input.actorType
       && (concurrent.action === input.action || concurrent.action === "news_tick")
     ) {
@@ -3539,7 +3640,7 @@ export async function tickFinanceStockForRequest(
     stockForClass(db, context.classroom.id),
   ]);
   if (!market || !stock) throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
-  const payloadHash = await stockTickPayloadHash({
+  const tickPayloadInput: StockTickPayloadInput = {
     classId: context.classroom.id,
     stockId: stock.id,
     stockRevision: expectedStock,
@@ -3547,12 +3648,12 @@ export async function tickFinanceStockForRequest(
     actorType: "teacher",
     actorTeacherId: context.actor.id,
     requestedAction: "price_changed",
-  });
+  };
   const duplicate = await stockEventByIdempotency(db, context.classroom.id, key);
   if (duplicate) {
     if (
       duplicate.stock_id !== stock.id
-      || duplicate.payload_hash !== payloadHash
+      || !(await stockTickEventMatchesPayload(db, duplicate, tickPayloadInput))
       || duplicate.actor_type !== "teacher"
       || (duplicate.action !== "price_changed" && duplicate.action !== "news_tick")
     ) {
