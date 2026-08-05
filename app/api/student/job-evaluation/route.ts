@@ -1,5 +1,4 @@
 import { requireStudent } from "@/lib/auth";
-import { audit } from "@/lib/database";
 import {
   loadStudentJobEvaluation,
   submitStudentJobEvaluation,
@@ -32,16 +31,6 @@ export async function POST(request: Request) {
       expectedResponseRevision: body.expectedResponseRevision,
       requestId: body.requestId,
       scores: body.scores,
-    });
-    await audit({
-      action: "student_job_evaluation_submitted",
-      studentId,
-      detail: {
-        evaluationId: result.evaluation?.id ?? null,
-        responseRevision: result.evaluation?.submission?.revision ?? null,
-        jobCount: result.evaluation?.jobs.length ?? 0,
-        idempotent: result.idempotent,
-      },
     });
     return json(result);
   } catch (error) {

@@ -858,6 +858,31 @@ export async function submitStudentJobEvaluation(input: {
       input.studentId,
       writeNonce,
     ),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       )
+       SELECT ?, NULL, ?, ?, 'student_job_evaluation_submitted', ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_evaluation_responses response
+         WHERE response.session_id = ? AND response.student_id = ?
+           AND response.write_nonce = ?
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      session.class_id,
+      input.studentId,
+      JSON.stringify({
+        evaluationId: session.id,
+        responseRevision: expectedResponseRevision + 1,
+        jobCount: jobs.length,
+        idempotent: false,
+      }),
+      now,
+      session.id,
+      input.studentId,
+      writeNonce,
+    ),
   ]);
   const stored = await database().prepare(
     `${RESPONSE_SELECT} WHERE session_id = ? AND student_id = ?`,

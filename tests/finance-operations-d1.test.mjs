@@ -645,6 +645,11 @@ test("unresolved cash requests atomically block class archive and student exclus
     .update(rawTeacherToken)
     .digest("base64url");
   const cookie = `job_classroom_session=${rawTeacherToken}`;
+  const rawStudentToken = "student-cash-lifecycle-session";
+  const studentTokenHash = createHash("sha256")
+    .update(rawStudentToken)
+    .digest("base64url");
+  const studentCookie = `job_classroom_session=${rawStudentToken}`;
   try {
     runWrangler([
       "d1",
@@ -700,7 +705,7 @@ test("unresolved cash requests atomically block class archive and student exclus
       ) VALUES
         ('session-cash-teacher', '${teacherTokenHash}', 'teacher',
          'teacher-cash-lifecycle', NULL, 4102444800000, 1, 1),
-        ('session-cash-archive', 'hash:session:cash:archive', 'student',
+        ('session-cash-archive', '${studentTokenHash}', 'student',
          NULL, 'student-cash-archive', 4102444800000, 1, 1),
         ('session-cash-archive-peer', 'hash:session:cash:archive:peer', 'student',
          NULL, 'student-cash-archive-peer', 4102444800000, 1, 1),
@@ -1714,6 +1719,93 @@ test("unresolved cash requests atomically block class archive and student exclus
       session_count: 1,
       audit_count: 1,
       guard_count: 0,
+    }]);
+
+    const evaluationId = evaluationOpenSuccessBody.evaluation.id;
+    const evaluationSubmitState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT response_revision FROM class_job_evaluation_sessions
+          WHERE id = '${evaluationId}') AS response_revision,
+         (SELECT COUNT(*) FROM class_job_evaluation_responses
+          WHERE session_id = '${evaluationId}'
+            AND student_id = 'student-cash-archive') AS response_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE student_id = 'student-cash-archive'
+            AND action = 'student_job_evaluation_submitted') AS audit_count;`,
+    ));
+    const evaluationSubmitPayload = {
+      evaluationId,
+      expectedSessionRevision: 0,
+      expectedResponseRevision: 0,
+      requestId: "evaluation-submit-atomic-request",
+      scores: evaluationOpenSuccessBody.evaluation.jobs.map((job, index) => ({
+        classJobId: job.classJobId,
+        hard: 1 + (index % 5),
+        responsibility: 1 + ((index + 1) % 5),
+        consistency: 1 + ((index + 2) % 5),
+        burden: 1 + ((index + 3) % 5),
+      })),
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_evaluation_submit_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'student_job_evaluation_submitted'
+        AND NEW.student_id = 'student-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_EVALUATION_SUBMIT_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const evaluationSubmitAuditFailure = await worker.fetch(
+      "http://test.local/student/job-evaluation",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: studentCookie },
+        body: JSON.stringify(evaluationSubmitPayload),
+      },
+    );
+    const evaluationSubmitAuditFailureBody = await evaluationSubmitAuditFailure.text();
+    assert.equal(evaluationSubmitAuditFailure.status, 500, evaluationSubmitAuditFailureBody);
+    assert.deepEqual(evaluationSubmitState(), [{
+      response_revision: 0,
+      response_count: 0,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_evaluation_submit_audit_insert_failure;");
+
+    const evaluationSubmitSuccess = await worker.fetch(
+      "http://test.local/student/job-evaluation",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: studentCookie },
+        body: JSON.stringify(evaluationSubmitPayload),
+      },
+    );
+    const evaluationSubmitSuccessBody = await evaluationSubmitSuccess.json();
+    assert.equal(evaluationSubmitSuccess.status, 200, JSON.stringify(evaluationSubmitSuccessBody));
+    assert.equal(evaluationSubmitSuccessBody.idempotent, false);
+    assert.equal(evaluationSubmitSuccessBody.evaluation.submission.revision, 1);
+    assert.deepEqual(evaluationSubmitState(), [{
+      response_revision: 1,
+      response_count: 1,
+      audit_count: 1,
+    }]);
+
+    const evaluationSubmitRetry = await worker.fetch(
+      "http://test.local/student/job-evaluation",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: studentCookie },
+        body: JSON.stringify(evaluationSubmitPayload),
+      },
+    );
+    const evaluationSubmitRetryBody = await evaluationSubmitRetry.json();
+    assert.equal(evaluationSubmitRetry.status, 200, JSON.stringify(evaluationSubmitRetryBody));
+    assert.equal(evaluationSubmitRetryBody.idempotent, true);
+    assert.deepEqual(evaluationSubmitState(), [{
+      response_revision: 1,
+      response_count: 1,
+      audit_count: 1,
     }]);
 
     executeSql(persistPath, `
