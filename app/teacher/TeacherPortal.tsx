@@ -65,6 +65,7 @@ export function TeacherPortal() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [sessionError, setSessionError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [initialVerification, setInitialVerification] = useState<VerificationDelivery | null>(null);
 
@@ -128,7 +129,8 @@ export function TeacherPortal() {
         ? Promise.resolve().then(() => setError("이전 인증 링크는 더 이상 사용할 수 없어요. 새 인증 메일을 받아 주세요."))
       : Promise.resolve();
     verify.then(() => loadActor())
-      .catch(() => setError("접속 상태를 확인하지 못했어요. 새로고침해 주세요."))
+      .then(() => setSessionError(""))
+      .catch(() => setSessionError("접속 상태를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요."))
       .finally(() => setLoading(false));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -141,6 +143,18 @@ export function TeacherPortal() {
   async function logout() {
     await api("/api/session", { method: "DELETE" });
     window.location.href = "/teacher";
+  }
+
+  async function retrySession() {
+    setLoading(true);
+    setSessionError("");
+    try {
+      await loadActor();
+    } catch {
+      setSessionError("접속 상태를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   if (loading) return <LoadingScreen label="교사 화면을 준비하고 있어요" />;
@@ -157,6 +171,9 @@ export function TeacherPortal() {
       mode={authMode}
       setMode={setAuthMode}
       notice={authNotice}
+      initialError={error}
+      sessionError={sessionError}
+      onRetrySession={retrySession}
       onAuthenticated={(teacher, verification) => {
         setActor(teacher);
         setInitialVerification(verification ?? null);
@@ -684,10 +701,13 @@ function SchoolSelectionGate({ actor, onComplete, onLogout }: {
   );
 }
 
-function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
+function TeacherAuth({ mode, setMode, notice, initialError, sessionError, onRetrySession, onAuthenticated }: {
   mode: "login" | "signup" | "forgot";
   setMode: (mode: "login" | "signup" | "forgot") => void;
   notice?: string;
+  initialError?: string;
+  sessionError?: string;
+  onRetrySession: () => void;
   onAuthenticated: (teacher: TeacherActor, verification?: VerificationDelivery) => void;
 }) {
   const [email, setEmail] = useState("");
@@ -736,7 +756,8 @@ function TeacherAuth({ mode, setMode, notice, onAuthenticated }: {
             <label>이메일<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teacher@school.kr" autoComplete="email" required /></label>
             {mode !== "forgot" && <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder={mode === "signup" ? "8자 이상" : "비밀번호"} autoComplete={mode === "signup" ? "new-password" : "current-password"} required /></label>}
             {mode === "signup" && <label>비밀번호 확인<input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required /></label>}
-            <Notice message={error} tone="error" /><Notice message={message || notice || ""} tone="success" />
+            <Notice message={error || initialError || sessionError || ""} tone="error" /><Notice message={message || notice || ""} tone="success" />
+            {sessionError && <button className="button button-light" type="button" onClick={onRetrySession}>접속 상태 다시 확인</button>}
             {developmentUrl && <a className="dev-reset-link" href={developmentUrl}>개발 확인용 재설정 링크 열기</a>}
             <button className="button button-primary button-large" disabled={busy}>{busy ? "확인 중…" : mode === "login" ? "로그인" : mode === "signup" ? "가입하기" : "재설정 메일 받기"}</button>
           </form>

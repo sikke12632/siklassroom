@@ -848,3 +848,12 @@ test("학생 화면은 세션 확인 실패를 로그인 상태로 오인하지 
   assert.match(studentPortal, /접속 상태 다시 확인/);
   assert.match(studentPortal, /setSessionRetryKey\(\(value\) => value \+ 1\)/);
 });
+
+test("교사 화면은 세션과 이메일 인증 오류를 로그인 화면에서 숨기지 않는다", async () => {
+  const teacherPortal = await readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8");
+  assert.match(teacherPortal, /setSessionError\("접속 상태를 확인하지 못했어요/);
+  assert.match(teacherPortal, /initialError=\{error\}/);
+  assert.match(teacherPortal, /error \|\| initialError \|\| sessionError/);
+  assert.match(teacherPortal, /접속 상태 다시 확인/);
+  assert.match(teacherPortal, /onRetrySession=\{retrySession\}/);
+});
