@@ -175,7 +175,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .eyebrow { margin-bottom: 8px; color: var(--color-primary); font-size: var(--text-xs); font-weight: 700; letter-spacing: .08em; }
 
-.brand { display: inline-flex; align-items: center; gap: 11px; min-width: max-content; }
+.brand { display: inline-flex; align-items: center; gap: 11px; min-width: max-content; min-height: 44px; }
 .brand-mark { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); color: var(--color-primary); }
 .brand-mark svg { width: 25px; height: 25px; }
 .brand strong { display: block; color: var(--color-text); font-size: 1.2rem; font-weight: 700; letter-spacing: -.03em; }
@@ -274,7 +274,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 /* Authentication */
 .auth-page, .student-login-page, .student-page, .activation-page, .centered-page { min-height: 100vh; background: var(--color-bg); }
 .auth-page > header, .student-login-page > header, .student-page > header, .activation-page > header { display: flex; align-items: center; justify-content: space-between; max-width: 1120px; margin: 0 auto; padding: 24px; }
-.auth-page > header a:not(.brand), .student-login-page > header a:not(.brand) { color: var(--color-info); font-size: var(--text-sm); font-weight: 600; }
+.auth-page > header a:not(.brand), .student-login-page > header a:not(.brand) { display: inline-flex; align-items: center; min-height: 44px; padding-inline: 4px; color: var(--color-info); font-size: var(--text-sm); font-weight: 600; }
 .auth-layout { display: grid; grid-template-columns: 1fr 460px; gap: 90px; align-items: center; max-width: 1060px; min-height: calc(100vh - 96px); margin: 0 auto; padding: 40px 24px 90px; }
 .auth-promise { max-width: 470px; }
 .auth-promise h1 { font-size: clamp(2.25rem, 4vw, 3.1rem); line-height: 1.2; letter-spacing: -.045em; }

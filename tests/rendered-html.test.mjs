@@ -101,6 +101,12 @@ test("session activity timestamps are throttled to avoid a D1 write on every rea
   assert.match(adminAuth, /WHERE id = \? AND last_seen_at <= \?/);
 });
 
+test("header logo and entrance links retain a 44px touch target", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.brand \{[^}]*min-height: 44px;/);
+  assert.match(styles, /\.auth-page > header a:not\(\.brand\), \.student-login-page > header a:not\(\.brand\) \{[^}]*min-height: 44px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
