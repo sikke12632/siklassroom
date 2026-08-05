@@ -841,3 +841,10 @@ test("QR 인쇄 미리보기는 배경 스크롤을 막고 인쇄할 때만 해�
   assert.match(styles, /\.print-overlay[^}]*overscroll-behavior: contain/);
   assert.match(styles, /@media print[\s\S]*body\.qr-printing \{ overflow: visible !important; \}/);
 });
+
+test("학생 화면은 세션 확인 실패를 로그인 상태로 오인하지 않고 다시 확인할 수 있다", async () => {
+  const studentPortal = await readFile(new URL("../app/student/StudentPortal.tsx", import.meta.url), "utf8");
+  assert.match(studentPortal, /setSessionError\("접속 상태를 확인하지 못했어요/);
+  assert.match(studentPortal, /접속 상태 다시 확인/);
+  assert.match(studentPortal, /setSessionRetryKey\(\(value\) => value \+ 1\)/);
+});

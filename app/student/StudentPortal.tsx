@@ -35,8 +35,11 @@ export function StudentPortal() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [sessionError, setSessionError] = useState("");
+  const [sessionRetryKey, setSessionRetryKey] = useState(0);
 
   useEffect(() => {
+    const controller = new AbortController();
     const frame = requestAnimationFrame(() => {
     try {
       const remembered = JSON.parse(localStorage.getItem(preferenceKey) || "null");
@@ -47,22 +50,39 @@ export function StudentPortal() {
         setClassNumber(String(remembered.classNumber || ""));
       }
     } catch {}
-    api<{ serverTime: { year: number } }>("/api/time")
+    api<{ serverTime: { year: number } }>("/api/time", { signal: controller.signal })
       .then(({ serverTime }) => setSchoolYear((current) => current || String(serverTime.year)))
-      .catch(() => setSchoolYear((current) => current || String(new Date().getFullYear())));
+      .catch((reason) => {
+        if ((reason as Error).name !== "AbortError") {
+          setSchoolYear((current) => current || String(new Date().getFullYear()));
+        }
+      });
     });
-    api<{ actor: (StudentInfo & { type: "student" }) | { type: "teacher" } | null }>("/api/session")
+    api<{ actor: (StudentInfo & { type: "student" }) | { type: "teacher" } | null }>("/api/session", { signal: controller.signal })
       .then(({ actor }) => {
+        setSessionError("");
         if (actor?.type === "student") {
-          api<{ student: StudentInfo }>("/api/student/me")
+          api<{ student: StudentInfo }>("/api/student/me", { signal: controller.signal })
             .then((data) => setStudent(data.student))
-            .catch(() => setStudent(actor));
+            .catch((reason) => {
+              if ((reason as Error).name !== "AbortError") setStudent(actor);
+            });
         }
         if (actor?.type === "teacher") setTeacherSession(true);
       })
-      .finally(() => setLoading(false));
-    return () => cancelAnimationFrame(frame);
-  }, []);
+      .catch((reason) => {
+        if ((reason as Error).name !== "AbortError") {
+          setSessionError("접속 상태를 확인하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => {
+      cancelAnimationFrame(frame);
+      controller.abort();
+    };
+  }, [sessionRetryKey]);
 
   async function login(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError("");
@@ -82,7 +102,7 @@ export function StudentPortal() {
         classNumber: Number(classNumber),
       }));
       const data = await api<{ student: StudentInfo }>("/api/student/me");
-      setStudent(data.student); setPassword("");
+      setStudent(data.student); setPassword(""); setSessionError("");
     } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }
 
@@ -141,6 +161,16 @@ export function StudentPortal() {
       <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><a href="/teacher">선생님 입구</a></div></header>
       <section className="student-login-card">
         <div className="student-login-heading"><span className="pencil-mark" aria-hidden="true"><School /></span><StudentEntryIntro /></div>
+        {sessionError && (
+          <div className="session-check-error">
+            <Notice message={sessionError} tone="error" />
+            <button className="button button-light" type="button" onClick={() => {
+              setLoading(true);
+              setSessionError("");
+              setSessionRetryKey((value) => value + 1);
+            }}>접속 상태 다시 확인</button>
+          </div>
+        )}
         <form onSubmit={login} className="student-login-form">
           <div className={`remembered-class ${classRemembered ? "visible" : ""}`}>
             <label>학교<input value={schoolName} onChange={(event) => setSchoolName(event.target.value)} placeholder="학교 이름" required /></label>
