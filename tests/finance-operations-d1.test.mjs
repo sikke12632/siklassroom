@@ -655,6 +655,15 @@ test("unresolved cash requests atomically block class archive and student exclus
       `--persist-to=${persistPath}`,
     ]);
     executeSql(persistPath, `
+      INSERT INTO schools (
+        id, office_code, school_code, official_name, normalized_name,
+        search_name, school_level, province_name, status, source,
+        created_at, updated_at
+      ) VALUES (
+        'school-cash-lifecycle', 'TEST', 'CASH-LIFECYCLE',
+        'Lifecycle School', 'lifecycle school', 'lifecycle school',
+        'elementary', 'Test Province', 'active', 'test', 1, 1
+      );
       INSERT INTO teachers (
         id, email, password_hash, status, email_verified_at,
         teacher_access_status, teacher_access_verified_at, school_id,
@@ -768,6 +777,81 @@ test("unresolved cash requests atomically block class archive and student exclus
         watch: false,
       },
     });
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_class_create_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'class_created'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_CLASS_CREATE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const classCreateAuditFailure = await worker.fetch(
+      "http://test.local/classes",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ schoolYear: 2099, grade: 6, classNumber: 22 }),
+      },
+    );
+    const classCreateAuditFailureBody = await classCreateAuditFailure.text();
+    assert.equal(classCreateAuditFailure.status, 500, classCreateAuditFailureBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM classes
+          WHERE school_normalized = 'lifecycle school'
+            AND school_year = 2099 AND grade = 6 AND class_number = 22)
+           AS class_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE action = 'class_created') AS audit_count;`,
+    )), [{ class_count: 0, audit_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_class_create_audit_insert_failure;");
+
+    const rosterCountsBefore = lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM students) AS student_count,
+         (SELECT COUNT(*) FROM registration_tokens) AS token_count,
+         (SELECT COUNT(*) FROM finance_accounts) AS account_count;`,
+    ))[0];
+    executeSql(persistPath, `
+      CREATE TRIGGER test_roster_create_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'students_bulk_created'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_ROSTER_CREATE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const rosterCreateAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/students",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ students: [{ number: 3, name: "Audit Rollback Student" }] }),
+      },
+    );
+    const rosterCreateAuditFailureBody = await rosterCreateAuditFailure.text();
+    assert.equal(rosterCreateAuditFailure.status, 500, rosterCreateAuditFailureBody);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM students) AS student_count,
+         (SELECT COUNT(*) FROM registration_tokens) AS token_count,
+         (SELECT COUNT(*) FROM finance_accounts) AS account_count;`,
+    ))[0], rosterCountsBefore);
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM students
+          WHERE class_id = 'class-cash-archive' AND student_number = 3)
+           AS student_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE action = 'students_bulk_created'
+            AND class_id = 'class-cash-archive') AS audit_count;`,
+    )), [{ student_count: 0, audit_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_roster_create_audit_insert_failure;");
 
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure

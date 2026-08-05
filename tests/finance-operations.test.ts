@@ -555,6 +555,32 @@ test("unresolved cash requests block roster lifecycle changes without auto-cance
   );
 });
 
+test("new classes and roster entries commit their audit record atomically", async () => {
+  const [classesRoute, rosterRoute, d1Test] = await Promise.all([
+    readFile(new URL("../app/api/classes/route.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/classes/[classId]/students/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../tests/finance-operations-d1.test.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(
+    classesRoute,
+    /database\(\)\.batch\(\[[\s\S]*INSERT INTO classes[\s\S]*INSERT INTO audit_logs[\s\S]*'class_created'/,
+  );
+  assert.doesNotMatch(classesRoute, /await audit\(/);
+  assert.match(
+    rosterRoute,
+    /INSERT INTO students[\s\S]*INSERT INTO registration_tokens[\s\S]*INSERT INTO audit_logs[\s\S]*'students_bulk_created'[\s\S]*database\(\)\.batch\(statements\)/,
+  );
+  assert.doesNotMatch(rosterRoute, /await audit\(/);
+  assert.match(d1Test, /TEST_CLASS_CREATE_AUDIT_INSERT_FAILURE/);
+  assert.match(d1Test, /TEST_ROSTER_CREATE_AUDIT_INSERT_FAILURE/);
+  assert.match(d1Test, /registration_tokens/);
+  assert.match(d1Test, /finance_accounts/);
+});
+
 test("stock news publication and closure remain append-only audit events", async () => {
   const [schema, migration, runtime, service, audit] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),

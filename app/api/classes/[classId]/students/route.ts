@@ -1,6 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit, database } from "@/lib/database";
+import { database } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import { REGISTRATION_QR_LIFETIME_MS, registrationActivationUrl } from "@/lib/registration";
@@ -62,8 +62,18 @@ export async function POST(request: Request, context: { params: Promise<{ classI
          VALUES (?, ?, ?, 'activate', 1, ?, ?)`,
       ).bind(crypto.randomUUID(), row.id, row.tokenHash, now + REGISTRATION_QR_LIFETIME_MS, now));
     }
+    statements.push(database().prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       ) VALUES (?, ?, ?, NULL, 'students_bulk_created', ?, ?)`,
+    ).bind(
+      crypto.randomUUID(),
+      teacherId,
+      classId,
+      JSON.stringify({ count: issued.length }),
+      now,
+    ));
     await database().batch(statements);
-    await audit({ action: "students_bulk_created", teacherId, classId, detail: { count: issued.length } });
     const origin = new URL(request.url).origin;
     return json({
       students: issued.map((row) => ({

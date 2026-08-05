@@ -1,4 +1,6 @@
 import { PATCH as patchClass } from "../../app/api/classes/[classId]/route";
+import { POST as addStudents } from "../../app/api/classes/[classId]/students/route";
+import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
 
@@ -405,7 +407,16 @@ const financeCashLifecycleWorker = {
 
     try {
       let response: Response;
-      if (url.pathname === "/classes/class-cash-archive") {
+      if (url.pathname === "/classes" && request.method === "POST") {
+        response = await createClass(request);
+      } else if (
+        url.pathname === "/classes/class-cash-archive/students"
+        && request.method === "POST"
+      ) {
+        response = await addStudents(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (url.pathname === "/classes/class-cash-archive") {
         response = await patchClass(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });

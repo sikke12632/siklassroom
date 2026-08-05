@@ -1,5 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
-import { audit, database, ensureSchema } from "@/lib/database";
+import { database, ensureSchema } from "@/lib/database";
 import { cleanDisplayText, currentSchoolYear, integerInRange, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { seoulServerTime } from "@/lib/seoul-time";
@@ -150,16 +150,28 @@ export async function POST(request: Request) {
     if (duplicate) throw new ApiError(409, "같은 학교의 같은 학년도·학년·반이 이미 만들어져 있어요.", "CLASS_EXISTS");
     const id = crypto.randomUUID();
     const now = Date.now();
-    await database().prepare(
-      `INSERT INTO classes
-       (id, teacher_id, school_name, school_normalized, school_id, manual_school_request_id,
-        school_year, grade, class_number, display_name, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-    ).bind(
-      id, teacherId, schoolName, schoolNormalized, access.schoolId, access.manualSchoolRequestId,
-      schoolYear, grade, classNumber, displayName, now, now,
-    ).run();
-    await audit({ action: "class_created", teacherId, classId: id, detail: { schoolYear, grade, classNumber } });
+    await database().batch([
+      database().prepare(
+        `INSERT INTO classes
+         (id, teacher_id, school_name, school_normalized, school_id, manual_school_request_id,
+          school_year, grade, class_number, display_name, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+      ).bind(
+        id, teacherId, schoolName, schoolNormalized, access.schoolId, access.manualSchoolRequestId,
+        schoolYear, grade, classNumber, displayName, now, now,
+      ),
+      database().prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'class_created', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        teacherId,
+        id,
+        JSON.stringify({ schoolYear, grade, classNumber }),
+        now,
+      ),
+    ]);
     return json({ class: { id, school_name: schoolName, school_year: schoolYear, grade, class_number: classNumber, display_name: displayName, status: "active" } }, 201);
   } catch (error) {
     return apiFailure(error);
