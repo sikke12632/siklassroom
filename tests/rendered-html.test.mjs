@@ -22,6 +22,11 @@ test("theme controls retain a 44px touch target on compact and mobile layouts", 
   assert.doesNotMatch(styles, /\.theme-toggle(?:-compact)? button \{[^}]*min-(?:width|height): (?:3\d|4[0-3])px;/);
 });
 
+test("the mobile entrance title wraps only between Korean words", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.neutral-entry-intro h1 \{[^}]*word-break: keep-all;/);
+});
+
 test("student roster edit inputs identify the student and field to assistive technology", async () => {
   const portal = await readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8");
   assert.match(portal, /aria-label=\{`\$\{student\.official_name\} 학생 번호`\}/);
