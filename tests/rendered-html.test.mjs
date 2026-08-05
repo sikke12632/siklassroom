@@ -125,7 +125,7 @@ test("QR printing waits until every card image is ready", async () => {
   const printCards = await readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8");
   assert.match(printCards, /cards\.every\(\(card\) => Boolean\(images\[card\.id\]\)\)/);
   assert.match(printCards, /disabled=\{!printReady\}/);
-  assert.match(printCards, /printReady \? "A4 인쇄" : "QR 준비 중…"/);
+  assert.match(printCards, /printReady \? "A4 인쇄" : generationError \? "QR 준비 실패" : "QR 준비 중…"/);
 });
 
 test("QR print dialog manages keyboard focus and Escape dismissal", async () => {
@@ -136,6 +136,16 @@ test("QR print dialog manages keyboard focus and Escape dismissal", async () => 
   assert.match(printCards, /document\.addEventListener\("keydown", handleKeyDown\)/);
   assert.match(printCards, /previousFocus\?\.isConnected/);
   assert.match(printCards, /type="button" onClick=\{onClose\}/);
+});
+
+test("QR print generation reports failures and can retry locally", async () => {
+  const printCards = await readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8");
+  assert.match(printCards, /setGenerationError\("QR 이미지를 만들지 못했어요/);
+  assert.match(printCards, /\[cards, generationAttempt\]/);
+  assert.match(printCards, /role=\{generationError \? "alert" : undefined\}/);
+  assert.match(printCards, /function retryGeneration\(\)[\s\S]*setGenerationAttempt\(\(value\) => value \+ 1\)/);
+  assert.match(printCards, /onClick=\{retryGeneration\}/);
+  assert.match(printCards, /generationError \? "QR 준비 실패"/);
 });
 
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {

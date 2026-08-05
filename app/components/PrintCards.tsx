@@ -14,6 +14,8 @@ export type RegistrationCard = {
 
 export function PrintCards({ cards, classLabel, onClose }: { cards: RegistrationCard[]; classLabel: string; onClose: () => void }) {
   const [images, setImages] = useState<Record<string, string>>({});
+  const [generationError, setGenerationError] = useState("");
+  const [generationAttempt, setGenerationAttempt] = useState(0);
   const overlayRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const closeActionRef = useRef(onClose);
@@ -70,18 +72,27 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
       color: { dark: "#183153", light: "#ffffff" },
     })] as const)).then((entries) => {
       if (!cancelled) setImages(Object.fromEntries(entries));
+    }).catch(() => {
+      if (!cancelled) setGenerationError("QR 이미지를 만들지 못했어요. 다시 만들기를 눌러 주세요.");
     });
     return () => { cancelled = true; };
-  }, [cards]);
+  }, [cards, generationAttempt]);
+
+  function retryGeneration() {
+    setImages({});
+    setGenerationError("");
+    setGenerationAttempt((value) => value + 1);
+  }
 
   return (
     <div ref={overlayRef} className="print-overlay" role="dialog" aria-modal="true" aria-label="학생 QR 카드 인쇄 미리보기">
       <div className="print-toolbar no-print">
-        <div><strong>QR 카드 인쇄 미리보기</strong><span>{cards.length}장 · 같은 카드는 계속 로그인에 쓰고, 분실했을 때만 새로 발급하세요.</span></div>
+        <div><strong>QR 카드 인쇄 미리보기</strong><span role={generationError ? "alert" : undefined}>{generationError || `${cards.length}장 · 같은 카드는 계속 로그인에 쓰고, 분실했을 때만 새로 발급하세요.`}</span></div>
         <div className="button-row">
+          {generationError && <button className="button button-light" type="button" onClick={retryGeneration}>다시 만들기</button>}
           <button ref={closeButtonRef} className="button button-light" type="button" onClick={onClose}>닫기</button>
           <button className="button button-primary" type="button" disabled={!printReady} onClick={() => window.print()}>
-            {printReady ? "A4 인쇄" : "QR 준비 중…"}
+            {printReady ? "A4 인쇄" : generationError ? "QR 준비 실패" : "QR 준비 중…"}
           </button>
         </div>
       </div>
