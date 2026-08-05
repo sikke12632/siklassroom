@@ -1636,6 +1636,86 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    const evaluationOpenState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM class_job_evaluation_sessions evaluation
+          WHERE evaluation.class_id = 'class-cash-archive'
+            AND evaluation.source_period_id = '${confirmedMonthlyPeriodId}') AS session_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = 'class-cash-archive'
+            AND action = 'job_evaluation_opened') AS audit_count,
+         (SELECT COUNT(*) FROM registration_operation_guards
+          WHERE operation = 'job_evaluation_open') AS guard_count;`,
+    ));
+    const evaluationOpenPayload = {
+      expectedSourcePeriodId: confirmedMonthlyPeriodId,
+      expectedSourcePeriodRevision: 1,
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_evaluation_open_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_evaluation_opened'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_EVALUATION_OPEN_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const evaluationOpenAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/open",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationOpenPayload),
+      },
+    );
+    const evaluationOpenAuditFailureBody = await evaluationOpenAuditFailure.text();
+    assert.equal(evaluationOpenAuditFailure.status, 500, evaluationOpenAuditFailureBody);
+    assert.deepEqual(evaluationOpenState(), [{
+      session_count: 0,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_evaluation_open_audit_insert_failure;");
+
+    const evaluationOpenSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/open",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationOpenPayload),
+      },
+    );
+    const evaluationOpenSuccessBody = await evaluationOpenSuccess.json();
+    assert.equal(evaluationOpenSuccess.status, 201, JSON.stringify(evaluationOpenSuccessBody));
+    assert.equal(evaluationOpenSuccessBody.idempotent, false);
+    assert.deepEqual(evaluationOpenState(), [{
+      session_count: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const evaluationOpenRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/open",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationOpenPayload),
+      },
+    );
+    const evaluationOpenRetryBody = await evaluationOpenRetry.json();
+    assert.equal(evaluationOpenRetry.status, 200, JSON.stringify(evaluationOpenRetryBody));
+    assert.equal(evaluationOpenRetryBody.idempotent, true);
+    assert.equal(
+      evaluationOpenRetryBody.evaluation.id,
+      evaluationOpenSuccessBody.evaluation.id,
+    );
+    assert.deepEqual(evaluationOpenState(), [{
+      session_count: 1,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

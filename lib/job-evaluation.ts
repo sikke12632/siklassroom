@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import {
   calculateJobEvaluationResults,
   type JobEvaluationJob,
@@ -566,47 +566,52 @@ export async function openJobEvaluation(input: {
   const sessionId = crypto.randomUUID();
   const now = Date.now();
   const current = seoulServerTime(now);
-  const result = await database().prepare(
-    `INSERT OR IGNORE INTO class_job_evaluation_sessions (
-       id, class_id, source_period_id, source_year, source_month, status,
-       jobs_json, student_ids_json, student_count_snapshot, job_count_snapshot,
-       source_period_revision, job_setup_revision, revision, response_revision,
-       calculated_response_revision, algorithm_version, final_grades_json,
-       opened_by_teacher_id, opened_at, closed_by_teacher_id, closed_at,
-       finalized_by_teacher_id, finalized_at, created_at, updated_at
-     )
-     SELECT ?, ?, p.id, p.assignment_year, p.assignment_month, 'open',
-            ?, ?, ?, ?, p.revision, ?, 0, 0, NULL, 'legacy-rank-v1', NULL,
-            ?, ?, NULL, NULL, NULL, NULL, ?, ?
-     FROM class_job_assignment_periods p
-     WHERE p.id = ? AND p.class_id = ? AND p.status = 'confirmed' AND p.revision = ?
-       AND p.assignment_type IN ('initial', 'monthly')
-       AND p.id = (
-         SELECT eligible.id
-         FROM class_job_assignment_periods eligible
-         WHERE eligible.class_id = ? AND eligible.status = 'confirmed'
-           AND eligible.assignment_type IN ('initial', 'monthly')
-           AND (
-             eligible.assignment_year < ?
-             OR (eligible.assignment_year = ? AND eligible.assignment_month <= ?)
+  const guardId = crypto.randomUUID();
+  const db = database();
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
+        `INSERT OR IGNORE INTO class_job_evaluation_sessions (
+           id, class_id, source_period_id, source_year, source_month, status,
+           jobs_json, student_ids_json, student_count_snapshot, job_count_snapshot,
+           source_period_revision, job_setup_revision, revision, response_revision,
+           calculated_response_revision, algorithm_version, final_grades_json,
+           opened_by_teacher_id, opened_at, closed_by_teacher_id, closed_at,
+           finalized_by_teacher_id, finalized_at, created_at, updated_at
+         )
+         SELECT ?, ?, p.id, p.assignment_year, p.assignment_month, 'open',
+                ?, ?, ?, ?, p.revision, ?, 0, 0, NULL, 'legacy-rank-v1', NULL,
+                ?, ?, NULL, NULL, NULL, NULL, ?, ?
+         FROM class_job_assignment_periods p
+         WHERE p.id = ? AND p.class_id = ? AND p.status = 'confirmed' AND p.revision = ?
+           AND p.assignment_type IN ('initial', 'monthly')
+           AND p.id = (
+             SELECT eligible.id
+             FROM class_job_assignment_periods eligible
+             WHERE eligible.class_id = ? AND eligible.status = 'confirmed'
+               AND eligible.assignment_type IN ('initial', 'monthly')
+               AND (
+                 eligible.assignment_year < ?
+                 OR (eligible.assignment_year = ? AND eligible.assignment_month <= ?)
+               )
+             ORDER BY eligible.assignment_year DESC, eligible.assignment_month DESC,
+                      eligible.confirmed_at DESC, eligible.updated_at DESC, eligible.id DESC
+             LIMIT 1
            )
-         ORDER BY eligible.assignment_year DESC, eligible.assignment_month DESC,
-                  eligible.confirmed_at DESC, eligible.updated_at DESC, eligible.id DESC
-         LIMIT 1
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM class_job_month_closures closure
-         WHERE closure.class_id = ? AND closure.source_period_id = p.id
-       )
-       AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = p.id) = ?
-       AND (SELECT COUNT(*) FROM students student
-            WHERE student.class_id = p.class_id AND student.status <> 'excluded') = ?
-       AND EXISTS (
-         SELECT 1 FROM class_job_setup current_setup
-         WHERE current_setup.class_id = p.class_id
-           AND current_setup.status = 'completed' AND current_setup.revision = ?
-       )`,
-  ).bind(
+           AND NOT EXISTS (
+             SELECT 1 FROM class_job_month_closures closure
+             WHERE closure.class_id = ? AND closure.source_period_id = p.id
+           )
+           AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = p.id) = ?
+           AND (SELECT COUNT(*) FROM students student
+                WHERE student.class_id = p.class_id AND student.status <> 'excluded') = ?
+           AND EXISTS (
+             SELECT 1 FROM class_job_setup current_setup
+             WHERE current_setup.class_id = p.class_id
+               AND current_setup.status = 'completed' AND current_setup.revision = ?
+           )`,
+      ).bind(
     sessionId,
     input.classId,
     JSON.stringify(jobs),
@@ -629,8 +634,45 @@ export async function openJobEvaluation(input: {
     Number(latest.assignment_count),
     students.length,
     Number(setup.revision),
-  ).run();
-  const stored = result.meta.changes
+      ),
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM class_job_evaluation_sessions
+           WHERE class_id = ? AND source_period_id = ?
+         ) THEN ? ELSE NULL END, 'job_evaluation_open', ?`,
+      ).bind(input.classId, latest.id, guardId, now),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         )
+         SELECT ?, ?, ?, NULL, 'job_evaluation_opened', ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM class_job_evaluation_sessions WHERE id = ? AND class_id = ?
+         )`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({ evaluationId: sessionId, idempotent: false }),
+        now,
+        sessionId,
+        input.classId,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "평가를 여는 동안 지난달 배정이 바뀌었어요.",
+        "JOB_EVALUATION_STALE",
+      );
+    }
+    throw error;
+  }
+  const created = Boolean(results[0]?.meta.changes);
+  const stored = created
     ? await sessionById(sessionId)
     : await sessionForSource(input.classId, latest.id);
   if (!stored) {
@@ -641,7 +683,7 @@ export async function openJobEvaluation(input: {
     );
   }
   return {
-    idempotent: !result.meta.changes,
+    idempotent: !created,
     evaluation: await teacherEvaluationFromRow(stored),
   };
 }

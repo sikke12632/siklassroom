@@ -7,6 +7,7 @@ import { POST as createManualAssignments } from "../../app/api/classes/[classId]
 import { POST as completeInitialAssignments } from "../../app/api/classes/[classId]/job-assignments/complete/route";
 import { POST as completeMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/complete/route";
 import { POST as shuffleMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/shuffle/route";
+import { POST as openJobEvaluation } from "../../app/api/classes/[classId]/job-evaluation/open/route";
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
@@ -502,6 +503,13 @@ const financeCashLifecycleWorker = {
         && request.method === "POST"
       ) {
         response = await shuffleMonthlyJobChoice(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-evaluation/open"
+        && request.method === "POST"
+      ) {
+        response = await openJobEvaluation(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (url.pathname === "/classes/class-cash-archive") {
