@@ -47,6 +47,18 @@ test("서비스의 보안·기록 원칙을 사용자에게 설명한다", async
   assert.match(registration, /credential_revision/);
 });
 
+test("Worker는 API 캐시와 외부 프레임을 막는 공통 보안 헤더를 붙인다", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  assert.match(worker, /X-Content-Type-Options/);
+  assert.match(worker, /X-Frame-Options/);
+  assert.match(worker, /Content-Security-Policy/);
+  assert.match(worker, /Permissions-Policy/);
+  assert.match(worker, /Strict-Transport-Security/);
+  assert.match(worker, /url\.pathname\.startsWith\("\/api\/"\)/);
+  assert.match(worker, /headers\.set\("Cache-Control", "no-store"\)/);
+  assert.match(worker, /securedResponse\(request, await handler\.fetch/);
+});
+
 test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CSRF로 보호한다", async () => {
   const [home, adminPage, adminAuth, adminRoute, schema] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
