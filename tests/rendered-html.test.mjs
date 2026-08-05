@@ -14,6 +14,14 @@ async function routeFiles(directory) {
   return files.flat();
 }
 
+test("theme controls retain a 44px touch target on compact and mobile layouts", async () => {
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  assert.match(styles, /\.theme-toggle button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(styles, /\.theme-toggle-compact button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
+  assert.match(styles, /\.header-actions \.theme-toggle button \{ min-width: 44px; \}/);
+  assert.doesNotMatch(styles, /\.theme-toggle(?:-compact)? button \{[^}]*min-(?:width|height): (?:3\d|4[0-3])px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

@@ -185,11 +185,11 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .brand-compact strong { font-size: 1.08rem; }
 
 .theme-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; width: 100%; padding: 3px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: var(--color-surface-subtle); }
-.theme-toggle button { display: grid; place-items: center; min-width: 44px; min-height: 40px; border: 0; border-radius: var(--radius-pill); color: var(--color-text-muted); background: transparent; transition: color var(--transition-fast), background var(--transition-fast); }
+.theme-toggle button { display: grid; place-items: center; min-width: 44px; min-height: 44px; border: 0; border-radius: var(--radius-pill); color: var(--color-text-muted); background: transparent; transition: color var(--transition-fast), background var(--transition-fast); }
 .theme-toggle button.active { color: var(--color-primary); background: var(--color-surface-raised); box-shadow: var(--shadow-card); }
 .theme-toggle svg { width: 20px; height: 20px; }
 .theme-toggle-compact { width: auto; }
-.theme-toggle-compact button { min-width: 42px; min-height: 38px; }
+.theme-toggle-compact button { min-width: 44px; min-height: 44px; }
 .header-actions, .job-topbar-actions { display: flex; align-items: center; gap: var(--space-3); }
 
 .button {
@@ -987,7 +987,7 @@ fieldset > p { margin: 4px 0 14px; color: var(--color-text-muted); font-size: va
   .auth-page > header, .student-login-page > header, .student-page > header, .activation-page > header { padding: 16px; }
   .auth-page > header .brand small { display: none; }
   .header-actions { gap: 7px; }
-  .header-actions .theme-toggle button { min-width: 38px; }
+  .header-actions .theme-toggle button { min-width: 44px; }
   .auth-layout { padding: 24px 16px 60px; }
   .auth-card, .centered-card { padding: 26px 20px; }
   .dashboard-heading { align-items: flex-start; gap: 16px; }
