@@ -1,6 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit } from "@/lib/database";
 import type { ClassJobDraft, SetupMode, SurveyAnswers } from "@/lib/job-catalog";
 import { completeJobSetup, eligibleStudentCount } from "@/lib/job-storage";
 import { apiFailure, json, readJson } from "@/lib/responses";
@@ -22,18 +21,13 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const studentCount = await eligibleStudentCount(classId);
     const setup = await completeJobSetup({
       classId,
+      teacherId,
       expectedRevision: body.expectedRevision,
       setupMode: body.setupMode ?? "manual",
       surveyAnswers: body.surveyAnswers,
       jobs: body.jobs ?? [],
       studentCount,
       acknowledgeAssignmentImpact: body.acknowledgeAssignmentImpact,
-    });
-    await audit({
-      action: "job_setup_completed",
-      teacherId,
-      classId,
-      detail: { revision: setup.revision, jobCount: setup.selectedJobCount, capacity: setup.selectedCapacity },
     });
     return json({ setup, studentCount });
   } catch (error) {

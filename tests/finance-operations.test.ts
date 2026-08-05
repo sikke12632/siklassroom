@@ -606,6 +606,42 @@ test("calendar saves reject concurrent revisions and commit audits atomically", 
   assert.match(d1Test, /CALENDAR_STALE/);
 });
 
+test("job setup drafts and completion stay atomic with their audit records", async () => {
+  const [storage, draftRoute, completeRoute, d1Test] = await Promise.all([
+    readFile(new URL("../lib/job-storage.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../app/api/classes/[classId]/job-setup/draft/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../app/api/classes/[classId]/job-setup/complete/route.ts", import.meta.url),
+      "utf8",
+    ),
+    readFile(new URL("../tests/finance-operations-d1.test.mjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(storage, /INSERT OR IGNORE INTO class_job_setup/);
+  assert.match(storage, /job_setup_draft_save/);
+  assert.match(storage, /job_setup_complete/);
+  assert.match(storage, /isOperationGuardFailure/);
+  assert.match(
+    storage,
+    /currentRevisionGuard|registration_operation_guards[\s\S]*UPDATE class_job_setup[\s\S]*INSERT INTO audit_logs[\s\S]*job_setup_draft_saved/,
+  );
+  assert.match(
+    storage,
+    /UPDATE class_job_setup[\s\S]*UPDATE class_job_assignment_periods[\s\S]*UPDATE class_jobs[\s\S]*job_setup_completed[\s\S]*DELETE FROM registration_operation_guards/,
+  );
+  assert.match(storage, /status = 'confirmed'/);
+  for (const route of [draftRoute, completeRoute]) {
+    assert.match(route, /teacherId,/);
+    assert.doesNotMatch(route, /await audit\(/);
+  }
+  assert.match(d1Test, /TEST_JOB_DRAFT_AUDIT_INSERT_FAILURE/);
+  assert.match(d1Test, /TEST_JOB_COMPLETE_AUDIT_INSERT_FAILURE/);
+  assert.match(d1Test, /JOB_SETUP_STALE/);
+});
+
 test("stock news publication and closure remain append-only audit events", async () => {
   const [schema, migration, runtime, service, audit] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),

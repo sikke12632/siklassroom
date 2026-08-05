@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { integerInRange } from "./identity";
 import {
   DEFAULT_SURVEY_ANSWERS,
@@ -132,7 +132,7 @@ async function ensureSetupRow(classId: string) {
   if (current) return current;
   const now = Date.now();
   await database().prepare(
-    `INSERT INTO class_job_setup (
+    `INSERT OR IGNORE INTO class_job_setup (
        class_id, status, setup_mode, survey_answers, draft_jobs,
        student_count_snapshot, selected_job_count, selected_capacity,
        last_step, revision, completed_at, updated_at
@@ -226,6 +226,7 @@ function requireExpectedRevision(value: unknown) {
 
 export async function saveJobDraft(input: {
   classId: string;
+  teacherId: string;
   expectedRevision: unknown;
   setupMode: SetupMode;
   surveyAnswers?: Partial<SurveyAnswers> | null;
@@ -243,33 +244,66 @@ export async function saveJobDraft(input: {
   }
   const surveyAnswers = normalizeSurveyAnswers(input.surveyAnswers);
   const nextRevision = revision + 1;
-  const result = await database().prepare(
-    `UPDATE class_job_setup SET
-       status = 'draft', setup_mode = ?, survey_answers = ?, draft_jobs = ?,
-       student_count_snapshot = ?, selected_job_count = ?, selected_capacity = ?,
-       last_step = ?, revision = ?, completed_at = NULL, updated_at = ?
-     WHERE class_id = ? AND revision = ?`,
-  ).bind(
-    input.setupMode,
-    JSON.stringify(surveyAnswers),
-    JSON.stringify(jobs),
-    input.studentCount,
-    jobs.length,
-    sumJobCapacity(jobs),
-    lastStep,
-    nextRevision,
-    Date.now(),
-    input.classId,
-    revision,
-  ).run();
-  if (!result.meta.changes) {
-    throw new ApiError(409, "다른 화면에서 먼저 저장했어요. 현재 입력은 유지되니 새로 불러온 뒤 다시 저장해 주세요.", "JOB_SETUP_STALE");
+  const capacity = sumJobCapacity(jobs);
+  const now = Date.now();
+  const guardId = crypto.randomUUID();
+  const db = database();
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM class_job_setup WHERE class_id = ? AND revision = ?
+         ) THEN ? ELSE NULL END, 'job_setup_draft_save', ?`,
+      ).bind(input.classId, revision, guardId, now),
+      db.prepare(
+        `UPDATE class_job_setup SET
+           status = 'draft', setup_mode = ?, survey_answers = ?, draft_jobs = ?,
+           student_count_snapshot = ?, selected_job_count = ?, selected_capacity = ?,
+           last_step = ?, revision = ?, completed_at = NULL, updated_at = ?
+         WHERE class_id = ? AND revision = ?`,
+      ).bind(
+        input.setupMode,
+        JSON.stringify(surveyAnswers),
+        JSON.stringify(jobs),
+        input.studentCount,
+        jobs.length,
+        capacity,
+        lastStep,
+        nextRevision,
+        now,
+        input.classId,
+        revision,
+      ),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'job_setup_draft_saved', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({ revision: nextRevision, jobCount: jobs.length, lastStep }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "다른 화면에서 먼저 저장했어요. 현재 입력은 유지되니 새로 불러온 뒤 다시 저장해 주세요.",
+        "JOB_SETUP_STALE",
+      );
+    }
+    throw error;
   }
   return loadJobSetup(input.classId);
 }
 
 export async function completeJobSetup(input: {
   classId: string;
+  teacherId: string;
   expectedRevision: unknown;
   setupMode: SetupMode;
   surveyAnswers?: Partial<SurveyAnswers> | null;
@@ -279,13 +313,22 @@ export async function completeJobSetup(input: {
 }) {
   await ensureSetupRow(input.classId);
   const assignmentState = await database().prepare(
-    `SELECT p.id, p.status, COUNT(a.id) AS assignment_count
-     FROM class_job_assignment_periods p
-     LEFT JOIN student_job_assignments a ON a.period_id = p.id
-     WHERE p.class_id = ? AND p.assignment_type = 'initial'
-     GROUP BY p.id ORDER BY p.updated_at DESC LIMIT 1`,
-  ).bind(input.classId).first<{ id: string; status: string; assignment_count: number }>();
-  if (assignmentState?.status === "confirmed") {
+    `SELECT
+       EXISTS (
+         SELECT 1 FROM class_job_assignment_periods
+         WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+       ) AS confirmed_count,
+       (
+         SELECT COUNT(*) FROM student_job_assignments assignment
+         JOIN class_job_assignment_periods period ON period.id = assignment.period_id
+         WHERE period.class_id = ? AND period.assignment_type = 'initial'
+           AND period.status = 'draft'
+       ) AS assignment_count`,
+  ).bind(input.classId, input.classId).first<{
+    confirmed_count: number;
+    assignment_count: number;
+  }>();
+  if (Number(assignmentState?.confirmed_count ?? 0) > 0) {
     throw new ApiError(
       409,
       "첫 직업 배정이 이미 확정되어 초기 설정에서 직업과 정원을 바꿀 수 없어요.",
@@ -320,75 +363,170 @@ export async function completeJobSetup(input: {
   const surveyAnswers = normalizeSurveyAnswers(input.surveyAnswers);
   const now = Date.now();
   const nextRevision = revision + 1;
-  const update = await database().prepare(
-    `UPDATE class_job_setup SET
-       status = 'completed', setup_mode = ?, survey_answers = ?, draft_jobs = ?,
-       student_count_snapshot = ?, selected_job_count = ?, selected_capacity = ?,
-       last_step = 4, revision = ?, completed_at = ?, updated_at = ?
-     WHERE class_id = ? AND revision = ?`,
-  ).bind(
-    input.setupMode,
-    JSON.stringify(surveyAnswers),
-    JSON.stringify(jobs),
-    input.studentCount,
-    jobs.length,
-    capacity,
-    nextRevision,
-    now,
-    now,
-    input.classId,
-    revision,
-  ).run();
-  if (!update.meta.changes) {
-    throw new ApiError(409, "다른 화면에서 먼저 확정했어요. 현재 입력은 유지되니 새로 불러온 뒤 다시 확인해 주세요.", "JOB_SETUP_STALE");
-  }
-
+  const guardId = crypto.randomUUID();
   const db = database();
-  await db.batch([
-    ...(assignmentState?.id && Number(assignmentState.assignment_count) > 0
-      ? [
-        db.prepare(`DELETE FROM job_assignment_candidates WHERE period_id = ?`).bind(assignmentState.id),
-        db.prepare(`DELETE FROM student_job_assignments WHERE period_id = ?`).bind(assignmentState.id),
-        db.prepare(
-          `UPDATE class_job_assignment_periods
-           SET mode = NULL, revision = revision + 1, updated_at = ?
-           WHERE id = ? AND status = 'draft'`,
-        ).bind(now, assignmentState.id),
-      ]
-      : []),
-    db.prepare(`UPDATE class_jobs SET is_active = 0, updated_at = ? WHERE class_id = ?`).bind(now, input.classId),
-    ...jobs.map((job, index) => db.prepare(
-      `INSERT INTO class_jobs (
-         id, class_id, template_id, name, description, member_capacity,
-         category, source, sort_order, is_active, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         class_id = CASE
-           WHEN class_jobs.class_id = excluded.class_id THEN class_jobs.class_id
-           ELSE NULL
-         END,
-         template_id = excluded.template_id,
-         name = excluded.name,
-         description = excluded.description,
-         member_capacity = excluded.member_capacity,
-         category = excluded.category,
-         source = excluded.source,
-         sort_order = excluded.sort_order,
-         is_active = 1,
-         updated_at = excluded.updated_at`,
-    ).bind(
-      job.id,
-      input.classId,
-      job.templateId,
-      job.name,
-      job.description,
-      job.memberCapacity,
-      job.category,
-      job.source,
-      index,
-      now,
-      now,
-    )),
-  ]);
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN
+           EXISTS (
+             SELECT 1 FROM class_job_setup WHERE class_id = ? AND revision = ?
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM class_job_assignment_periods
+             WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+           )
+           AND (
+             ? = 1 OR NOT EXISTS (
+               SELECT 1 FROM student_job_assignments assignment
+               JOIN class_job_assignment_periods period ON period.id = assignment.period_id
+               WHERE period.class_id = ? AND period.assignment_type = 'initial'
+                 AND period.status = 'draft'
+             )
+           )
+         THEN ? ELSE NULL END, 'job_setup_complete', ?`,
+      ).bind(
+        input.classId,
+        revision,
+        input.classId,
+        input.acknowledgeAssignmentImpact ? 1 : 0,
+        input.classId,
+        guardId,
+        now,
+      ),
+      db.prepare(
+        `UPDATE class_job_setup SET
+           status = 'completed', setup_mode = ?, survey_answers = ?, draft_jobs = ?,
+           student_count_snapshot = ?, selected_job_count = ?, selected_capacity = ?,
+           last_step = 4, revision = ?, completed_at = ?, updated_at = ?
+         WHERE class_id = ? AND revision = ?`,
+      ).bind(
+        input.setupMode,
+        JSON.stringify(surveyAnswers),
+        JSON.stringify(jobs),
+        input.studentCount,
+        jobs.length,
+        capacity,
+        nextRevision,
+        now,
+        now,
+        input.classId,
+        revision,
+      ),
+      db.prepare(
+        `UPDATE class_job_assignment_periods
+         SET mode = NULL, revision = revision + 1, updated_at = ?
+         WHERE class_id = ? AND assignment_type = 'initial' AND status = 'draft'
+           AND EXISTS (
+             SELECT 1 FROM student_job_assignments assignment
+             WHERE assignment.period_id = class_job_assignment_periods.id
+           )`,
+      ).bind(now, input.classId),
+      db.prepare(
+        `DELETE FROM job_assignment_candidates
+         WHERE period_id IN (
+           SELECT id FROM class_job_assignment_periods
+           WHERE class_id = ? AND assignment_type = 'initial' AND status = 'draft'
+         )`,
+      ).bind(input.classId),
+      db.prepare(
+        `DELETE FROM student_job_assignments
+         WHERE period_id IN (
+           SELECT id FROM class_job_assignment_periods
+           WHERE class_id = ? AND assignment_type = 'initial' AND status = 'draft'
+         )`,
+      ).bind(input.classId),
+      db.prepare(
+        `UPDATE class_jobs SET is_active = 0, updated_at = ? WHERE class_id = ?`,
+      ).bind(now, input.classId),
+      ...jobs.map((job, index) => db.prepare(
+        `INSERT INTO class_jobs (
+           id, class_id, template_id, name, description, member_capacity,
+           category, source, sort_order, is_active, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           class_id = CASE
+             WHEN class_jobs.class_id = excluded.class_id THEN class_jobs.class_id
+             ELSE NULL
+           END,
+           template_id = excluded.template_id,
+           name = excluded.name,
+           description = excluded.description,
+           member_capacity = excluded.member_capacity,
+           category = excluded.category,
+           source = excluded.source,
+           sort_order = excluded.sort_order,
+           is_active = 1,
+           updated_at = excluded.updated_at`,
+      ).bind(
+        job.id,
+        input.classId,
+        job.templateId,
+        job.name,
+        job.description,
+        job.memberCapacity,
+        job.category,
+        job.source,
+        index,
+        now,
+        now,
+      )),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'job_setup_completed', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({ revision: nextRevision, jobCount: jobs.length, capacity }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      const latestAssignmentState = await database().prepare(
+        `SELECT
+           EXISTS (
+             SELECT 1 FROM class_job_assignment_periods
+             WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+           ) AS confirmed_count,
+           (
+             SELECT COUNT(*) FROM student_job_assignments assignment
+             JOIN class_job_assignment_periods period ON period.id = assignment.period_id
+             WHERE period.class_id = ? AND period.assignment_type = 'initial'
+               AND period.status = 'draft'
+           ) AS assignment_count`,
+      ).bind(input.classId, input.classId).first<{
+        confirmed_count: number;
+        assignment_count: number;
+      }>();
+      if (Number(latestAssignmentState?.confirmed_count ?? 0) > 0) {
+        throw new ApiError(
+          409,
+          "첫 직업 배정이 이미 확정되어 초기 설정에서 직업과 정원을 바꿀 수 없어요.",
+          "ASSIGNMENT_CONFIRMED",
+        );
+      }
+      if (
+        Number(latestAssignmentState?.assignment_count ?? 0) > 0
+        && !input.acknowledgeAssignmentImpact
+      ) {
+        throw new ApiError(
+          409,
+          "진행 중인 첫 직업 배정이 있어요. 직업을 다시 확정하면 임시 배정을 초기화합니다.",
+          "ASSIGNMENT_IMPACT_CONFIRM_REQUIRED",
+        );
+      }
+      throw new ApiError(
+        409,
+        "다른 화면에서 먼저 확정했어요. 현재 입력은 유지되니 새로 불러온 뒤 다시 확인해 주세요.",
+        "JOB_SETUP_STALE",
+      );
+    }
+    throw error;
+  }
   return loadJobSetup(input.classId);
 }

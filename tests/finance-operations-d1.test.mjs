@@ -973,6 +973,167 @@ test("unresolved cash requests atomically block class archive and student exclus
       guard_count: 0,
     }]);
 
+    const jobSetupPayload = {
+      setupMode: "manual",
+      jobs: [{
+        id: "class-cash-archive:custom:atomic-job",
+        templateId: null,
+        name: "Atomic Job",
+        description: "A job used to verify atomic setup writes",
+        memberCapacity: 2,
+        category: "records",
+        source: "custom",
+        sortOrder: 0,
+      }],
+    };
+    executeSql(persistPath, `
+      CREATE TRIGGER test_job_draft_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_setup_draft_saved'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_JOB_DRAFT_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const draftAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-setup/draft",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...jobSetupPayload, expectedRevision: 0, lastStep: 3 }),
+      },
+    );
+    const draftAuditFailureBody = await draftAuditFailure.text();
+    assert.equal(draftAuditFailure.status, 500, draftAuditFailureBody);
+    executeSql(persistPath, "DROP TRIGGER test_job_draft_audit_insert_failure;");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT setup.status, setup.revision, setup.selected_job_count,
+              (SELECT COUNT(*) FROM class_jobs
+               WHERE class_id = setup.class_id AND is_active = 1) AS active_job_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = setup.class_id
+                 AND action IN ('job_setup_draft_saved', 'job_setup_completed'))
+                AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation IN ('job_setup_draft_save', 'job_setup_complete'))
+                AS guard_count
+       FROM class_job_setup setup
+       WHERE setup.class_id = 'class-cash-archive';`,
+    )), [{
+      status: "not_started",
+      revision: 0,
+      selected_job_count: 0,
+      active_job_count: 0,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+
+    const draftResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-setup/draft",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...jobSetupPayload, expectedRevision: 0, lastStep: 3 }),
+      },
+    );
+    const draftBody = await draftResponse.json();
+    assert.equal(draftResponse.status, 200, JSON.stringify(draftBody));
+    assert.equal(draftBody.setup.revision, 1);
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_job_complete_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_setup_completed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_JOB_COMPLETE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const completeAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-setup/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...jobSetupPayload, expectedRevision: 1 }),
+      },
+    );
+    const completeAuditFailureBody = await completeAuditFailure.text();
+    assert.equal(completeAuditFailure.status, 500, completeAuditFailureBody);
+    executeSql(persistPath, "DROP TRIGGER test_job_complete_audit_insert_failure;");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT setup.status, setup.revision, setup.selected_job_count,
+              (SELECT COUNT(*) FROM class_jobs
+               WHERE class_id = setup.class_id AND is_active = 1) AS active_job_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = setup.class_id
+                 AND action = 'job_setup_draft_saved') AS draft_audit_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = setup.class_id
+                 AND action = 'job_setup_completed') AS complete_audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation IN ('job_setup_draft_save', 'job_setup_complete'))
+                AS guard_count
+       FROM class_job_setup setup
+       WHERE setup.class_id = 'class-cash-archive';`,
+    )), [{
+      status: "draft",
+      revision: 1,
+      selected_job_count: 1,
+      active_job_count: 0,
+      draft_audit_count: 1,
+      complete_audit_count: 0,
+      guard_count: 0,
+    }]);
+
+    const completeResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-setup/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...jobSetupPayload, expectedRevision: 1 }),
+      },
+    );
+    const completeBody = await completeResponse.json();
+    assert.equal(completeResponse.status, 200, JSON.stringify(completeBody));
+    assert.equal(completeBody.setup.revision, 2);
+    assert.equal(completeBody.setup.status, "completed");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT setup.status, setup.revision, setup.selected_job_count,
+              job.name, job.member_capacity,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = setup.class_id
+                 AND action = 'job_setup_completed') AS complete_audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation IN ('job_setup_draft_save', 'job_setup_complete'))
+                AS guard_count
+       FROM class_job_setup setup
+       JOIN class_jobs job ON job.class_id = setup.class_id AND job.is_active = 1
+       WHERE setup.class_id = 'class-cash-archive';`,
+    )), [{
+      status: "completed",
+      revision: 2,
+      selected_job_count: 1,
+      name: "Atomic Job",
+      member_capacity: 2,
+      complete_audit_count: 1,
+      guard_count: 0,
+    }]);
+
+    const staleCompleteResponse = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-setup/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...jobSetupPayload, expectedRevision: 1 }),
+      },
+    );
+    const staleCompleteBody = await staleCompleteResponse.json();
+    assert.equal(staleCompleteResponse.status, 409, JSON.stringify(staleCompleteBody));
+    assert.equal(staleCompleteBody.code, "JOB_SETUP_STALE");
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

@@ -1,6 +1,8 @@
 import { PATCH as patchClass } from "../../app/api/classes/[classId]/route";
 import { PUT as saveCalendar } from "../../app/api/classes/[classId]/calendar/route";
 import { POST as addStudents } from "../../app/api/classes/[classId]/students/route";
+import { POST as completeJobSetup } from "../../app/api/classes/[classId]/job-setup/complete/route";
+import { PUT as saveJobSetupDraft } from "../../app/api/classes/[classId]/job-setup/draft/route";
 import { POST as createClass } from "../../app/api/classes/route";
 import { PATCH as patchStudent } from "../../app/api/students/[studentId]/route";
 import { runtimeEnv } from "../../lib/database";
@@ -454,6 +456,20 @@ const financeCashLifecycleWorker = {
         && request.method === "PUT"
       ) {
         response = await saveCalendar(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-setup/draft"
+        && request.method === "PUT"
+      ) {
+        response = await saveJobSetupDraft(request, {
+          params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname === "/classes/class-cash-archive/job-setup/complete"
+        && request.method === "POST"
+      ) {
+        response = await completeJobSetup(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
         });
       } else if (url.pathname === "/classes/class-cash-archive") {
