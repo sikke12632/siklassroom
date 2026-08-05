@@ -128,6 +128,16 @@ test("QR printing waits until every card image is ready", async () => {
   assert.match(printCards, /printReady \? "A4 인쇄" : "QR 준비 중…"/);
 });
 
+test("QR print dialog manages keyboard focus and Escape dismissal", async () => {
+  const printCards = await readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8");
+  assert.match(printCards, /closeButtonRef\.current\?\.focus\(\)/);
+  assert.match(printCards, /event\.key === "Escape"/);
+  assert.match(printCards, /event\.key !== "Tab"/);
+  assert.match(printCards, /document\.addEventListener\("keydown", handleKeyDown\)/);
+  assert.match(printCards, /previousFocus\?\.isConnected/);
+  assert.match(printCards, /type="button" onClick=\{onClose\}/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import QRCode from "qrcode";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type RegistrationCard = {
   id: string;
@@ -14,11 +14,51 @@ export type RegistrationCard = {
 
 export function PrintCards({ cards, classLabel, onClose }: { cards: RegistrationCard[]; classLabel: string; onClose: () => void }) {
   const [images, setImages] = useState<Record<string, string>>({});
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const closeActionRef = useRef(onClose);
   const printReady = cards.length > 0 && cards.every((card) => Boolean(images[card.id]));
 
   useEffect(() => {
+    closeActionRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     document.body.classList.add("qr-printing");
-    return () => document.body.classList.remove("qr-printing");
+    const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeActionRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(
+        overlayRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.classList.remove("qr-printing");
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
   }, []);
 
   useEffect(() => {
@@ -35,12 +75,12 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
   }, [cards]);
 
   return (
-    <div className="print-overlay" role="dialog" aria-modal="true" aria-label="학생 QR 카드 인쇄 미리보기">
+    <div ref={overlayRef} className="print-overlay" role="dialog" aria-modal="true" aria-label="학생 QR 카드 인쇄 미리보기">
       <div className="print-toolbar no-print">
         <div><strong>QR 카드 인쇄 미리보기</strong><span>{cards.length}장 · 같은 카드는 계속 로그인에 쓰고, 분실했을 때만 새로 발급하세요.</span></div>
         <div className="button-row">
-          <button className="button button-light" onClick={onClose}>닫기</button>
-          <button className="button button-primary" disabled={!printReady} onClick={() => window.print()}>
+          <button ref={closeButtonRef} className="button button-light" type="button" onClick={onClose}>닫기</button>
+          <button className="button button-primary" type="button" disabled={!printReady} onClick={() => window.print()}>
             {printReady ? "A4 인쇄" : "QR 준비 중…"}
           </button>
         </div>
