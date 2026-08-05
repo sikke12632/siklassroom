@@ -442,6 +442,19 @@ test("보관된 학급은 조회와 복원 외의 교사 변경 요청을 받지
   }
 });
 
+test("학생 개별 수정은 빈 요청과 오래된 화면의 덮어쓰기를 막는다", async () => {
+  const route = await readFile(
+    new URL("../app/api/students/[studentId]/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /"STUDENT_UPDATE_REQUIRED"/);
+  assert.match(route, /'student_update'/);
+  assert.match(route, /student\.updated_at = \?/);
+  assert.match(route, /isOperationGuardFailure/);
+  assert.match(route, /"STUDENT_STALE"/);
+  assert.match(route, /DELETE FROM registration_operation_guards/);
+});
+
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
   const [portal, printCards, styles] = await Promise.all([
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),

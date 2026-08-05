@@ -1,6 +1,6 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedActiveStudent } from "@/lib/authorization";
-import { database } from "@/lib/database";
+import { database, isOperationGuardFailure } from "@/lib/database";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
 import {
   assertStudentCanBeExcluded,
@@ -17,6 +17,9 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
     const numberProvided = body.number !== undefined;
     const nameProvided = body.name !== undefined;
     const statusProvided = body.status !== undefined;
+    if (!numberProvided && !nameProvided && !statusProvided) {
+      throw new ApiError(400, "변경할 학생 정보를 입력해 주세요.", "STUDENT_UPDATE_REQUIRED");
+    }
     const studentNumber = integerInRange(
       numberProvided ? body.number : current.student_number,
       1,
@@ -48,6 +51,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
       await assertStudentCanBeExcluded(String(current.class_id), studentId);
     }
     const now = Date.now();
+    const guardId = crypto.randomUUID();
     const auditDetail = {
       ...(numberProvided ? { studentNumber } : {}),
       ...(nameProvided ? { officialName } : {}),
@@ -72,8 +76,46 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
       bindings.push(now);
       const statements: D1PreparedStatement[] = [
         database().prepare(
-          `UPDATE students SET ${assignments.join(", ")} WHERE id = ?`,
-        ).bind(...bindings, studentId),
+          `INSERT INTO registration_operation_guards (id, operation, created_at)
+           SELECT CASE WHEN EXISTS (
+             SELECT 1 FROM students student
+             JOIN classes classroom ON classroom.id = student.class_id
+             WHERE student.id = ? AND student.class_id = ?
+               AND student.student_number = ? AND student.official_name = ?
+               AND student.status = ? AND student.qr_generation = ?
+               AND student.updated_at = ? AND classroom.status = 'active'
+               AND NOT EXISTS (
+                 SELECT 1 FROM students conflict
+                 WHERE conflict.class_id = student.class_id
+                   AND conflict.student_number = ? AND conflict.id != student.id
+               )
+           ) THEN ? ELSE NULL END, 'student_update', ?`,
+        ).bind(
+          studentId,
+          current.class_id,
+          current.student_number,
+          current.official_name,
+          current.status,
+          current.qr_generation,
+          current.updated_at,
+          studentNumber,
+          guardId,
+          now,
+        ),
+        database().prepare(
+          `UPDATE students SET ${assignments.join(", ")}
+           WHERE id = ? AND class_id = ? AND student_number = ?
+             AND official_name = ? AND status = ? AND qr_generation = ? AND updated_at = ?`,
+        ).bind(
+          ...bindings,
+          studentId,
+          current.class_id,
+          current.student_number,
+          current.official_name,
+          current.status,
+          current.qr_generation,
+          current.updated_at,
+        ),
       ];
       if (statusProvided && status !== "active") {
         statements.push(database().prepare(
@@ -92,8 +134,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ stude
         JSON.stringify(auditDetail),
         now,
       ));
+      statements.push(database().prepare(
+        `DELETE FROM registration_operation_guards WHERE id = ?`,
+      ).bind(guardId));
       await database().batch(statements);
     } catch (error) {
+      if (isOperationGuardFailure(error)) {
+        throw new ApiError(409, "다른 화면에서 학생 정보가 먼저 바뀌었습니다. 새로고침 후 다시 시도해 주세요.", "STUDENT_STALE");
+      }
       mapFinanceDepositLifecycleError(error);
     }
     return json({ ok: true });
