@@ -1,6 +1,5 @@
 CREATE INDEX IF NOT EXISTS `finance_cash_requests_wallet_pending_idx`
-ON `finance_cash_requests` (`class_id`,`wallet_account_id`,`request_type`,`created_at`);
---> statement-breakpoint
+ON `finance_cash_requests` (`class_id`,`wallet_account_id`,`request_type`,`created_at`);--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS `finance_transactions_pending_withdrawal_guard`
 BEFORE UPDATE OF status ON finance_transactions
 WHEN OLD.status = 'pending' AND NEW.status = 'posted'
@@ -32,8 +31,7 @@ BEGIN
     )
     THEN RAISE(ABORT, 'FINANCE_INSUFFICIENT_AVAILABLE_BALANCE')
   END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS `finance_ledger_entries_pending_withdrawal_guard`
 BEFORE INSERT ON finance_ledger_entries
 WHEN NEW.amount < 0
