@@ -172,7 +172,7 @@ export async function financeAuditForRequest(request: Request) {
   const cursor = decodeCursor(url.searchParams.get("cursor"));
   const search = likeSearchValue(query);
 
-  const result = await database().prepare(
+  const generalResultPromise = database().prepare(
     `WITH finance_events AS (
        SELECT
          'request:' || request_row.id AS id,
@@ -334,10 +334,47 @@ export async function financeAuditForRequest(request: Request) {
        FROM finance_deposit_product_events product_event
        JOIN finance_deposit_products product
          ON product.id = product_event.product_id
-        AND product.class_id = product_event.class_id
+         AND product.class_id = product_event.class_id
+     )
+     SELECT id, category, action, title, detail, actor_label, student_name,
+            amount, occurred_at, outcome, related_id,
+            previous_settings_json, settings_json
+     FROM finance_events
+     WHERE class_id = ?
+       AND (? = '' OR category = ?)
+       AND (
+         ? = ''
+         OR LOWER(title) LIKE ? ESCAPE '!'
+         OR LOWER(detail) LIKE ? ESCAPE '!'
+         OR LOWER(actor_label) LIKE ? ESCAPE '!'
+         OR LOWER(COALESCE(student_name, '')) LIKE ? ESCAPE '!'
+       )
+       AND (
+         occurred_at < ?
+         OR (occurred_at = ? AND id < ?)
+       )
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT ?`,
+  ).bind(
+    context.classroom.id,
+    category,
+    category,
+    query,
+    search,
+    search,
+    search,
+    search,
+    cursor.time,
+    cursor.time,
+    cursor.id,
+    limit + 1,
+  ).all<AuditRow>();
 
-       UNION ALL
-
+  // D1 limits the number of UNION terms in one statement. Keep the general
+  // ledger sources and stock lifecycle sources separate, then apply the same
+  // stable global ordering after both bounded queries return.
+  const stockResultPromise = database().prepare(
+    `WITH finance_events AS (
        SELECT
          'stock-market:' || market_event.id AS id,
          market_event.class_id AS class_id,
@@ -393,6 +430,51 @@ export async function financeAuditForRequest(request: Request) {
          NULL AS previous_settings_json,
          NULL AS settings_json
        FROM finance_stock_events stock_event
+
+       UNION ALL
+
+       SELECT
+         'stock-liquidation-event:' || liquidation_event.id AS id,
+         liquidation_event.class_id AS class_id,
+         'stock' AS category,
+         'stock_liquidation_' || liquidation_event.action AS action,
+         CASE liquidation_event.action
+           WHEN 'started' THEN '비상 청산 시작'
+           WHEN 'chunk_completed' THEN '비상 청산 분할 처리'
+           WHEN 'completed' THEN '비상 청산 완료'
+           ELSE '비상 청산 취소'
+         END AS title,
+         CASE liquidation_event.action
+           WHEN 'started' THEN liquidation_event.reason
+             || ' · 전체 ' || liquidation_event.initial_quantity || '주'
+           WHEN 'chunk_completed' THEN liquidation_event.reason
+             || ' · ' || (liquidation_event.chunk_index + 1) || '차 처리 '
+             || liquidation_event.quantity_delta || '주 · 남은 '
+             || liquidation_event.remaining_quantity || '주'
+           WHEN 'completed' THEN liquidation_event.reason
+             || ' · 전체 ' || liquidation_event.sold_quantity || '주 처리 완료'
+           ELSE liquidation_event.reason
+             || ' · 처리 ' || liquidation_event.sold_quantity || '주 · 남은 '
+             || liquidation_event.remaining_quantity || '주'
+         END AS detail,
+         '담임교사' AS actor_label,
+         student.official_name AS student_name,
+         CASE liquidation_event.action
+           WHEN 'chunk_completed' THEN liquidation_event.wallet_delta
+           ELSE NULL
+         END AS amount,
+         liquidation_event.created_at AS occurred_at,
+         CASE liquidation_event.action
+           WHEN 'started' THEN 'pending'
+           WHEN 'cancelled' THEN 'cancelled'
+           ELSE 'completed'
+         END AS outcome,
+         liquidation_event.operation_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_liquidation_events liquidation_event
+       JOIN students student ON student.id = liquidation_event.student_id
+         AND student.class_id = liquidation_event.class_id
 
        UNION ALL
 
@@ -461,8 +543,22 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
-  const hasMore = result.results.length > limit;
-  const rows = result.results.slice(0, limit);
+  const [generalResult, stockResult] = await Promise.all([
+    generalResultPromise,
+    stockResultPromise,
+  ]);
+  const mergedResults = [
+    ...generalResult.results,
+    ...stockResult.results,
+  ].sort((left, right) => {
+    const timeDifference = Number(right.occurred_at) - Number(left.occurred_at);
+    if (timeDifference !== 0) return timeDifference;
+    if (left.id === right.id) return 0;
+    return left.id < right.id ? 1 : -1;
+  });
+
+  const hasMore = mergedResults.length > limit;
+  const rows = mergedResults.slice(0, limit);
   const last = rows.at(-1) ?? null;
   return {
     events: rows.map((row) => ({

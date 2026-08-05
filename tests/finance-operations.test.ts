@@ -596,3 +596,49 @@ test("stock news publication and closure remain append-only audit events", async
   assert.match(audit, /news_event\.reason/);
   assert.doesNotMatch(audit, /FROM finance_stock_news news\b/);
 });
+
+test("teacher liquidation progress and cancellation remain searchable audit events", async () => {
+  const migrationDirectory = new URL("../drizzle/", import.meta.url);
+  const migrationName = (await readdir(migrationDirectory))
+    .find((name) => /^0029_.+\.sql$/u.test(name));
+  assert.ok(migrationName, "The liquidation event migration must exist.");
+  const [schema, migration, runtime, audit, d1Test] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL(migrationName, migrationDirectory), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+    readFile(
+      new URL("../tests/finance-stock-liquidation-chunks-d1.test.mjs", import.meta.url),
+      "utf8",
+    ),
+  ]);
+
+  for (const source of [schema, migration, runtime]) {
+    assert.match(source, /finance_stock_liquidation_events/);
+    assert.match(source, /started/);
+    assert.match(source, /chunk_completed/);
+    assert.match(source, /completed/);
+    assert.match(source, /cancelled/);
+  }
+  for (const source of [migration, runtime]) {
+    assert.match(source, /finance_stock_liquidation_events_insert_guard/);
+    assert.match(source, /finance_stock_liquidation_events_update_guard/);
+    assert.match(source, /finance_stock_liquidation_events_delete_guard/);
+    assert.match(source, /finance_stock_liquidation_capture_started_event/);
+    assert.match(source, /finance_stock_liquidation_capture_progress_events/);
+    assert.match(source, /finance_stock_liquidation_capture_cancelled_event/);
+    assert.match(source, /INSERT OR IGNORE INTO `?finance_stock_liquidation_events`?/);
+    assert.match(source, /FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE/);
+    assert.match(
+      source,
+      /NEW\.`?id`? != 'finance:stock-liquidation-event:'[\s\S]*NEW\.`?action`?/,
+    );
+  }
+  assert.match(audit, /FROM finance_stock_liquidation_events liquidation_event/);
+  assert.match(audit, /'stock_liquidation_' \|\| liquidation_event\.action/);
+  assert.match(audit, /liquidation_event\.reason/);
+  assert.match(audit, /student\.official_name AS student_name/);
+  assert.match(d1Test, /TEST_COMPLETED_LIQUIDATION_EVENT_FAILURE/);
+  assert.match(d1Test, /TEST_CANCELLED_LIQUIDATION_EVENT_FAILURE/);
+  assert.match(d1Test, /INSERT OR REPLACE INTO finance_stock_liquidation_events/);
+});

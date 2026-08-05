@@ -2053,3 +2053,141 @@ export const financeStockLiquidationChunks = sqliteTable(
     ),
   ],
 );
+
+export const financeStockLiquidationEvents = sqliteTable(
+  "finance_stock_liquidation_events",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull(),
+    operationId: text("operation_id").notNull(),
+    revision: integer("revision").notNull(),
+    action: text("action").notNull(),
+    stockId: text("stock_id").notNull(),
+    studentId: text("student_id").notNull().references(() => students.id),
+    actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+    chunkId: text("chunk_id").references(() => financeStockLiquidationChunks.id),
+    chunkIndex: integer("chunk_index"),
+    tradeId: text("trade_id").references(() => financeStockTrades.id),
+    requestIdempotencyKey: text("request_idempotency_key").notNull(),
+    requestPayloadHash: text("request_payload_hash").notNull(),
+    reason: text("reason").notNull(),
+    initialQuantity: integer("initial_quantity").notNull(),
+    remainingQuantity: integer("remaining_quantity").notNull(),
+    soldQuantity: integer("sold_quantity").notNull(),
+    completedChunkCount: integer("completed_chunk_count").notNull(),
+    quantityDelta: integer("quantity_delta").notNull(),
+    walletDelta: integer("wallet_delta").notNull(),
+    totalGrossAmount: integer("total_gross_amount").notNull(),
+    totalFeeAmount: integer("total_fee_amount").notNull(),
+    totalWalletDelta: integer("total_wallet_delta").notNull(),
+    totalCostBasisRemoved: integer("total_cost_basis_removed").notNull(),
+    totalRealizedGain: integer("total_realized_gain").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("finance_stock_liquidation_events_operation_revision_action_uq").on(
+      table.operationId,
+      table.revision,
+      table.action,
+    ),
+    uniqueIndex("finance_stock_liquidation_events_class_action_request_uq").on(
+      table.classId,
+      table.action,
+      table.requestIdempotencyKey,
+    ),
+    index("finance_stock_liquidation_events_class_created_idx").on(
+      table.classId,
+      table.createdAt,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.operationId, table.classId],
+      foreignColumns: [
+        financeStockLiquidationOperations.id,
+        financeStockLiquidationOperations.classId,
+      ],
+      name: "finance_stock_liquidation_events_operation_class_fk",
+    }),
+    foreignKey({
+      columns: [table.stockId, table.classId],
+      foreignColumns: [financeStocks.id, financeStocks.classId],
+      name: "finance_stock_liquidation_events_stock_class_fk",
+    }),
+    check(
+      "finance_stock_liquidation_events_id_ck",
+      sql`${table.id} = 'finance:stock-liquidation-event:'
+        || ${table.operationId} || ':' || ${table.revision}
+        || ':' || ${table.action}`,
+    ),
+    check(
+      "finance_stock_liquidation_events_text_ck",
+      sql`LENGTH(TRIM(${table.requestIdempotencyKey})) BETWEEN 8 AND 200
+        AND LENGTH(TRIM(${table.requestPayloadHash})) BETWEEN 8 AND 500
+        AND LENGTH(TRIM(${table.reason})) BETWEEN 2 AND 300`,
+    ),
+    check(
+      "finance_stock_liquidation_events_action_ck",
+      sql`${table.action} IN (
+        'started', 'chunk_completed', 'completed', 'cancelled'
+      )`,
+    ),
+    check(
+      "finance_stock_liquidation_events_amount_ck",
+      sql`${table.revision} BETWEEN 0 AND 3
+        AND ${table.initialQuantity} BETWEEN 1 AND 1000000000
+        AND ${table.remainingQuantity} BETWEEN 0 AND 1000000000
+        AND ${table.soldQuantity} BETWEEN 0 AND 1000000000
+        AND ${table.initialQuantity}
+          = ${table.remainingQuantity} + ${table.soldQuantity}
+        AND ${table.completedChunkCount} BETWEEN 0 AND 2
+        AND ${table.quantityDelta} BETWEEN 0 AND 1000000000
+        AND ${table.walletDelta} BETWEEN 0 AND 1000000000
+        AND ${table.totalGrossAmount} BETWEEN 0 AND 1111111111
+        AND ${table.totalFeeAmount} BETWEEN 0 AND ${table.totalGrossAmount}
+        AND ${table.totalWalletDelta}
+          = ${table.totalGrossAmount} - ${table.totalFeeAmount}
+        AND ${table.totalWalletDelta} BETWEEN 0 AND 1000000000
+        AND ${table.totalCostBasisRemoved} BETWEEN 0 AND 1000000000
+        AND ${table.totalRealizedGain}
+          = ${table.totalWalletDelta} - ${table.totalCostBasisRemoved}
+        AND ${table.createdAt} >= 0`,
+    ),
+    check(
+      "finance_stock_liquidation_events_state_ck",
+      sql`(${table.action} = 'started'
+          AND ${table.revision} = 0
+          AND ${table.chunkId} IS NULL AND ${table.chunkIndex} IS NULL
+          AND ${table.tradeId} IS NULL
+          AND ${table.remainingQuantity} > 0 AND ${table.soldQuantity} = 0
+          AND ${table.completedChunkCount} = 0
+          AND ${table.quantityDelta} = 0 AND ${table.walletDelta} = 0
+          AND ${table.totalGrossAmount} = 0
+          AND ${table.totalFeeAmount} = 0
+          AND ${table.totalWalletDelta} = 0
+          AND ${table.totalCostBasisRemoved} = 0
+          AND ${table.totalRealizedGain} = 0)
+        OR (${table.action} = 'chunk_completed'
+          AND ${table.chunkId} IS NOT NULL AND ${table.chunkIndex} IS NOT NULL
+          AND ${table.tradeId} IS NOT NULL
+          AND ${table.revision} = ${table.completedChunkCount}
+          AND ${table.completedChunkCount} BETWEEN 1 AND 2
+          AND ${table.soldQuantity} > 0
+          AND ${table.chunkIndex} = ${table.completedChunkCount} - 1
+          AND ${table.quantityDelta} > 0 AND ${table.walletDelta} > 0)
+        OR (${table.action} = 'completed'
+          AND ${table.chunkId} IS NOT NULL AND ${table.chunkIndex} IS NOT NULL
+          AND ${table.tradeId} IS NOT NULL
+          AND ${table.revision} = ${table.completedChunkCount}
+          AND ${table.completedChunkCount} BETWEEN 1 AND 2
+          AND ${table.chunkIndex} = ${table.completedChunkCount} - 1
+          AND ${table.remainingQuantity} = 0 AND ${table.soldQuantity} > 0
+          AND ${table.quantityDelta} = 0 AND ${table.walletDelta} = 0)
+        OR (${table.action} = 'cancelled'
+          AND ${table.chunkId} IS NULL AND ${table.chunkIndex} IS NULL
+          AND ${table.tradeId} IS NULL
+          AND ${table.revision} = ${table.completedChunkCount} + 1
+          AND ${table.remainingQuantity} > 0
+          AND ${table.quantityDelta} = 0 AND ${table.walletDelta} = 0)`,
+    ),
+  ],
+);

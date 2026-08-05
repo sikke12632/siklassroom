@@ -2,6 +2,7 @@ import {
   cancelFinanceStockLiquidation,
   liquidateFinanceStockHolding,
 } from "../../lib/finance-stocks";
+import { financeAuditForRequest } from "../../lib/finance-audit";
 import { runtimeEnv } from "../../lib/database";
 import { ApiError } from "../../lib/responses";
 
@@ -142,6 +143,9 @@ const stockChunkLiquidationWorker = {
         }
         hook.release();
         return Response.json({ released: true });
+      }
+      if (url.pathname === "/audit") {
+        return Response.json(await financeAuditForRequest(request));
       }
       const input = await request.json() as Record<string, unknown>;
       const pauseAfterRootRead = request.headers.get(

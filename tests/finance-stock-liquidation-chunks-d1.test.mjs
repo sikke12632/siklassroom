@@ -1687,6 +1687,37 @@ test("teacher stock liquidation rolls back a failed chunk and resumes with one f
     assert.equal(startResult.operation.totalPayoutAmount, 900_000_000);
     const operationId = startResult.operation.id;
     assert.equal(typeof operationId, "string");
+    assert.deepEqual(lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT revision, action, remaining_quantity, sold_quantity,
+              completed_chunk_count, quantity_delta, wallet_delta,
+              total_wallet_delta
+       FROM finance_stock_liquidation_events
+       WHERE operation_id = '${operationId}'
+       ORDER BY revision, action;`,
+    )), [
+      {
+        revision: 0,
+        action: "started",
+        remaining_quantity: 11,
+        sold_quantity: 0,
+        completed_chunk_count: 0,
+        quantity_delta: 0,
+        wallet_delta: 0,
+        total_wallet_delta: 0,
+      },
+      {
+        revision: 1,
+        action: "chunk_completed",
+        remaining_quantity: 1,
+        sold_quantity: 10,
+        completed_chunk_count: 1,
+        quantity_delta: 10,
+        wallet_delta: 900_000_000,
+        total_wallet_delta: 900_000_000,
+      },
+    ]);
 
     executeSql(configPath, persistPath, `
       CREATE TRIGGER test_fail_second_liquidation_chunk_progress
@@ -1784,6 +1815,37 @@ test("teacher stock liquidation rolls back a failed chunk and resumes with one f
       );
     `);
 
+    executeSql(configPath, persistPath, `
+      CREATE TRIGGER test_fail_completed_liquidation_event
+      BEFORE INSERT ON finance_stock_liquidation_events
+      WHEN NEW.operation_id = '${operationId}' AND NEW.action = 'completed'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_COMPLETED_LIQUIDATION_EVENT_FAILURE');
+      END;
+    `);
+    const failedEventResponse = await worker.fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify(continuationBody),
+    });
+    assert.equal(failedEventResponse.status, 503);
+    assert.equal(
+      (await failedEventResponse.json()).code,
+      "FINANCE_STOCK_LIQUIDATION_RETRY_REQUIRED",
+    );
+    executeSql(
+      configPath,
+      persistPath,
+      "DROP TRIGGER test_fail_completed_liquidation_event;",
+    );
+    assert.equal(lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT COUNT(*) AS count
+       FROM finance_stock_liquidation_events
+       WHERE operation_id = '${operationId}';`,
+    ))[0].count, 2);
+
     const lostResponse = await worker.fetch(endpoint, {
       method: "POST",
       headers: {
@@ -1852,6 +1914,58 @@ test("teacher stock liquidation rolls back a failed chunk and resumes with one f
     assert.equal(retryResult.trade.netAmount, 90_000_000);
     assertOperationResponse(retryResult.operation);
     assert.deepEqual(operationAndProjectionState(configPath, persistPath), completedState);
+    assert.deepEqual(lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT revision, action, remaining_quantity, sold_quantity,
+              completed_chunk_count, quantity_delta, wallet_delta,
+              total_wallet_delta
+       FROM finance_stock_liquidation_events
+       WHERE operation_id = '${operationId}'
+       ORDER BY revision,
+         CASE action WHEN 'chunk_completed' THEN 0 ELSE 1 END;`,
+    )), [
+      {
+        revision: 0,
+        action: "started",
+        remaining_quantity: 11,
+        sold_quantity: 0,
+        completed_chunk_count: 0,
+        quantity_delta: 0,
+        wallet_delta: 0,
+        total_wallet_delta: 0,
+      },
+      {
+        revision: 1,
+        action: "chunk_completed",
+        remaining_quantity: 1,
+        sold_quantity: 10,
+        completed_chunk_count: 1,
+        quantity_delta: 10,
+        wallet_delta: 900_000_000,
+        total_wallet_delta: 900_000_000,
+      },
+      {
+        revision: 2,
+        action: "chunk_completed",
+        remaining_quantity: 0,
+        sold_quantity: 11,
+        completed_chunk_count: 2,
+        quantity_delta: 1,
+        wallet_delta: 90_000_000,
+        total_wallet_delta: 990_000_000,
+      },
+      {
+        revision: 2,
+        action: "completed",
+        remaining_quantity: 0,
+        sold_quantity: 11,
+        completed_chunk_count: 2,
+        quantity_delta: 0,
+        wallet_delta: 0,
+        total_wallet_delta: 990_000_000,
+      },
+    ]);
 
     const chunkRows = lastResults(executeSql(
       configPath,
@@ -2038,6 +2152,35 @@ test("a teacher can cancel a running liquidation without losing its completed ch
       reason: "The teacher stopped this recovery operation",
       idempotencyKey: "stock-chunk-liquidation-cancel-1",
     };
+    executeSql(configPath, persistPath, `
+      CREATE TRIGGER test_fail_cancelled_liquidation_event
+      BEFORE INSERT ON finance_stock_liquidation_events
+      WHEN NEW.operation_id = '${startResult.operation.id}'
+        AND NEW.action = 'cancelled'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_CANCELLED_LIQUIDATION_EVENT_FAILURE');
+      END;
+    `);
+    const failedCancelResponse = await worker.fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify(cancelBody),
+    });
+    assert.ok(failedCancelResponse.status >= 500);
+    executeSql(
+      configPath,
+      persistPath,
+      "DROP TRIGGER test_fail_cancelled_liquidation_event;",
+    );
+    assert.deepEqual(lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT operation.status, operation.revision,
+              (SELECT COUNT(*) FROM finance_stock_liquidation_events event
+               WHERE event.operation_id = operation.id) AS event_count
+       FROM finance_stock_liquidation_operations operation
+       WHERE operation.id = '${startResult.operation.id}';`,
+    )), [{ status: "running", revision: 1, event_count: 2 }]);
     const cancelResponse = await worker.fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
@@ -2100,6 +2243,109 @@ test("a teacher can cancel a running liquidation without losing its completed ch
       transaction_count: 3,
       entry_count: 6,
     });
+    const cancellationEvents = lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT id, revision, action, reason, request_idempotency_key,
+              remaining_quantity, sold_quantity, completed_chunk_count,
+              quantity_delta, wallet_delta, total_wallet_delta
+       FROM finance_stock_liquidation_events
+       WHERE operation_id = '${startResult.operation.id}'
+       ORDER BY revision, action;`,
+    ));
+    assert.deepEqual(cancellationEvents.map(({ id, ...event }) => event), [
+      {
+        revision: 0,
+        action: "started",
+        reason: "Start a liquidation that will be cancelled",
+        request_idempotency_key: "stock-chunk-liquidation-cancel-root",
+        remaining_quantity: 11,
+        sold_quantity: 0,
+        completed_chunk_count: 0,
+        quantity_delta: 0,
+        wallet_delta: 0,
+        total_wallet_delta: 0,
+      },
+      {
+        revision: 1,
+        action: "chunk_completed",
+        reason: "Start a liquidation that will be cancelled",
+        request_idempotency_key: `${startResult.operation.id}:chunk:0`,
+        remaining_quantity: 1,
+        sold_quantity: 10,
+        completed_chunk_count: 1,
+        quantity_delta: 10,
+        wallet_delta: 900_000_000,
+        total_wallet_delta: 900_000_000,
+      },
+      {
+        revision: 2,
+        action: "cancelled",
+        reason: "The teacher stopped this recovery operation",
+        request_idempotency_key: "stock-chunk-liquidation-cancel-1",
+        remaining_quantity: 1,
+        sold_quantity: 10,
+        completed_chunk_count: 1,
+        quantity_delta: 0,
+        wallet_delta: 0,
+        total_wallet_delta: 900_000_000,
+      },
+    ]);
+    for (const event of cancellationEvents) {
+      assert.equal(
+        event.id,
+        `finance:stock-liquidation-event:${startResult.operation.id}:${event.revision}:${event.action}`,
+      );
+    }
+    const auditResponse = await worker.fetch(
+      "http://test.local/audit?classId=class-chunked&category=stock&query=stopped%20this%20recovery",
+      { headers: { cookie } },
+    );
+    const auditResult = await auditResponse.json();
+    assert.equal(auditResponse.status, 200, JSON.stringify(auditResult));
+    assert.deepEqual(auditResult.events.map((event) => ({
+      action: event.action,
+      outcome: event.outcome,
+      studentName: event.studentName,
+      relatedId: event.relatedId,
+    })), [{
+      action: "stock_liquidation_cancelled",
+      outcome: "cancelled",
+      studentName: "Chunked Student",
+      relatedId: startResult.operation.id,
+    }]);
+
+    const firstAuditPageResponse = await worker.fetch(
+      "http://test.local/audit?classId=class-chunked&category=stock&limit=2",
+      { headers: { cookie } },
+    );
+    const firstAuditPage = await firstAuditPageResponse.json();
+    assert.equal(firstAuditPageResponse.status, 200, JSON.stringify(firstAuditPage));
+    assert.equal(firstAuditPage.events.length, 2);
+    assert.ok(firstAuditPage.nextCursor);
+    const secondAuditPageResponse = await worker.fetch(
+      `http://test.local/audit?classId=class-chunked&category=stock&limit=2&cursor=${encodeURIComponent(firstAuditPage.nextCursor)}`,
+      { headers: { cookie } },
+    );
+    const secondAuditPage = await secondAuditPageResponse.json();
+    assert.equal(secondAuditPageResponse.status, 200, JSON.stringify(secondAuditPage));
+    assert.equal(secondAuditPage.events.length, 2);
+    const pagedAuditEvents = [
+      ...firstAuditPage.events,
+      ...secondAuditPage.events,
+    ];
+    assert.equal(new Set(pagedAuditEvents.map((event) => event.id)).size, 4);
+    for (let index = 1; index < pagedAuditEvents.length; index += 1) {
+      const previous = pagedAuditEvents[index - 1];
+      const current = pagedAuditEvents[index];
+      const previousTime = Date.parse(previous.occurredAt);
+      const currentTime = Date.parse(current.occurredAt);
+      assert.ok(
+        previousTime > currentTime
+          || (previousTime === currentTime && previous.id > current.id),
+        "Audit pagination must preserve the global time/id ordering across query groups.",
+      );
+    }
 
     const duplicateCancelResponse = await worker.fetch(endpoint, {
       method: "POST",
@@ -2161,6 +2407,39 @@ test("a teacher can cancel a running liquidation without losing its completed ch
       winningCancellation,
       "A losing cancellation must not claim success or overwrite the winner.",
     );
+    assert.equal(lastResults(executeSql(
+      configPath,
+      persistPath,
+      `SELECT COUNT(*) AS count FROM finance_stock_liquidation_events
+       WHERE operation_id = '${startResult.operation.id}';`,
+    ))[0].count, 3);
+
+    const eventUpdate = executeSql(
+      configPath,
+      persistPath,
+      `UPDATE finance_stock_liquidation_events
+       SET reason = 'Changed history'
+       WHERE operation_id = '${startResult.operation.id}' AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(eventUpdate.output, /FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE/);
+    const eventReplace = executeSql(
+      configPath,
+      persistPath,
+      `INSERT OR REPLACE INTO finance_stock_liquidation_events
+       SELECT 'finance:stock-liquidation-event:forged', class_id, operation_id,
+              revision, action, stock_id, student_id, actor_teacher_id,
+              chunk_id, chunk_index, trade_id, request_idempotency_key,
+              request_payload_hash, reason, initial_quantity,
+              remaining_quantity, sold_quantity, completed_chunk_count,
+              quantity_delta, wallet_delta, total_gross_amount,
+              total_fee_amount, total_wallet_delta, total_cost_basis_removed,
+              total_realized_gain, created_at
+       FROM finance_stock_liquidation_events
+       WHERE operation_id = '${startResult.operation.id}' AND revision = 0;`,
+      { expectSuccess: false },
+    );
+    assert.match(eventReplace.output, /FINANCE_STOCK_LIQUIDATION_EVENT_INVALID/);
 
     const resumeResponse = await worker.fetch(endpoint, {
       method: "POST",
