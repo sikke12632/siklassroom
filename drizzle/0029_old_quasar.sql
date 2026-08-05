@@ -92,12 +92,10 @@ CREATE TABLE `finance_stock_liquidation_events` (
           AND "finance_stock_liquidation_events"."revision" = "finance_stock_liquidation_events"."completed_chunk_count" + 1
           AND "finance_stock_liquidation_events"."remaining_quantity" > 0
           AND "finance_stock_liquidation_events"."quantity_delta" = 0 AND "finance_stock_liquidation_events"."wallet_delta" = 0))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_events_operation_revision_action_uq` ON `finance_stock_liquidation_events` (`operation_id`,`revision`,`action`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_events_class_action_request_uq` ON `finance_stock_liquidation_events` (`class_id`,`action`,`request_idempotency_key`);--> statement-breakpoint
-CREATE INDEX `finance_stock_liquidation_events_class_created_idx` ON `finance_stock_liquidation_events` (`class_id`,`created_at`,`id`);
---> statement-breakpoint
+CREATE INDEX `finance_stock_liquidation_events_class_created_idx` ON `finance_stock_liquidation_events` (`class_id`,`created_at`,`id`);--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_events_insert_guard`
 BEFORE INSERT ON `finance_stock_liquidation_events`
 BEGIN
@@ -232,16 +230,13 @@ BEGIN
           AND NEW.`created_at` = operation.`cancelled_at`)
       )
   ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_EVENT_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_events_update_guard`
 BEFORE UPDATE ON `finance_stock_liquidation_events`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_events_delete_guard`
 BEFORE DELETE ON `finance_stock_liquidation_events`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_EVENT_IMMUTABLE'); END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_liquidation_events` (
   `id`, `class_id`, `operation_id`, `revision`, `action`, `stock_id`,
   `student_id`, `actor_teacher_id`, `chunk_id`, `chunk_index`, `trade_id`,
@@ -259,8 +254,7 @@ SELECT 'finance:stock-liquidation-event:' || operation.`id`
        operation.`payload_hash`, operation.`intervention_reason`,
        operation.`initial_quantity`, operation.`initial_quantity`, 0, 0,
        0, 0, 0, 0, 0, 0, 0, operation.`created_at`
-FROM `finance_stock_liquidation_operations` operation;
---> statement-breakpoint
+FROM `finance_stock_liquidation_operations` operation;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_liquidation_events` (
   `id`, `class_id`, `operation_id`, `revision`, `action`, `stock_id`,
   `student_id`, `actor_teacher_id`, `chunk_id`, `chunk_index`, `trade_id`,
@@ -311,8 +305,7 @@ JOIN `finance_stock_liquidation_chunks` chunk
   ON chunk.`operation_id` = operation.`id`
  AND chunk.`class_id` = operation.`class_id`
 JOIN `finance_stock_trades` trade
-  ON trade.`id` = chunk.`trade_id` AND trade.`class_id` = chunk.`class_id`;
---> statement-breakpoint
+  ON trade.`id` = chunk.`trade_id` AND trade.`class_id` = chunk.`class_id`;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_liquidation_events` (
   `id`, `class_id`, `operation_id`, `revision`, `action`, `stock_id`,
   `student_id`, `actor_teacher_id`, `chunk_id`, `chunk_index`, `trade_id`,
@@ -340,8 +333,7 @@ JOIN `finance_stock_liquidation_chunks` chunk
  AND chunk.`chunk_index` = operation.`completed_chunk_count` - 1
 JOIN `finance_stock_trades` trade
   ON trade.`id` = chunk.`trade_id` AND trade.`class_id` = chunk.`class_id`
-WHERE operation.`status` = 'completed';
---> statement-breakpoint
+WHERE operation.`status` = 'completed';--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_liquidation_events` (
   `id`, `class_id`, `operation_id`, `revision`, `action`, `stock_id`,
   `student_id`, `actor_teacher_id`, `chunk_id`, `chunk_index`, `trade_id`,
@@ -363,8 +355,7 @@ SELECT 'finance:stock-liquidation-event:' || operation.`id` || ':'
        operation.`total_wallet_delta`, operation.`total_cost_basis_removed`,
        operation.`total_realized_gain`, operation.`cancelled_at`
 FROM `finance_stock_liquidation_operations` operation
-WHERE operation.`status` = 'cancelled';
---> statement-breakpoint
+WHERE operation.`status` = 'cancelled';--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_capture_started_event`
 AFTER INSERT ON `finance_stock_liquidation_operations`
 BEGIN
@@ -383,8 +374,7 @@ BEGIN
     NEW.`payload_hash`, NEW.`intervention_reason`, NEW.`initial_quantity`,
     NEW.`initial_quantity`, 0, 0, 0, 0, 0, 0, 0, 0, 0, NEW.`created_at`
   );
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_capture_progress_events`
 AFTER UPDATE OF `revision` ON `finance_stock_liquidation_operations`
 WHEN OLD.`status` = 'running' AND NEW.`revision` = OLD.`revision` + 1
@@ -443,8 +433,7 @@ BEGIN
   WHERE NEW.`status` = 'completed'
     AND chunk.`operation_id` = NEW.`id` AND chunk.`class_id` = NEW.`class_id`
     AND chunk.`chunk_index` = OLD.`next_chunk_index`;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_liquidation_capture_cancelled_event`
 AFTER UPDATE OF `revision` ON `finance_stock_liquidation_operations`
 WHEN OLD.`status` = 'running' AND NEW.`status` = 'cancelled'

@@ -23,11 +23,9 @@ CREATE TABLE `finance_stock_tick_attempts` (
         AND "finance_stock_tick_attempts"."failed_at" >= "finance_stock_tick_attempts"."scheduled_tick_at"
         AND "finance_stock_tick_attempts"."next_attempt_at" >= "finance_stock_tick_attempts"."failed_at"
         AND "finance_stock_tick_attempts"."capture_status" IN ('exact', 'legacy_latest'))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_tick_attempts_retry_attempt_uq` ON `finance_stock_tick_attempts` (`retry_id`,`attempt_count`);--> statement-breakpoint
-CREATE INDEX `finance_stock_tick_attempts_class_failed_idx` ON `finance_stock_tick_attempts` (`class_id`,`failed_at`,`id`);
---> statement-breakpoint
+CREATE INDEX `finance_stock_tick_attempts_class_failed_idx` ON `finance_stock_tick_attempts` (`class_id`,`failed_at`,`id`);--> statement-breakpoint
 CREATE TRIGGER `finance_stock_tick_attempts_insert_guard`
 BEFORE INSERT ON `finance_stock_tick_attempts`
 BEGIN
@@ -51,16 +49,13 @@ BEGIN
 			AND retry.`last_failed_at` = NEW.`failed_at`
 			AND retry.`next_attempt_at` = NEW.`next_attempt_at`
 	) THEN RAISE(ABORT, 'FINANCE_STOCK_TICK_ATTEMPT_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_tick_attempts_update_guard`
 BEFORE UPDATE ON `finance_stock_tick_attempts`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_tick_attempts_delete_guard`
 BEFORE DELETE ON `finance_stock_tick_attempts`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_TICK_ATTEMPT_IMMUTABLE'); END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_tick_attempts` (
 	`id`, `class_id`, `retry_id`, `stock_id`, `stock_revision`,
 	`market_revision`, `scheduled_tick_at`, `stock_price_snapshot`,
@@ -74,8 +69,7 @@ SELECT 'finance:stock-tick-attempt:' || retry.`id`
 	 retry.`next_attempt_at`, 'legacy_latest'
 FROM `finance_stock_tick_retries` retry
 JOIN `finance_stocks` stock
-	ON stock.`id` = retry.`stock_id` AND stock.`class_id` = retry.`class_id`;
---> statement-breakpoint
+	ON stock.`id` = retry.`stock_id` AND stock.`class_id` = retry.`class_id`;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_tick_capture_first_attempt`
 AFTER INSERT ON `finance_stock_tick_retries`
 WHEN EXISTS (
@@ -104,8 +98,7 @@ BEGIN
 		NEW.`next_attempt_at`, 'exact'
 	FROM `finance_stocks` stock
 	WHERE stock.`id` = NEW.`stock_id` AND stock.`class_id` = NEW.`class_id`;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_tick_capture_later_attempt`
 AFTER UPDATE OF `attempt_count` ON `finance_stock_tick_retries`
 WHEN NEW.`attempt_count` <> OLD.`attempt_count` AND EXISTS (

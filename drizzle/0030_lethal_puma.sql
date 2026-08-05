@@ -24,12 +24,10 @@ CREATE TABLE `finance_stock_news_applications` (
         AND LENGTH(TRIM("finance_stock_news_applications"."news_payload_hash")) BETWEEN 8 AND 500
         AND "finance_stock_news_applications"."applied_at" >= 0
         AND "finance_stock_news_applications"."recorded_at" >= "finance_stock_news_applications"."applied_at")
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_news_applications_stock_news_uq` ON `finance_stock_news_applications` (`stock_id`,`news_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_news_applications_event_news_uq` ON `finance_stock_news_applications` (`stock_event_id`,`news_id`);--> statement-breakpoint
-CREATE INDEX `finance_stock_news_applications_class_applied_idx` ON `finance_stock_news_applications` (`class_id`,`applied_at`,`id`);
---> statement-breakpoint
+CREATE INDEX `finance_stock_news_applications_class_applied_idx` ON `finance_stock_news_applications` (`class_id`,`applied_at`,`id`);--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_applications_insert_guard`
 BEFORE INSERT ON `finance_stock_news_applications`
 BEGIN
@@ -83,16 +81,13 @@ BEGIN
           ))
       )
   ) THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_APPLICATION_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_applications_update_guard`
 BEFORE UPDATE ON `finance_stock_news_applications`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_applications_delete_guard`
 BEFORE DELETE ON `finance_stock_news_applications`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_APPLICATION_IMMUTABLE'); END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_news_applications` (
   `id`, `class_id`, `stock_id`, `stock_event_id`, `stock_event_revision`,
   `news_id`, `news_revision`, `link_status`, `impact_bps`,
@@ -125,8 +120,7 @@ JOIN `finance_stock_events` stock_event
     ORDER BY candidate.`created_at`, candidate.`id`
     LIMIT 1
   )
-WHERE published.`action` = 'published' AND published.`revision` = 0;
---> statement-breakpoint
+WHERE published.`action` = 'published' AND published.`revision` = 0;--> statement-breakpoint
 INSERT OR IGNORE INTO `system_migrations` (`key`, `applied_at`)
 VALUES (
   'finance-stock-news-applications-v1',

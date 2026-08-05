@@ -1,5 +1,4 @@
-DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;
---> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
     BEFORE INSERT ON finance_stock_trades
     BEGIN
@@ -103,10 +102,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
             AND holding.student_id = NEW.student_id
         ), 0) <> NEW.holding_revision_before
         THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -203,10 +200,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
           AND CAST(json_extract(transaction_row.metadata_json, '$.marketWasOpen') AS INTEGER) = market.is_open
           AND json_extract(transaction_row.metadata_json, '$.stockStatusSnapshot') = stock.status
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_finalize_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_finalize_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_finalize_guard
     BEFORE UPDATE OF status, posted_transaction_id,
       transaction_payload_hash, posted_at ON finance_stock_trades

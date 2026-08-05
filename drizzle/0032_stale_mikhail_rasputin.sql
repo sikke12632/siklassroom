@@ -15,11 +15,9 @@ CREATE TABLE `finance_deposit_maturity_attempts` (
         AND "finance_deposit_maturity_attempts"."failed_at" >= 0
         AND "finance_deposit_maturity_attempts"."next_attempt_at" >= "finance_deposit_maturity_attempts"."failed_at"
         AND "finance_deposit_maturity_attempts"."capture_status" IN ('exact', 'legacy_latest'))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_deposit_maturity_attempts_contract_attempt_uq` ON `finance_deposit_maturity_attempts` (`contract_id`,`attempt_count`);--> statement-breakpoint
-CREATE INDEX `finance_deposit_maturity_attempts_class_failed_idx` ON `finance_deposit_maturity_attempts` (`class_id`,`failed_at`,`id`);
---> statement-breakpoint
+CREATE INDEX `finance_deposit_maturity_attempts_class_failed_idx` ON `finance_deposit_maturity_attempts` (`class_id`,`failed_at`,`id`);--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_maturity_attempts_insert_guard`
 BEFORE INSERT ON `finance_deposit_maturity_attempts`
 BEGIN
@@ -35,16 +33,13 @@ BEGIN
 			AND retry.`last_failed_at` = NEW.`failed_at`
 			AND retry.`next_attempt_at` = NEW.`next_attempt_at`
 	) THEN RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_maturity_attempts_update_guard`
 BEFORE UPDATE ON `finance_deposit_maturity_attempts`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_maturity_attempts_delete_guard`
 BEFORE DELETE ON `finance_deposit_maturity_attempts`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_MATURITY_ATTEMPT_IMMUTABLE'); END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_deposit_maturity_attempts` (
 	`id`, `class_id`, `contract_id`, `attempt_count`, `error_code`,
 	`failed_at`, `next_attempt_at`, `capture_status`
@@ -54,8 +49,7 @@ SELECT 'finance:deposit-maturity-attempt:' || retry.`contract_id`
 	 retry.`class_id`, retry.`contract_id`, retry.`attempt_count`,
 	 retry.`last_error_code`, retry.`last_failed_at`, retry.`next_attempt_at`,
 	 'legacy_latest'
-FROM `finance_deposit_maturity_retries` retry;
---> statement-breakpoint
+FROM `finance_deposit_maturity_retries` retry;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_maturity_capture_first_attempt`
 AFTER INSERT ON `finance_deposit_maturity_retries`
 WHEN NOT EXISTS (
@@ -73,8 +67,7 @@ BEGIN
 		NEW.`class_id`, NEW.`contract_id`, NEW.`attempt_count`,
 		NEW.`last_error_code`, NEW.`last_failed_at`, NEW.`next_attempt_at`, 'exact'
 	);
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_maturity_capture_later_attempt`
 AFTER UPDATE OF `attempt_count` ON `finance_deposit_maturity_retries`
 WHEN NEW.`attempt_count` <> OLD.`attempt_count` AND NOT EXISTS (

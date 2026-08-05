@@ -48,12 +48,10 @@ CREATE TABLE `finance_stock_news_events` (
           OR ("finance_stock_news_events"."action" = 'expired'
             AND "finance_stock_news_events"."cancelled_at" IS NULL
             AND "finance_stock_news_events"."created_at" >= "finance_stock_news_events"."expires_at")))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_news_events_news_revision_uq` ON `finance_stock_news_events` (`news_id`,`revision`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_news_events_class_action_request_uq` ON `finance_stock_news_events` (`class_id`,`action`,`request_idempotency_key`) WHERE "finance_stock_news_events"."request_idempotency_key" IS NOT NULL;--> statement-breakpoint
-CREATE INDEX `finance_stock_news_events_class_created_idx` ON `finance_stock_news_events` (`class_id`,`created_at`);
---> statement-breakpoint
+CREATE INDEX `finance_stock_news_events_class_created_idx` ON `finance_stock_news_events` (`class_id`,`created_at`);--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_events_insert_guard`
 BEFORE INSERT ON `finance_stock_news_events`
 BEGIN
@@ -96,20 +94,17 @@ BEGIN
           AND NEW.`created_at` = news.`updated_at`)
       )
   ) THEN RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_events_update_guard`
 BEFORE UPDATE ON `finance_stock_news_events`
 BEGIN
   SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_IMMUTABLE');
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_events_delete_guard`
 BEFORE DELETE ON `finance_stock_news_events`
 BEGIN
   SELECT RAISE(ABORT, 'FINANCE_STOCK_NEWS_EVENT_IMMUTABLE');
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_news_events` (
   `id`, `class_id`, `news_id`, `revision`, `action`, `title`, `content`,
   `impact_bps`, `reason`, `request_idempotency_key`,
@@ -123,8 +118,7 @@ SELECT
   news.`idempotency_key`, news.`payload_hash`,
   'teacher', news.`created_by_teacher_id`, news.`expires_at`, NULL,
   news.`created_at`
-FROM `finance_stock_news` news;
---> statement-breakpoint
+FROM `finance_stock_news` news;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_stock_news_events` (
   `id`, `class_id`, `news_id`, `revision`, `action`, `title`, `content`,
   `impact_bps`, `reason`, `request_idempotency_key`,
@@ -150,8 +144,7 @@ SELECT
   news.`updated_by_actor_type`, news.`updated_by_teacher_id`,
   news.`expires_at`, news.`cancelled_at`, news.`updated_at`
 FROM `finance_stock_news` news
-WHERE news.`status` IN ('cancelled', 'expired');
---> statement-breakpoint
+WHERE news.`status` IN ('cancelled', 'expired');--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_capture_publish_event`
 AFTER INSERT ON `finance_stock_news`
 BEGIN
@@ -168,8 +161,7 @@ BEGIN
     'teacher', NEW.`created_by_teacher_id`, NEW.`expires_at`, NULL,
     NEW.`created_at`
   );
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_stock_news_capture_transition_event`
 AFTER UPDATE OF `status` ON `finance_stock_news`
 WHEN OLD.`status` = 'active' AND NEW.`status` IN ('cancelled', 'expired')

@@ -1,6 +1,5 @@
 -- Custom SQL migration file, put your code below! --
-DROP TRIGGER IF EXISTS finance_stocks_management_update_guard;
---> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stocks_management_update_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stocks_management_update_guard
     BEFORE UPDATE ON finance_stocks
     WHEN NEW.last_trade_id IS OLD.last_trade_id
@@ -66,10 +65,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stocks_management_update_guard
             FROM json_each(setting.denominations_json)
           ) = 0
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
     BEFORE INSERT ON finance_stock_trades
     BEGIN

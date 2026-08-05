@@ -15,8 +15,7 @@ CREATE TABLE `finance_deposit_maturity_retries` (
         AND "finance_deposit_maturity_retries"."created_at" >= 0
         AND "finance_deposit_maturity_retries"."updated_at" >= "finance_deposit_maturity_retries"."created_at"),
 	CONSTRAINT "finance_deposit_maturity_retries_error_ck" CHECK(LENGTH(TRIM("finance_deposit_maturity_retries"."last_error_code")) BETWEEN 1 AND 100)
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE INDEX `finance_deposit_maturity_retries_next_attempt_idx` ON `finance_deposit_maturity_retries` (`next_attempt_at`,`contract_id`);--> statement-breakpoint
 CREATE INDEX `finance_deposit_maturity_retries_class_idx` ON `finance_deposit_maturity_retries` (`class_id`,`next_attempt_at`);--> statement-breakpoint
 CREATE INDEX `finance_deposit_contracts_maturity_idx` ON `finance_deposit_contracts` (`matures_at`,`id`);--> statement-breakpoint

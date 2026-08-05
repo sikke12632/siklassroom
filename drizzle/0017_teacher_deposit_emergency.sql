@@ -1,5 +1,4 @@
-DROP TRIGGER IF EXISTS `finance_deposit_settlements_insert_guard`;
---> statement-breakpoint
+DROP TRIGGER IF EXISTS `finance_deposit_settlements_insert_guard`;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_settlements_insert_guard`
 BEFORE INSERT ON `finance_deposit_settlements`
 BEGIN

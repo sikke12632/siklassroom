@@ -38,8 +38,7 @@ CREATE TABLE `finance_stock_liquidation_chunks` (
             AND "finance_stock_liquidation_chunks"."holding_cost_basis_after" = 0)
           OR ("finance_stock_liquidation_chunks"."holding_quantity_after" > 0
             AND "finance_stock_liquidation_chunks"."holding_cost_basis_after" > 0)))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_chunks_operation_index_uq` ON `finance_stock_liquidation_chunks` (`operation_id`,`chunk_index`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_chunks_trade_uq` ON `finance_stock_liquidation_chunks` (`trade_id`);--> statement-breakpoint
 CREATE INDEX `finance_stock_liquidation_chunks_class_created_idx` ON `finance_stock_liquidation_chunks` (`class_id`,`created_at`);--> statement-breakpoint
@@ -187,14 +186,12 @@ CREATE TABLE `finance_stock_liquidation_operations` (
         AND "finance_stock_liquidation_operations"."updated_at" >= "finance_stock_liquidation_operations"."created_at"
         AND ("finance_stock_liquidation_operations"."completed_at" IS NULL OR "finance_stock_liquidation_operations"."completed_at" = "finance_stock_liquidation_operations"."updated_at")
         AND ("finance_stock_liquidation_operations"."cancelled_at" IS NULL OR "finance_stock_liquidation_operations"."cancelled_at" = "finance_stock_liquidation_operations"."updated_at"))
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_operations_id_class_uq` ON `finance_stock_liquidation_operations` (`id`,`class_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_operations_root_uq` ON `finance_stock_liquidation_operations` (`root_idempotency_key`);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_operations_running_uq` ON `finance_stock_liquidation_operations` (`class_id`,`stock_id`,`student_id`) WHERE "finance_stock_liquidation_operations"."status" = 'running';--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_liquidation_operations_cancellation_uq` ON `finance_stock_liquidation_operations` (`cancellation_idempotency_key`) WHERE "finance_stock_liquidation_operations"."cancellation_idempotency_key" IS NOT NULL;--> statement-breakpoint
-CREATE INDEX `finance_stock_liquidation_operations_class_status_idx` ON `finance_stock_liquidation_operations` (`class_id`,`status`,`updated_at`);
---> statement-breakpoint
+CREATE INDEX `finance_stock_liquidation_operations_class_status_idx` ON `finance_stock_liquidation_operations` (`class_id`,`status`,`updated_at`);--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_insert_guard
     BEFORE INSERT ON finance_stock_liquidation_operations
     BEGIN
@@ -260,10 +257,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_insert_guard
             <= 1000000000
           AND issuance.balance - NEW.expected_wallet_delta >= -1000000000
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_operations_update_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_operations_update_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_update_guard
     BEFORE UPDATE ON finance_stock_liquidation_operations
     BEGIN
@@ -372,14 +367,12 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_update_guard
           AND classroom.teacher_id = OLD.teacher_id
           AND classroom.status = 'active'
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_operations_delete_guard
     BEFORE DELETE ON finance_stock_liquidation_operations
     BEGIN
       SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_IMMUTABLE');
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_target_trade_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -413,8 +406,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_target_trade_guard
             transaction_row.metadata_json, '$.chunkIndex'
           ) AS INTEGER) = operation.next_chunk_index
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_IN_PROGRESS') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_wallet_guard
     BEFORE INSERT ON finance_ledger_entries
     WHEN EXISTS (
@@ -451,8 +443,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_wallet_guard
             transaction_row.metadata_json, '$.chunkIndex'
           ) AS INTEGER) = operation.next_chunk_index
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_IN_PROGRESS') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_ledger_entries_issuance_floor_guard
     BEFORE INSERT ON finance_ledger_entries
     WHEN NEW.amount < 0 AND NEW.balance_after < -1000000000
@@ -464,20 +455,13 @@ CREATE TRIGGER IF NOT EXISTS finance_ledger_entries_issuance_floor_guard
       )
     BEGIN
       SELECT RAISE(ABORT, 'FINANCE_ISSUANCE_BALANCE_LIMIT');
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_insert_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_trade_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_transaction_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_metadata_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_projection_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_totals_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_insert_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_trade_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_transaction_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_metadata_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_projection_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_liquidation_chunks_totals_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_insert_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -503,8 +487,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_insert_guard
           AND trade.student_id = operation.student_id
           AND trade.quantity = NEW.quantity
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_trade_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -532,8 +515,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_trade_guard
           AND trade.holding_revision_before
             = operation.snapshot_holding_revision + operation.completed_chunk_count
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_transaction_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -566,8 +548,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_transaction_guard
           AND json_extract(transaction_row.metadata_json, '$.interventionReason')
             = operation.intervention_reason
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_metadata_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -608,8 +589,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_metadata_guard
             transaction_row.metadata_json, '$.frozenDenominationStep'
           ) AS INTEGER) = operation.snapshot_denomination_step
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_projection_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -644,8 +624,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_projection_guard
           AND NEW.created_at = trade.posted_at
           AND NEW.created_at >= operation.updated_at
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_totals_guard
     BEFORE INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -677,8 +656,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_totals_guard
             )
           )
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_progress
     AFTER INSERT ON finance_stock_liquidation_chunks
     BEGIN
@@ -704,26 +682,18 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_progress
         AND status = 'running' AND next_chunk_index = NEW.chunk_index;
       SELECT CASE WHEN changes() <> 1
         THEN RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_OPERATION_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_update_guard
     BEFORE UPDATE ON finance_stock_liquidation_chunks
-    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END;
---> statement-breakpoint
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_liquidation_chunks_delete_guard
     BEFORE DELETE ON finance_stock_liquidation_chunks
-    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_initial_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_live_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_economics_guard;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_metadata_guard;
---> statement-breakpoint
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_LIQUIDATION_CHUNK_IMMUTABLE'); END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_insert_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_initial_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_live_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_economics_guard;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_liquidation_metadata_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_initial_guard
     BEFORE INSERT ON finance_stock_trades
     BEGIN
@@ -759,8 +729,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_initial_guard
             AND holding.student_id = NEW.student_id
         ), 0) <> NEW.holding_revision_before
         THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN NOT EXISTS (
@@ -847,8 +816,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_insert_guard
             )
           )
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_live_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -889,8 +857,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_live_guard
           AND student.status IN ('active', 'locked', 'reset_required', 'pending')
           AND stock.status IN ('active', 'sell_only', 'halted')
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_economics_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -929,8 +896,7 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_economics_guard
           AND NEW.holding_revision_before
             = operation.snapshot_holding_revision + operation.completed_chunk_count
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
+    END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_metadata_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -980,10 +946,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_liquidation_metadata_guard
             transaction_row.metadata_json, '$.frozenDenominationStep'
           ) AS INTEGER) = operation.snapshot_denomination_step
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_teacher_insert_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
     BEFORE INSERT ON finance_stock_trades
     WHEN EXISTS (
@@ -1101,10 +1065,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stock_trades_teacher_insert_guard
           AND CAST(json_extract(transaction_row.metadata_json, '$.marketWasOpen') AS INTEGER) = market.is_open
           AND json_extract(transaction_row.metadata_json, '$.stockStatusSnapshot') = stock.status
       ) THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stocks_inventory_update_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stocks_inventory_update_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stocks_inventory_update_guard
     BEFORE UPDATE ON finance_stocks
     WHEN NEW.last_trade_id IS NOT OLD.last_trade_id
@@ -1135,10 +1097,8 @@ CREATE TRIGGER IF NOT EXISTS finance_stocks_inventory_update_guard
             AND NEW.updated_at = trade.created_at
         )
         THEN RAISE(ABORT, 'FINANCE_STOCK_TRADE_STALE') END;
-    END;
---> statement-breakpoint
-DROP TRIGGER IF EXISTS finance_stock_trades_finalize_guard;
---> statement-breakpoint
+    END;--> statement-breakpoint
+DROP TRIGGER IF EXISTS finance_stock_trades_finalize_guard;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_stock_trades_finalize_guard
     BEFORE UPDATE OF status, posted_transaction_id,
       transaction_payload_hash, posted_at ON finance_stock_trades

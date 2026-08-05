@@ -26,11 +26,9 @@ CREATE TABLE `finance_deposit_product_lifecycle_events` (
             AND "finance_deposit_product_lifecycle_events"."source_event_id" IS NULL))
         AND json_valid("finance_deposit_product_lifecycle_events"."product_snapshot_json") = 1
         AND "finance_deposit_product_lifecycle_events"."created_at" >= 0)
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_deposit_product_lifecycle_product_revision_uq` ON `finance_deposit_product_lifecycle_events` (`product_id`,`revision`);--> statement-breakpoint
-CREATE INDEX `finance_deposit_product_lifecycle_class_created_idx` ON `finance_deposit_product_lifecycle_events` (`class_id`,`created_at`,`id`);
---> statement-breakpoint
+CREATE INDEX `finance_deposit_product_lifecycle_class_created_idx` ON `finance_deposit_product_lifecycle_events` (`class_id`,`created_at`,`id`);--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_product_lifecycle_insert_guard`
 BEFORE INSERT ON `finance_deposit_product_lifecycle_events`
 BEGIN
@@ -81,16 +79,13 @@ BEGIN
             = product.`term_weeks`
       ))
   ) THEN RAISE(ABORT, 'FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_INVALID') END;
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_product_lifecycle_update_guard`
 BEFORE UPDATE ON `finance_deposit_product_lifecycle_events`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE'); END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_product_lifecycle_delete_guard`
 BEFORE DELETE ON `finance_deposit_product_lifecycle_events`
-BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE'); END;
---> statement-breakpoint
+BEGIN SELECT RAISE(ABORT, 'FINANCE_DEPOSIT_PRODUCT_LIFECYCLE_IMMUTABLE'); END;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_deposit_product_lifecycle_events` (
   `id`, `class_id`, `product_id`, `revision`, `action`, `capture_status`,
   `source_event_id`, `product_snapshot_json`, `actor_teacher_id`, `created_at`
@@ -101,8 +96,7 @@ SELECT 'finance:deposit-product-lifecycle:' || source_event.`product_id`
        source_event.`action`, 'legacy_event', source_event.`id`,
        source_event.`product_snapshot_json`, source_event.`actor_teacher_id`,
        source_event.`created_at`
-FROM `finance_deposit_product_events` source_event;
---> statement-breakpoint
+FROM `finance_deposit_product_events` source_event;--> statement-breakpoint
 INSERT OR IGNORE INTO `finance_deposit_product_lifecycle_events` (
   `id`, `class_id`, `product_id`, `revision`, `action`, `capture_status`,
   `source_event_id`, `product_snapshot_json`, `actor_teacher_id`, `created_at`
@@ -123,8 +117,7 @@ SELECT 'finance:deposit-product-lifecycle:' || product.`id`
          'termWeeks', product.`term_weeks`
        ),
        product.`updated_by_teacher_id`, product.`updated_at`
-FROM `finance_deposit_products` product;
---> statement-breakpoint
+FROM `finance_deposit_products` product;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_product_capture_issued_lifecycle`
 AFTER INSERT ON `finance_deposit_products`
 BEGIN
@@ -145,8 +138,7 @@ BEGIN
     ),
     NEW.`updated_by_teacher_id`, NEW.`updated_at`
   );
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER `finance_deposit_product_capture_state_lifecycle`
 AFTER UPDATE OF `revision` ON `finance_deposit_products`
 WHEN NEW.`revision` = OLD.`revision` + 1 AND NEW.`is_open` <> OLD.`is_open`

@@ -21,8 +21,7 @@ CREATE TABLE `finance_stock_tick_retries` (
         AND "finance_stock_tick_retries"."created_at" >= 0
         AND "finance_stock_tick_retries"."updated_at" >= "finance_stock_tick_retries"."created_at"),
 	CONSTRAINT "finance_stock_tick_retries_error_ck" CHECK(LENGTH(TRIM("finance_stock_tick_retries"."last_error_code")) BETWEEN 1 AND 100)
-);
---> statement-breakpoint
+);--> statement-breakpoint
 CREATE UNIQUE INDEX `finance_stock_tick_retries_occurrence_uq` ON `finance_stock_tick_retries` (`class_id`,`stock_id`,`stock_revision`,`market_revision`,`scheduled_tick_at`);--> statement-breakpoint
 CREATE INDEX `finance_stock_tick_retries_next_attempt_idx` ON `finance_stock_tick_retries` (`next_attempt_at`,`class_id`);--> statement-breakpoint
 CREATE INDEX `finance_stock_tick_retries_class_idx` ON `finance_stock_tick_retries` (`class_id`,`updated_at`);--> statement-breakpoint

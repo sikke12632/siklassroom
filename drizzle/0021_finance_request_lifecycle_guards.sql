@@ -15,8 +15,7 @@ WHEN NEW.status = 'archived'
   )
 BEGIN
   SELECT RAISE(ABORT, 'FINANCE_REQUEST_PENDING_CLASS');
-END;
---> statement-breakpoint
+END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS finance_cash_requests_students_exclude_guard
 BEFORE UPDATE OF status ON students
 WHEN NEW.status = 'excluded'
