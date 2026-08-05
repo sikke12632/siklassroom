@@ -2061,6 +2061,65 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    const monthlyStartState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT
+         (SELECT COUNT(*) FROM class_job_choice_sessions
+          WHERE class_id = 'class-cash-archive'
+            AND closure_id = '${monthlyClosureSuccessBody.closureId}') AS session_count,
+         (SELECT COUNT(*) FROM audit_logs
+          WHERE class_id = 'class-cash-archive'
+            AND action = 'monthly_job_choice_started') AS audit_count;`,
+    ));
+    executeSql(persistPath, `
+      CREATE TRIGGER test_monthly_start_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'monthly_job_choice_started'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_MONTHLY_START_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const monthlyStartAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/start",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({}),
+      },
+    );
+    const monthlyStartAuditFailureBody = await monthlyStartAuditFailure.text();
+    assert.equal(monthlyStartAuditFailure.status, 500, monthlyStartAuditFailureBody);
+    assert.deepEqual(monthlyStartState(), [{ session_count: 0, audit_count: 0 }]);
+    executeSql(persistPath, "DROP TRIGGER test_monthly_start_audit_insert_failure;");
+
+    const monthlyStartSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/start",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({}),
+      },
+    );
+    const monthlyStartSuccessBody = await monthlyStartSuccess.json();
+    assert.equal(monthlyStartSuccess.status, 201, JSON.stringify(monthlyStartSuccessBody));
+    assert.equal(monthlyStartSuccessBody.idempotent, false);
+    assert.deepEqual(monthlyStartState(), [{ session_count: 1, audit_count: 1 }]);
+
+    const monthlyStartRetry = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/start",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({}),
+      },
+    );
+    const monthlyStartRetryBody = await monthlyStartRetry.json();
+    assert.equal(monthlyStartRetry.status, 200, JSON.stringify(monthlyStartRetryBody));
+    assert.equal(monthlyStartRetryBody.idempotent, true);
+    assert.equal(monthlyStartRetryBody.sessionId, monthlyStartSuccessBody.sessionId);
+    assert.deepEqual(monthlyStartState(), [{ session_count: 1, audit_count: 1 }]);
+
     executeSql(persistPath, `
       CREATE TRIGGER test_class_audit_insert_failure
       BEFORE INSERT ON audit_logs

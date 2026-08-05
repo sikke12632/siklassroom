@@ -819,6 +819,7 @@ function sessionOrder(context: MonthlyContext) {
 
 export async function startMonthlyJobChoice(input: {
   classId: string;
+  teacherId: string;
 }) {
   const context = await loadContext(input.classId);
   if (!context.sourcePeriod || !context.closure) {
@@ -854,43 +855,66 @@ export async function startMonthlyJobChoice(input: {
   const order = shuffleChoiceOrderWithinGrades(sessionOrder(context), secureRandomIndex);
   const sessionId = crypto.randomUUID();
   const now = Date.now();
-  const result = await database().prepare(
-    `INSERT OR IGNORE INTO class_job_choice_sessions (
-       id, class_id, closure_id, target_year, target_month, status, order_mode,
-       order_json, student_count_snapshot, job_setup_revision, revision,
-       confirmed_period_id, confirmed_by_teacher_id, confirmed_at, created_at, updated_at
-     )
-     SELECT ?, ?, ?, ?, ?, 'draft', 'shuffled', ?, ?, ?, 0,
-            NULL, NULL, NULL, ?, ?
-     WHERE EXISTS (
-       SELECT 1 FROM class_job_month_closures c
-       WHERE c.id = ? AND c.class_id = ? AND c.source_period_id = ?
-     )
-       AND EXISTS (
-         SELECT 1 FROM class_job_setup setup
-         WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
+  const db = database();
+  const batchResults = await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO class_job_choice_sessions (
+         id, class_id, closure_id, target_year, target_month, status, order_mode,
+         order_json, student_count_snapshot, job_setup_revision, revision,
+         confirmed_period_id, confirmed_by_teacher_id, confirmed_at, created_at, updated_at
        )
-       AND (SELECT COUNT(*) FROM students s
-            WHERE s.class_id = ? AND s.status <> 'excluded') = ?`,
-  ).bind(
-    sessionId,
-    input.classId,
-    context.closure.id,
-    target.year,
-    target.month,
-    JSON.stringify(order),
-    order.length,
-    Number(context.setup.revision),
-    now,
-    now,
-    context.closure.id,
-    input.classId,
-    context.sourcePeriod.id,
-    input.classId,
-    Number(context.setup.revision),
-    input.classId,
-    order.length,
-  ).run();
+       SELECT ?, ?, ?, ?, ?, 'draft', 'shuffled', ?, ?, ?, 0,
+              NULL, NULL, NULL, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_month_closures c
+         WHERE c.id = ? AND c.class_id = ? AND c.source_period_id = ?
+       )
+         AND EXISTS (
+           SELECT 1 FROM class_job_setup setup
+           WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
+         )
+         AND (SELECT COUNT(*) FROM students s
+              WHERE s.class_id = ? AND s.status <> 'excluded') = ?`,
+    ).bind(
+      sessionId,
+      input.classId,
+      context.closure.id,
+      target.year,
+      target.month,
+      JSON.stringify(order),
+      order.length,
+      Number(context.setup.revision),
+      now,
+      now,
+      context.closure.id,
+      input.classId,
+      context.sourcePeriod.id,
+      input.classId,
+      Number(context.setup.revision),
+      input.classId,
+      order.length,
+    ),
+    db.prepare(
+      `INSERT INTO audit_logs (
+         id, teacher_id, class_id, student_id, action, detail, created_at
+       )
+       SELECT ?, ?, ?, NULL, 'monthly_job_choice_started', ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM class_job_choice_sessions
+         WHERE id = ? AND class_id = ? AND closure_id = ?
+       )`,
+    ).bind(
+      crypto.randomUUID(),
+      input.teacherId,
+      input.classId,
+      JSON.stringify({ sessionId, idempotent: false }),
+      now,
+      sessionId,
+      input.classId,
+      context.closure.id,
+    ),
+  ]);
+  const result = batchResults[0];
   if (!result.meta.changes) {
     const raced = await sessionForClosure(context.closure.id);
     if (!raced) {
