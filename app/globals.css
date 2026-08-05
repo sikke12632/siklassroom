@@ -472,7 +472,7 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .admin-sidebar nav button.active { box-shadow: inset 3px 0 var(--color-primary); }
 .admin-sidebar nav svg { width: 19px; }
 .admin-account { display: grid; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid color-mix(in srgb, var(--color-sidebar-text) 16%, transparent); }
-.admin-account > button { display: flex; align-items: center; gap: 8px; min-height: 42px; border: 0; color: var(--color-sidebar-muted); background: transparent; }
+.admin-account > button { display: flex; align-items: center; gap: 8px; min-height: 44px; border: 0; color: var(--color-sidebar-muted); background: transparent; }
 .admin-account > button svg { width: 18px; }
 .admin-main { min-width: 0; width: min(100%, 1240px); padding: 42px clamp(22px, 4vw, 54px) 80px; }
 .admin-main > header { margin-bottom: 24px; }
@@ -492,8 +492,8 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .admin-table-wrap th { color: var(--color-text-muted); font-size: var(--text-xs); }
 .admin-table-wrap td { font-size: var(--text-sm); }
 .admin-table-wrap td small { display: block; margin-top: 3px; color: var(--color-text-muted); }
-.admin-table-wrap td > input[type="number"] { width: 86px; min-height: 40px; }
-.admin-table-wrap td button, .admin-review-actions button, .one-time-secret button { min-height: 36px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 6px 10px; color: var(--color-info); background: var(--color-surface-raised); font-weight: 600; }
+.admin-table-wrap td > input[type="number"] { width: 86px; min-height: 44px; }
+.admin-table-wrap td button, .admin-review-actions button, .one-time-secret button { min-height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 8px 10px; color: var(--color-info); background: var(--color-surface-raised); font-weight: 600; }
 .danger-link { color: var(--color-danger) !important; }
 .one-time-secret { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; padding: 16px; border: 1px solid var(--color-warning); border-radius: var(--radius-md); background: var(--color-warning-soft); }
 .one-time-secret code { flex: 1; font-size: var(--text-lg); font-weight: 700; letter-spacing: .04em; }

@@ -54,6 +54,24 @@ test("job setup and assignment controls retain a 44px touch target", async () =>
   assert.match(styles, /\.calendar-month > header button \{[^}]*min-width: 44px;[^}]*min-height: 44px;/);
 });
 
+test("admin filters and job template controls have names and 44px touch targets", async () => {
+  const [portal, styles] = await Promise.all([
+    readFile(new URL("../app/ops/[operatorPath]/AdminPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /aria-label="교사 이메일 검색"/);
+  assert.match(portal, /aria-label="교사 이용 상태 필터"/);
+  assert.match(portal, /aria-label=\{`\$\{item\.entered_name\} 요청에 연결할 공식 학교`\}/);
+  assert.match(portal, /aria-label=\{`\$\{item\.name\} 기본 직업 활성화`\}/);
+  assert.match(portal, /aria-label=\{`\$\{item\.name\} 권장 최소 인원`\}/);
+  assert.match(portal, /aria-label=\{`\$\{item\.name\} 권장 최대 인원`\}/);
+  assert.match(portal, /aria-label=\{`\$\{item\.name\} 기본 우선순위`\}/);
+  assert.match(portal, /aria-label=\{`\$\{item\.name\} 설정 저장`\}/);
+  assert.match(styles, /\.admin-account > button \{[^}]*min-height: 44px;/);
+  assert.match(styles, /\.admin-table-wrap td > input\[type="number"\] \{[^}]*min-height: 44px;/);
+  assert.match(styles, /\.admin-table-wrap td button, \.admin-review-actions button, \.one-time-secret button \{ min-height: 44px;/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
