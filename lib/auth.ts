@@ -6,6 +6,7 @@ import { teacherAccountIssue } from "./teacher-access-rules";
 export const SESSION_COOKIE = "job_classroom_session";
 const TEACHER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const STUDENT_SESSION_MS = 4 * 60 * 60 * 1000;
+const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 export type SessionActor = {
   actorType: "teacher" | "student";
@@ -191,14 +192,27 @@ export async function getSession(request: Request): Promise<SessionActor | null>
   if (!rawToken) return null;
   const tokenHash = await sha256(rawToken);
   const row = await database().prepare(
-    `SELECT actor_type, teacher_id, student_id, expires_at FROM sessions WHERE token_hash = ?`,
-  ).bind(tokenHash).first<{ actor_type: string; teacher_id: string | null; student_id: string | null; expires_at: number }>();
-  if (!row || row.expires_at <= Date.now()) {
+    `SELECT actor_type, teacher_id, student_id, expires_at, last_seen_at
+     FROM sessions WHERE token_hash = ?`,
+  ).bind(tokenHash).first<{
+    actor_type: string;
+    teacher_id: string | null;
+    student_id: string | null;
+    expires_at: number;
+    last_seen_at: number;
+  }>();
+  const now = Date.now();
+  if (!row || row.expires_at <= now) {
     if (row) await database().prepare(`DELETE FROM sessions WHERE token_hash = ?`).bind(tokenHash).run();
     return null;
   }
   if (row.actor_type !== "teacher" && row.actor_type !== "student") return null;
-  await database().prepare(`UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?`).bind(Date.now(), tokenHash).run();
+  if (row.last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS) {
+    await database().prepare(
+      `UPDATE sessions SET last_seen_at = ?
+       WHERE token_hash = ? AND last_seen_at <= ?`,
+    ).bind(now, tokenHash, now - SESSION_TOUCH_INTERVAL_MS).run();
+  }
   return { actorType: row.actor_type, teacherId: row.teacher_id, studentId: row.student_id, expiresAt: row.expires_at };
 }
 

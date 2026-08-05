@@ -4,6 +4,7 @@ import { ApiError } from "./responses";
 
 export const ADMIN_SESSION_COOKIE = "job_classroom_admin_session";
 const ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
+const ADMIN_SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
 function requestCookie(request: Request, name: string) {
   const source = request.headers.get("cookie") ?? "";
@@ -78,7 +79,7 @@ export async function requireSystemAdmin(request: Request, options: { csrf?: boo
   if (!rawToken) throw new ApiError(401, "관리자 로그인이 필요합니다.", "ADMIN_LOGIN_REQUIRED");
   const tokenHash = await sha256(rawToken);
   const row = await database().prepare(
-    `SELECT id, admin_key, csrf_hash, expires_at, revoked_at
+    `SELECT id, admin_key, csrf_hash, expires_at, revoked_at, last_seen_at
      FROM system_admin_sessions WHERE token_hash = ?`,
   ).bind(tokenHash).first<{
     id: string;
@@ -86,6 +87,7 @@ export async function requireSystemAdmin(request: Request, options: { csrf?: boo
     csrf_hash: string;
     expires_at: number;
     revoked_at: number | null;
+    last_seen_at: number;
   }>();
   if (!row || row.revoked_at || row.expires_at <= Date.now()) {
     if (row && !row.revoked_at) {
@@ -100,8 +102,13 @@ export async function requireSystemAdmin(request: Request, options: { csrf?: boo
       throw new ApiError(403, "요청을 다시 확인해 주세요.", "ADMIN_CSRF_REJECTED");
     }
   }
-  await database().prepare(`UPDATE system_admin_sessions SET last_seen_at = ? WHERE id = ?`)
-    .bind(Date.now(), row.id).run();
+  const now = Date.now();
+  if (row.last_seen_at <= now - ADMIN_SESSION_TOUCH_INTERVAL_MS) {
+    await database().prepare(
+      `UPDATE system_admin_sessions SET last_seen_at = ?
+       WHERE id = ? AND last_seen_at <= ?`,
+    ).bind(now, row.id, now - ADMIN_SESSION_TOUCH_INTERVAL_MS).run();
+  }
   return { sessionId: row.id, adminKey: row.admin_key };
 }
 

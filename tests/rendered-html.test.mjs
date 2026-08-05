@@ -88,6 +88,19 @@ test("QR issuance rechecks active class ownership inside the atomic mutation", a
   assert.match(registration, /"QR_RESET_STALE"/);
 });
 
+test("session activity timestamps are throttled to avoid a D1 write on every read", async () => {
+  const [auth, adminAuth] = await Promise.all([
+    readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/system-admin-auth.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /SESSION_TOUCH_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(auth, /last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS/);
+  assert.match(auth, /WHERE token_hash = \? AND last_seen_at <= \?/);
+  assert.match(adminAuth, /ADMIN_SESSION_TOUCH_INTERVAL_MS = 5 \* 60 \* 1000/);
+  assert.match(adminAuth, /last_seen_at <= now - ADMIN_SESSION_TOUCH_INTERVAL_MS/);
+  assert.match(adminAuth, /WHERE id = \? AND last_seen_at <= \?/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
