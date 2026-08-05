@@ -79,6 +79,15 @@ test("authentication and finance action controls retain a 44px touch target", as
   assert.match(styles, /\.finance-quick-amounts \.button \{\s*min-height: 44px;/);
 });
 
+test("QR issuance rechecks active class ownership inside the atomic mutation", async () => {
+  const registration = await readFile(new URL("../lib/registration.ts", import.meta.url), "utf8");
+  assert.match(registration, /JOIN classes c ON c\.id = s\.class_id/);
+  assert.match(registration, /c\.teacher_id = \? AND c\.status = 'active'/);
+  assert.match(registration, /isOperationGuardFailure/);
+  assert.match(registration, /"QR_ISSUE_STALE"/);
+  assert.match(registration, /"QR_RESET_STALE"/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

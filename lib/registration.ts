@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { consumeRateLimit, subjectThrottleKey } from "./rate-limit";
 import { ApiError } from "./responses";
@@ -103,17 +103,21 @@ export async function issueRegistrationToken(input: {
   const rawToken = randomToken(32);
   const tokenHash = await sha256(rawToken);
   const guardId = crypto.randomUUID();
-  await database().batch([
+  try {
+    await database().batch([
     database().prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        VALUES (
          CASE WHEN EXISTS (
-           SELECT 1 FROM students
-           WHERE id = ? AND class_id = ? AND qr_generation = ? AND status NOT IN ('locked', 'excluded')
+           SELECT 1 FROM students s
+           JOIN classes c ON c.id = s.class_id
+           WHERE s.id = ? AND s.class_id = ? AND s.qr_generation = ?
+             AND s.status NOT IN ('locked', 'excluded')
+             AND c.teacher_id = ? AND c.status = 'active'
          ) THEN ? ELSE NULL END,
          'issue_qr', ?
        )`,
-    ).bind(input.studentId, input.classId, student.qr_generation, guardId, now),
+    ).bind(input.studentId, input.classId, student.qr_generation, input.teacherId, guardId, now),
     database().prepare(
       `UPDATE registration_tokens SET revoked_at = ? WHERE student_id = ? AND revoked_at IS NULL`,
     ).bind(now, input.studentId),
@@ -139,7 +143,13 @@ export async function issueRegistrationToken(input: {
       "student_qr_issued", JSON.stringify({ generation, purpose: "identity" }), now,
     ),
     database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
-  ]);
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(409, "학생 또는 학급 상태가 바뀌었어요. 새로고침 후 다시 발급해 주세요.", "QR_ISSUE_STALE");
+    }
+    throw error;
+  }
   return rawToken;
 }
 
@@ -160,17 +170,21 @@ export async function issueStudentQrResetGrant(input: {
   const expiresAt = now + QR_RESET_GRANT_LIFETIME_MS;
   const grantId = crypto.randomUUID();
   const guardId = crypto.randomUUID();
-  await database().batch([
+  try {
+    await database().batch([
     database().prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        VALUES (
          CASE WHEN EXISTS (
-           SELECT 1 FROM students
-           WHERE id = ? AND class_id = ? AND status IN ('active', 'reset_required') AND qr_generation = ?
+           SELECT 1 FROM students s
+           JOIN classes c ON c.id = s.class_id
+           WHERE s.id = ? AND s.class_id = ?
+             AND s.status IN ('active', 'reset_required') AND s.qr_generation = ?
+             AND c.teacher_id = ? AND c.status = 'active'
          ) THEN ? ELSE NULL END,
          'grant_qr_reset', ?
        )`,
-    ).bind(input.studentId, input.classId, student.qr_generation, guardId, now),
+    ).bind(input.studentId, input.classId, student.qr_generation, input.teacherId, guardId, now),
     database().prepare(
       `UPDATE student_qr_reset_grants SET revoked_at = ?
        WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
@@ -192,7 +206,13 @@ export async function issueStudentQrResetGrant(input: {
       JSON.stringify({ generation: student.qr_generation, expiresAt }), now,
     ),
     database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
-  ]);
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(409, "학생 또는 학급 상태가 바뀌었어요. 새로고침 후 다시 허용해 주세요.", "QR_RESET_STALE");
+    }
+    throw error;
+  }
   return { expiresAt };
 }
 
