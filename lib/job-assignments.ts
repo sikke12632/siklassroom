@@ -917,16 +917,21 @@ export async function createRandomAssignment(input: {
   };
 }
 
-export async function removeInitialAssignment(classId: string, assignmentId: unknown) {
-  const id = cleanDisplayText(assignmentId, 100);
+export async function removeInitialAssignment(input: {
+  classId: string;
+  teacherId: string;
+  assignmentId: unknown;
+}) {
+  const id = cleanDisplayText(input.assignmentId, 100);
   if (!id) throw new ApiError(400, "취소할 배정을 찾을 수 없어요.", "ASSIGNMENT_REQUIRED");
   const current = await database().prepare(
     `SELECT a.id, a.student_id, a.class_job_id, a.assignment_method,
-            a.assignment_sequence, p.id AS period_id, p.assignment_year, p.assignment_month, p.status
+            a.assignment_sequence, p.id AS period_id, p.assignment_year, p.assignment_month,
+            p.status, p.revision AS period_revision
      FROM student_job_assignments a
      JOIN class_job_assignment_periods p ON p.id = a.period_id
      WHERE a.id = ? AND a.class_id = ? AND p.assignment_type = 'initial'`,
-  ).bind(id, classId).first<Record<string, string | number>>();
+  ).bind(id, input.classId).first<Record<string, string | number>>();
   if (!current) throw new ApiError(404, "배정 기록을 찾을 수 없어요.", "ASSIGNMENT_NOT_FOUND");
   if (current.status === "confirmed") {
     throw new ApiError(
@@ -936,15 +941,89 @@ export async function removeInitialAssignment(classId: string, assignmentId: unk
     );
   }
   const now = Date.now();
-  await database().batch([
-    database().prepare(
-      `DELETE FROM student_job_assignments WHERE id = ? AND class_id = ?`,
-    ).bind(id, classId),
-    database().prepare(
-      `UPDATE class_job_assignment_periods
-       SET revision = revision + 1, updated_at = ? WHERE id = ? AND status = 'draft'`,
-    ).bind(now, current.period_id),
-  ]);
+  const reservationGuardId = crypto.randomUUID();
+  const completionGuardId = crypto.randomUUID();
+  const db = database();
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN
+           EXISTS (
+             SELECT 1 FROM student_job_assignments assignment
+             JOIN class_job_assignment_periods period ON period.id = assignment.period_id
+             WHERE assignment.id = ? AND assignment.class_id = ?
+               AND period.id = ? AND period.status = 'draft' AND period.revision = ?
+           )
+         THEN ? ELSE NULL END, 'job_assignment_remove_reserve', ?`,
+      ).bind(
+        id,
+        input.classId,
+        current.period_id,
+        Number(current.period_revision),
+        reservationGuardId,
+        now,
+      ),
+      db.prepare(
+        `DELETE FROM student_job_assignments
+         WHERE id = ? AND class_id = ?
+           AND EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
+      ).bind(id, input.classId, reservationGuardId),
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN
+           EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)
+           AND NOT EXISTS (
+             SELECT 1 FROM student_job_assignments WHERE id = ? AND class_id = ?
+           )
+         THEN ? ELSE NULL END, 'job_assignment_remove', ?`,
+      ).bind(reservationGuardId, id, input.classId, completionGuardId, now),
+      db.prepare(
+        `UPDATE class_job_assignment_periods
+         SET revision = revision + 1, updated_at = ?
+         WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+           AND EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
+      ).bind(
+        now,
+        current.period_id,
+        input.classId,
+        Number(current.period_revision),
+        completionGuardId,
+      ),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         )
+         SELECT ?, ?, ?, ?, 'job_assignment_removed', ?, ?
+         WHERE EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        String(current.student_id),
+        JSON.stringify({
+          assignmentId: id,
+          classJobId: current.class_job_id,
+          method: current.assignment_method,
+          year: current.assignment_year,
+          month: current.assignment_month,
+        }),
+        now,
+        completionGuardId,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(completionGuardId),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(reservationGuardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "다른 화면에서 배정 상태가 먼저 변경됐어요. 최신 배정표를 다시 확인해 주세요.",
+        "ASSIGNMENT_CONFLICT",
+      );
+    }
+    throw error;
+  }
   return current;
 }
 

@@ -1343,10 +1343,63 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
       guard_count: 0,
     }]);
+    const randomAssignmentId = randomAssignmentSuccessBody.assignment.assignmentId;
+    const assignmentRemovalState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT period.revision,
+              (SELECT COUNT(*) FROM student_job_assignments assignment
+               WHERE assignment.id = '${randomAssignmentId}') AS assignment_count,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = period.class_id
+                 AND action = 'job_assignment_removed') AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'job_assignment_remove') AS guard_count
+       FROM class_job_assignment_periods period
+       WHERE period.id = 'period-manual-atomic';`,
+    ));
     executeSql(persistPath, `
-      DELETE FROM student_job_assignments
-      WHERE period_id = 'period-manual-atomic'
-        AND request_id = 'random-assignment-atomic-request';
+      CREATE TRIGGER test_assignment_removal_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'job_assignment_removed'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_ASSIGNMENT_REMOVAL_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const assignmentRemovalAuditFailure = await worker.fetch(
+      `http://test.local/classes/class-cash-archive/job-assignments/${randomAssignmentId}`,
+      {
+        method: "DELETE",
+        headers: { cookie, origin: "http://test.local" },
+      },
+    );
+    const assignmentRemovalAuditFailureBody = await assignmentRemovalAuditFailure.text();
+    assert.equal(assignmentRemovalAuditFailure.status, 500, assignmentRemovalAuditFailureBody);
+    assert.deepEqual(assignmentRemovalState(), [{
+      revision: 1,
+      assignment_count: 1,
+      audit_count: 0,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_assignment_removal_audit_insert_failure;");
+
+    const assignmentRemovalSuccess = await worker.fetch(
+      `http://test.local/classes/class-cash-archive/job-assignments/${randomAssignmentId}`,
+      {
+        method: "DELETE",
+        headers: { cookie, origin: "http://test.local" },
+      },
+    );
+    const assignmentRemovalSuccessBody = await assignmentRemovalSuccess.json();
+    assert.equal(assignmentRemovalSuccess.status, 200, JSON.stringify(assignmentRemovalSuccessBody));
+    assert.equal(assignmentRemovalSuccessBody.removed, true);
+    assert.deepEqual(assignmentRemovalState(), [{
+      revision: 2,
+      assignment_count: 0,
+      audit_count: 1,
+      guard_count: 0,
+    }]);
+    executeSql(persistPath, `
       UPDATE class_job_assignment_periods
       SET revision = 0, updated_at = 1
       WHERE id = 'period-manual-atomic';

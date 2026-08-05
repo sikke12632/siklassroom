@@ -6,6 +6,7 @@ import { PUT as saveJobSetupDraft } from "../../app/api/classes/[classId]/job-se
 import { POST as createManualAssignments } from "../../app/api/classes/[classId]/job-assignments/manual/route";
 import { PUT as setAssignmentMode } from "../../app/api/classes/[classId]/job-assignments/mode/route";
 import { POST as createRandomAssignment } from "../../app/api/classes/[classId]/job-assignments/random/route";
+import { DELETE as removeInitialAssignment } from "../../app/api/classes/[classId]/job-assignments/[assignmentId]/route";
 import { POST as completeInitialAssignments } from "../../app/api/classes/[classId]/job-assignments/complete/route";
 import { POST as completeMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/complete/route";
 import { POST as shuffleMonthlyJobChoice } from "../../app/api/classes/[classId]/monthly-job-choice/shuffle/route";
@@ -504,6 +505,16 @@ const financeCashLifecycleWorker = {
       ) {
         response = await createRandomAssignment(request, {
           params: Promise.resolve({ classId: "class-cash-archive" }),
+        });
+      } else if (
+        url.pathname.startsWith("/classes/class-cash-archive/job-assignments/")
+        && request.method === "DELETE"
+      ) {
+        response = await removeInitialAssignment(request, {
+          params: Promise.resolve({
+            classId: "class-cash-archive",
+            assignmentId: url.pathname.split("/").at(-1) ?? "",
+          }),
         });
       } else if (
         url.pathname === "/classes/class-cash-archive/job-assignments/complete"
