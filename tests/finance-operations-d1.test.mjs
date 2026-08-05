@@ -1505,8 +1505,59 @@ test("unresolved cash requests atomically block class archive and student exclus
        FROM class_job_choice_sessions session
        WHERE session.id = 'session-monthly-atomic';`,
     ));
+    const monthlyShuffleState = () => lastResults(executeSql(
+      persistPath,
+      `SELECT session.revision, session.order_json,
+              (SELECT COUNT(*) FROM audit_logs
+               WHERE class_id = session.class_id
+                 AND action = 'monthly_job_choice_shuffled') AS audit_count,
+              (SELECT COUNT(*) FROM registration_operation_guards
+               WHERE operation = 'monthly_job_choice_shuffle') AS guard_count
+       FROM class_job_choice_sessions session
+       WHERE session.id = 'session-monthly-atomic';`,
+    ));
+    const monthlyShuffleBefore = monthlyShuffleState();
+    executeSql(persistPath, `
+      CREATE TRIGGER test_monthly_shuffle_audit_insert_failure
+      BEFORE INSERT ON audit_logs
+      WHEN NEW.action = 'monthly_job_choice_shuffled'
+        AND NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'TEST_MONTHLY_SHUFFLE_AUDIT_INSERT_FAILURE');
+      END;
+    `);
+    const monthlyShuffleAuditFailure = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/shuffle",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ expectedRevision: 0 }),
+      },
+    );
+    const monthlyShuffleAuditFailureBody = await monthlyShuffleAuditFailure.text();
+    assert.equal(monthlyShuffleAuditFailure.status, 500, monthlyShuffleAuditFailureBody);
+    assert.deepEqual(monthlyShuffleState(), monthlyShuffleBefore);
+    executeSql(persistPath, "DROP TRIGGER test_monthly_shuffle_audit_insert_failure;");
+
+    const monthlyShuffleSuccess = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/shuffle",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ expectedRevision: 0 }),
+      },
+    );
+    const monthlyShuffleSuccessBody = await monthlyShuffleSuccess.json();
+    assert.equal(monthlyShuffleSuccess.status, 200, JSON.stringify(monthlyShuffleSuccessBody));
+    assert.equal(monthlyShuffleSuccessBody.revision, 1);
+    assert.deepEqual(monthlyShuffleState(), [{
+      revision: 1,
+      order_json: JSON.stringify(monthlyShuffleSuccessBody.board.session.order),
+      audit_count: 1,
+      guard_count: 0,
+    }]);
     const monthlyCompletionPayload = {
-      expectedRevision: 0,
+      expectedRevision: 1,
       expectedJobSetupRevision: 2,
       requestId: "monthly-assignment-completion-request",
       assignments: [
@@ -1557,7 +1608,7 @@ test("unresolved cash requests atomically block class archive and student exclus
     const confirmedMonthlyPeriodId = monthlySuccessBody.periodId;
     assert.deepEqual(monthlyCompletionState(), [{
       session_status: "confirmed",
-      session_revision: 1,
+      session_revision: 2,
       confirmed_period_id: confirmedMonthlyPeriodId,
       period_count: 1,
       assignment_count: 2,
@@ -1578,7 +1629,7 @@ test("unresolved cash requests atomically block class archive and student exclus
     assert.equal(monthlyRetryBody.periodId, confirmedMonthlyPeriodId);
     assert.deepEqual(monthlyCompletionState(), [{
       session_status: "confirmed",
-      session_revision: 1,
+      session_revision: 2,
       confirmed_period_id: confirmedMonthlyPeriodId,
       period_count: 1,
       assignment_count: 2,

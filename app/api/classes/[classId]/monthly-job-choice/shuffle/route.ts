@@ -1,6 +1,5 @@
 import { requireClassManagement } from "@/lib/auth";
 import { ownedClass } from "@/lib/authorization";
-import { audit } from "@/lib/database";
 import { shuffleMonthlyJobChoice } from "@/lib/monthly-job-choice";
 import { apiFailure, json, readJson } from "@/lib/responses";
 
@@ -12,16 +11,8 @@ export async function POST(request: Request, context: { params: Promise<{ classI
     const body = await readJson<{ expectedRevision?: unknown }>(request);
     const result = await shuffleMonthlyJobChoice({
       classId,
-      expectedRevision: body.expectedRevision,
-    });
-    await audit({
-      action: "monthly_job_choice_shuffled",
       teacherId,
-      classId,
-      detail: {
-        sessionId: result.sessionId,
-        revision: result.revision,
-      },
+      expectedRevision: body.expectedRevision,
     });
     return json(result);
   } catch (error) {

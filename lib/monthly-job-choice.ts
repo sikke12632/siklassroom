@@ -1,4 +1,4 @@
-import { database, ensureSchema } from "./database";
+import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import {
   nextJobMonth,
   shuffleChoiceOrderWithinGrades,
@@ -924,6 +924,7 @@ function requireFreshDraftSession(context: MonthlyContext) {
 
 export async function shuffleMonthlyJobChoice(input: {
   classId: string;
+  teacherId: string;
   expectedRevision: unknown;
 }) {
   const expectedRevision = validRevision(input.expectedRevision);
@@ -933,35 +934,76 @@ export async function shuffleMonthlyJobChoice(input: {
     throw new ApiError(409, "다른 화면에서 순서가 먼저 바뀌었어요.", "MONTHLY_CHOICE_STALE");
   }
   const shuffled = shuffleChoiceOrderWithinGrades(context.order, secureRandomIndex);
-  const result = await database().prepare(
-    `UPDATE class_job_choice_sessions
-     SET order_mode = 'shuffled', order_json = ?, revision = revision + 1, updated_at = ?
-     WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
-       AND student_count_snapshot = ?
-       AND job_setup_revision = ?
-       AND order_json = ?
-       AND (SELECT COUNT(*) FROM students s
-            WHERE s.class_id = ? AND s.status <> 'excluded') = ?
-       AND EXISTS (
-         SELECT 1 FROM class_job_setup setup
-         WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
-       )`,
-  ).bind(
-    JSON.stringify(shuffled),
-    Date.now(),
-    session.id,
-    input.classId,
-    expectedRevision,
-    context.students.length,
-    Number(session.job_setup_revision),
-    session.order_json,
-    input.classId,
-    context.students.length,
-    input.classId,
-    Number(session.job_setup_revision),
-  ).run();
-  if (!result.meta.changes) {
-    throw new ApiError(409, "순서를 바꾸는 동안 학생이나 직업이 달라졌어요.", "MONTHLY_CHOICE_STALE");
+  const shuffledJson = JSON.stringify(shuffled);
+  const now = Date.now();
+  const guardId = crypto.randomUUID();
+  const db = database();
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE class_job_choice_sessions
+         SET order_mode = 'shuffled', order_json = ?, revision = revision + 1, updated_at = ?
+         WHERE id = ? AND class_id = ? AND status = 'draft' AND revision = ?
+           AND student_count_snapshot = ?
+           AND job_setup_revision = ?
+           AND order_json = ?
+           AND (SELECT COUNT(*) FROM students s
+                WHERE s.class_id = ? AND s.status <> 'excluded') = ?
+           AND EXISTS (
+             SELECT 1 FROM class_job_setup setup
+             WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
+           )`,
+      ).bind(
+        shuffledJson,
+        now,
+        session.id,
+        input.classId,
+        expectedRevision,
+        context.students.length,
+        Number(session.job_setup_revision),
+        session.order_json,
+        input.classId,
+        context.students.length,
+        input.classId,
+        Number(session.job_setup_revision),
+      ),
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         SELECT CASE WHEN EXISTS (
+           SELECT 1 FROM class_job_choice_sessions
+           WHERE id = ? AND class_id = ? AND status = 'draft'
+             AND revision = ? AND order_json = ?
+         ) THEN ? ELSE NULL END, 'monthly_job_choice_shuffle', ?`,
+      ).bind(
+        session.id,
+        input.classId,
+        expectedRevision + 1,
+        shuffledJson,
+        guardId,
+        now,
+      ),
+      db.prepare(
+        `INSERT INTO audit_logs (
+           id, teacher_id, class_id, student_id, action, detail, created_at
+         ) VALUES (?, ?, ?, NULL, 'monthly_job_choice_shuffled', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        JSON.stringify({ sessionId: session.id, revision: expectedRevision + 1 }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      throw new ApiError(
+        409,
+        "순서를 바꾸는 동안 학생이나 직업이 달라졌어요.",
+        "MONTHLY_CHOICE_STALE",
+      );
+    }
+    throw error;
   }
   return {
     sessionId: session.id,
