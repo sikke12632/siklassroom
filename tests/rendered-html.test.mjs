@@ -107,6 +107,20 @@ test("header logo and entrance links retain a 44px touch target", async () => {
   assert.match(styles, /\.auth-page > header a:not\(\.brand\), \.student-login-page > header a:not\(\.brand\) \{[^}]*min-height: 44px;/);
 });
 
+test("failed initial assignment confirmation preserves the local draft", async () => {
+  const portal = await readFile(
+    new URL("../app/teacher/classes/[classId]/job-assignments/InitialJobAssignmentPortal.tsx", import.meta.url),
+    "utf8",
+  );
+  const complete = portal.slice(
+    portal.indexOf("async function completeAssignments()"),
+    portal.indexOf("if (!data)", portal.indexOf("async function completeAssignments()")),
+  );
+  const failure = complete.slice(complete.indexOf("} catch (reason)"));
+  assert.match(failure, /배정 초안은 그대로 보관했어요/);
+  assert.doesNotMatch(failure, /await load\(\)/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

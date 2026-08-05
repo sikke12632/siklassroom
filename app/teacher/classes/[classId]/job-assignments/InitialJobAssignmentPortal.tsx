@@ -514,7 +514,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
       await load();
     } catch (reason) {
       setError((reason as Error).message);
-      await load();
+      setMessage("서버 확정에 실패했지만 이 브라우저의 배정 초안은 그대로 보관했어요. 내용을 확인한 뒤 다시 시도해 주세요.");
     } finally {
       setBusy(false);
     }
