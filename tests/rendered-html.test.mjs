@@ -22,6 +22,12 @@ test("theme controls retain a 44px touch target on compact and mobile layouts", 
   assert.doesNotMatch(styles, /\.theme-toggle(?:-compact)? button \{[^}]*min-(?:width|height): (?:3\d|4[0-3])px;/);
 });
 
+test("student roster edit inputs identify the student and field to assistive technology", async () => {
+  const portal = await readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8");
+  assert.match(portal, /aria-label=\{`\$\{student\.official_name\} 학생 번호`\}/);
+  assert.match(portal, /aria-label=\{`\$\{student\.official_name\} 학생 이름`\}/);
+});
+
 test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", async () => {
   const [page, layout, entryIntro] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

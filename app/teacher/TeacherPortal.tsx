@@ -895,8 +895,8 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
         {students.map((student) => (
           <Fragment key={student.id}>
           <tr className={student.status === "excluded" ? "muted-row" : ""}>
-            <td>{editingId === student.id ? <input className="table-input number" inputMode="numeric" value={editNumber} onChange={(event) => setEditNumber(event.target.value.replace(/\D/g, ""))} /> : <b>{student.student_number}</b>}</td>
-            <td>{editingId === student.id ? <input className="table-input" value={editName} onChange={(event) => setEditName(event.target.value)} /> : <strong>{student.official_name}</strong>}</td>
+            <td>{editingId === student.id ? <input className="table-input number" inputMode="numeric" value={editNumber} onChange={(event) => setEditNumber(event.target.value.replace(/\D/g, ""))} aria-label={`${student.official_name} 학생 번호`} /> : <b>{student.student_number}</b>}</td>
+            <td>{editingId === student.id ? <input className="table-input" value={editName} onChange={(event) => setEditName(event.target.value)} aria-label={`${student.official_name} 학생 이름`} /> : <strong>{student.official_name}</strong>}</td>
             <td><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span></td>
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
