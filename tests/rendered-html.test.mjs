@@ -65,6 +65,21 @@ test("관리자 경로와 API는 공용 화면에서 숨기고 서버 세션·CS
   assert.match(schema, /systemAdminAuditLogs/);
 });
 
+test("관리자 로그인과 로그아웃은 세션과 감사 기록을 함께 저장한다", async () => {
+  const [auth, login, session] = await Promise.all([
+    readFile(new URL("../lib/system-admin-auth.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/auth/login/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/auth/session/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(auth, /export async function prepareSystemAdminSession/);
+  assert.match(auth, /export async function systemAdminSessionRevocationStatement/);
+  assert.match(login, /\.\.\.session\.statements/);
+  assert.match(login, /systemAdminAuditStatement\(\{ action: "admin_login_succeeded"/);
+  assert.match(session, /systemAdminSessionRevocationStatement/);
+  assert.match(session, /database\(\)\.batch/);
+  assert.match(session, /systemAdminAuditStatement/);
+});
+
 test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP 전체 한도를 둔다", async () => {
   const [rateLimit, cryptoSource, teacherLogin, adminLogin, signup, passwordRequest] = await Promise.all([
     readFile(new URL("../lib/rate-limit.ts", import.meta.url), "utf8"),

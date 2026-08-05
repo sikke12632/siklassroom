@@ -1,7 +1,8 @@
+import { database } from "@/lib/database";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { apiFailure, ApiError, json, readJson } from "@/lib/responses";
-import { auditSystemAdmin } from "@/lib/system-admin-audit";
-import { createSystemAdminSession, verifySystemAdminCredentials } from "@/lib/system-admin-auth";
+import { auditSystemAdmin, systemAdminAuditStatement } from "@/lib/system-admin-audit";
+import { prepareSystemAdminSession, verifySystemAdminCredentials } from "@/lib/system-admin-auth";
 
 export async function POST(request: Request) {
   try {
@@ -16,8 +17,11 @@ export async function POST(request: Request) {
       await auditSystemAdmin({ action: "admin_login_failed", success: false });
       throw new ApiError(401, "관리자 아이디 또는 비밀번호를 다시 확인해 주세요.", "ADMIN_LOGIN_FAILED");
     }
-    const session = await createSystemAdminSession(request, { clearThrottleKeys: [key] });
-    await auditSystemAdmin({ action: "admin_login_succeeded" });
+    const session = await prepareSystemAdminSession(request, { clearThrottleKeys: [key] });
+    await database().batch([
+      ...session.statements,
+      systemAdminAuditStatement({ action: "admin_login_succeeded" }, session.createdAt),
+    ]);
     return json(
       { admin: { key: "primary" }, csrfToken: session.csrfToken },
       200,

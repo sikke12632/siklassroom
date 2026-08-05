@@ -36,7 +36,7 @@ export async function verifySystemAdminCredentials(username: string, password: s
   return usernameMatches && passwordMatches;
 }
 
-export async function createSystemAdminSession(request: Request, options: { clearThrottleKeys?: string[] } = {}) {
+export async function prepareSystemAdminSession(request: Request, options: { clearThrottleKeys?: string[] } = {}) {
   await ensureSchema();
   const rawToken = randomToken(32);
   const csrfToken = randomToken(24);
@@ -58,11 +58,18 @@ export async function createSystemAdminSession(request: Request, options: { clea
   for (const key of new Set(options.clearThrottleKeys ?? [])) {
     statements.push(database().prepare(`DELETE FROM login_throttles WHERE key = ?`).bind(key));
   }
-  await database().batch(statements);
   return {
     cookie: cookie(ADMIN_SESSION_COOKIE, rawToken, Math.floor(ADMIN_SESSION_MS / 1000), request),
     csrfToken,
+    createdAt: now,
+    statements,
   };
+}
+
+export async function createSystemAdminSession(request: Request, options: { clearThrottleKeys?: string[] } = {}) {
+  const prepared = await prepareSystemAdminSession(request, options);
+  await database().batch(prepared.statements);
+  return { cookie: prepared.cookie, csrfToken: prepared.csrfToken };
 }
 
 export async function requireSystemAdmin(request: Request, options: { csrf?: boolean } = {}) {
@@ -105,12 +112,17 @@ export async function rotateAdminCsrf(sessionId: string) {
   return csrfToken;
 }
 
-export async function endSystemAdminSession(request: Request) {
+export async function systemAdminSessionRevocationStatement(request: Request, revokedAt = Date.now()) {
   const rawToken = requestCookie(request, ADMIN_SESSION_COOKIE);
-  if (!rawToken) return;
-  await database().prepare(
+  if (!rawToken) return null;
+  return database().prepare(
     `UPDATE system_admin_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
-  ).bind(Date.now(), await sha256(rawToken)).run();
+  ).bind(revokedAt, await sha256(rawToken));
+}
+
+export async function endSystemAdminSession(request: Request) {
+  const statement = await systemAdminSessionRevocationStatement(request);
+  if (statement) await statement.run();
 }
 
 export async function isSystemAdminPath(value: string) {

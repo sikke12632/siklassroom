@@ -1,10 +1,11 @@
+import { database } from "@/lib/database";
 import { apiFailure, json } from "@/lib/responses";
-import { auditSystemAdmin } from "@/lib/system-admin-audit";
+import { systemAdminAuditStatement } from "@/lib/system-admin-audit";
 import {
   clearSystemAdminCookie,
-  endSystemAdminSession,
   requireSystemAdmin,
   rotateAdminCsrf,
+  systemAdminSessionRevocationStatement,
 } from "@/lib/system-admin-auth";
 
 export async function GET(request: Request) {
@@ -20,8 +21,17 @@ export async function GET(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const admin = await requireSystemAdmin(request, { csrf: true });
-    await endSystemAdminSession(request);
-    await auditSystemAdmin({ adminKey: admin.adminKey, action: "admin_session_revoked" });
+    const now = Date.now();
+    const revocation = await systemAdminSessionRevocationStatement(request, now);
+    if (revocation) {
+      await database().batch([
+        revocation,
+        systemAdminAuditStatement({
+          adminKey: admin.adminKey,
+          action: "admin_session_revoked",
+        }, now),
+      ]);
+    }
     return json({ ok: true }, 200, { "Set-Cookie": clearSystemAdminCookie(request) });
   } catch (error) {
     return apiFailure(error);
