@@ -2253,7 +2253,13 @@ test("a teacher can cancel a running liquidation without losing its completed ch
        WHERE operation_id = '${startResult.operation.id}'
        ORDER BY revision, action;`,
     ));
-    assert.deepEqual(cancellationEvents.map(({ id, ...event }) => event), [
+    assert.deepEqual(cancellationEvents.map(({ id, ...event }) => {
+      assert.equal(
+        id,
+        `finance:stock-liquidation-event:${startResult.operation.id}:${event.revision}:${event.action}`,
+      );
+      return event;
+    }), [
       {
         revision: 0,
         action: "started",
@@ -2291,12 +2297,6 @@ test("a teacher can cancel a running liquidation without losing its completed ch
         total_wallet_delta: 900_000_000,
       },
     ]);
-    for (const event of cancellationEvents) {
-      assert.equal(
-        event.id,
-        `finance:stock-liquidation-event:${startResult.operation.id}:${event.revision}:${event.action}`,
-      );
-    }
     const auditResponse = await worker.fetch(
       "http://test.local/audit?classId=class-chunked&category=stock&query=stopped%20this%20recovery",
       { headers: { cookie } },
