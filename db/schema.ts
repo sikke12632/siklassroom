@@ -4,6 +4,7 @@ import {
   foreignKey,
   index,
   integer,
+  primaryKey,
   real,
   sqliteTable,
   text,
@@ -1459,6 +1460,359 @@ export const financeDepositProductLifecycleEvents = sqliteTable(
   ],
 );
 
+export const martOperations = sqliteTable("mart_operations", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  idempotencyKey: text("idempotency_key").notNull(),
+  operation: text("operation").notNull(),
+  resourceId: text("resource_id").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  actorType: text("actor_type").notNull(),
+  actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+  actorStudentId: text("actor_student_id").references(() => students.id),
+  actorJobPeriodId: text("actor_job_period_id").references(() => classJobAssignmentPeriods.id),
+  actorLabel: text("actor_label").notNull(),
+  interventionReason: text("intervention_reason"),
+  expectedClassRevision: integer("expected_class_revision").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_operations_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("mart_operations_class_idempotency_uq").on(table.classId, table.idempotencyKey),
+  index("mart_operations_class_created_idx").on(table.classId, table.createdAt),
+  check(
+    "mart_operations_operation_ck",
+    sql`${table.operation} IN (
+      'product_create', 'product_update',
+      'inventory_inbound', 'inventory_outbound', 'inventory_correction',
+      'sale_create', 'sale_cancel'
+    )`,
+  ),
+  check(
+    "mart_operations_actor_ck",
+    sql`(${table.actorType} = 'teacher'
+        AND ${table.actorTeacherId} IS NOT NULL
+        AND ${table.actorStudentId} IS NULL
+        AND ${table.actorJobPeriodId} IS NULL)
+      OR
+      (${table.actorType} = 'market_clerk'
+        AND ${table.actorTeacherId} IS NULL
+        AND ${table.actorStudentId} IS NOT NULL
+        AND ${table.actorJobPeriodId} IS NOT NULL)`,
+  ),
+  check(
+    "mart_operations_reason_ck",
+    sql`${table.operation} NOT IN ('inventory_correction', 'sale_cancel')
+      OR LENGTH(TRIM(COALESCE(${table.interventionReason}, ''))) BETWEEN 2 AND 300`,
+  ),
+  check(
+    "mart_operations_revision_ck",
+    sql`${table.expectedClassRevision} >= 0`,
+  ),
+]);
+
+export const martProducts = sqliteTable("mart_products", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  description: text("description").notNull().default(""),
+  unitPrice: integer("unit_price").notNull(),
+  lowStockThreshold: integer("low_stock_threshold").notNull().default(2),
+  isActive: integer("is_active").notNull().default(1),
+  revision: integer("revision").notNull().default(0),
+  createdOperationId: text("created_operation_id").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_products_id_class_uq").on(table.id, table.classId),
+  index("mart_products_class_active_idx").on(table.classId, table.isActive, table.updatedAt),
+  foreignKey({
+    columns: [table.createdOperationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_products_created_operation_class_fk",
+  }),
+  check(
+    "mart_products_name_ck",
+    sql`LENGTH(TRIM(${table.name})) BETWEEN 1 AND 60`,
+  ),
+  check(
+    "mart_products_category_ck",
+    sql`LENGTH(TRIM(${table.category})) BETWEEN 1 AND 40`,
+  ),
+  check(
+    "mart_products_description_ck",
+    sql`LENGTH(${table.description}) <= 300`,
+  ),
+  check(
+    "mart_products_price_ck",
+    sql`${table.unitPrice} BETWEEN 1 AND 1000000000`,
+  ),
+  check(
+    "mart_products_low_stock_ck",
+    sql`${table.lowStockThreshold} BETWEEN 0 AND 1000000000`,
+  ),
+  check("mart_products_active_ck", sql`${table.isActive} IN (0, 1)`),
+  check("mart_products_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const martInventory = sqliteTable("mart_inventory", {
+  productId: text("product_id").primaryKey(),
+  classId: text("class_id").notNull(),
+  quantity: integer("quantity").notNull().default(0),
+  revision: integer("revision").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_inventory_product_class_uq").on(table.productId, table.classId),
+  index("mart_inventory_class_quantity_idx").on(table.classId, table.quantity),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [martProducts.id, martProducts.classId],
+    name: "mart_inventory_product_class_fk",
+  }),
+  check(
+    "mart_inventory_quantity_ck",
+    sql`${table.quantity} BETWEEN 0 AND 1000000000`,
+  ),
+  check("mart_inventory_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const martProductEvents = sqliteTable("mart_product_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  productId: text("product_id").notNull(),
+  operationId: text("operation_id").notNull(),
+  revision: integer("revision").notNull(),
+  action: text("action").notNull(),
+  productSnapshotJson: text("product_snapshot_json").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_product_events_product_revision_uq").on(table.productId, table.revision),
+  uniqueIndex("mart_product_events_operation_uq").on(table.operationId),
+  index("mart_product_events_class_created_idx").on(table.classId, table.createdAt),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [martProducts.id, martProducts.classId],
+    name: "mart_product_events_product_class_fk",
+  }),
+  foreignKey({
+    columns: [table.operationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_product_events_operation_class_fk",
+  }),
+  check(
+    "mart_product_events_action_ck",
+    sql`${table.action} IN ('created', 'updated', 'activated', 'deactivated')`,
+  ),
+  check("mart_product_events_revision_ck", sql`${table.revision} >= 0`),
+]);
+
+export const martSales = sqliteTable("mart_sales", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  buyerStudentId: text("buyer_student_id").notNull().references(() => students.id),
+  buyerStudentNumberSnapshot: integer("buyer_student_number_snapshot").notNull(),
+  buyerStudentNameSnapshot: text("buyer_student_name_snapshot").notNull(),
+  totalAmount: integer("total_amount").notNull(),
+  totalQuantity: integer("total_quantity").notNull(),
+  status: text("status").notNull().default("building"),
+  revision: integer("revision").notNull().default(0),
+  createdOperationId: text("created_operation_id").notNull(),
+  cancelledOperationId: text("cancelled_operation_id"),
+  cancelledReason: text("cancelled_reason"),
+  createdAt: integer("created_at").notNull(),
+  cancelledAt: integer("cancelled_at"),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_sales_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("mart_sales_created_operation_uq").on(table.createdOperationId),
+  uniqueIndex("mart_sales_cancelled_operation_uq")
+    .on(table.cancelledOperationId)
+    .where(sql`${table.cancelledOperationId} IS NOT NULL`),
+  index("mart_sales_class_created_idx").on(table.classId, table.createdAt),
+  index("mart_sales_buyer_created_idx").on(table.buyerStudentId, table.createdAt),
+  foreignKey({
+    columns: [table.createdOperationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_sales_created_operation_class_fk",
+  }),
+  foreignKey({
+    columns: [table.cancelledOperationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_sales_cancelled_operation_class_fk",
+  }),
+  check(
+    "mart_sales_amount_ck",
+    sql`${table.totalAmount} BETWEEN 1 AND 1000000000`,
+  ),
+  check(
+    "mart_sales_quantity_ck",
+    sql`${table.totalQuantity} BETWEEN 1 AND 1000000000`,
+  ),
+  check(
+    "mart_sales_status_ck",
+    sql`${table.status} IN ('building', 'posted', 'cancelled')`,
+  ),
+  check("mart_sales_revision_ck", sql`${table.revision} >= 0`),
+  check(
+    "mart_sales_cancelled_ck",
+    sql`(${table.status} = 'cancelled'
+        AND ${table.revision} = 1
+        AND ${table.cancelledOperationId} IS NOT NULL
+        AND LENGTH(TRIM(COALESCE(${table.cancelledReason}, ''))) BETWEEN 2 AND 300
+        AND ${table.cancelledAt} IS NOT NULL)
+      OR
+      (${table.status} IN ('building', 'posted')
+        AND ${table.revision} = 0
+        AND ${table.cancelledOperationId} IS NULL
+        AND ${table.cancelledReason} IS NULL
+        AND ${table.cancelledAt} IS NULL)`,
+  ),
+]);
+
+export const martSaleItems = sqliteTable("mart_sale_items", {
+  id: text("id").primaryKey(),
+  saleId: text("sale_id").notNull(),
+  classId: text("class_id").notNull(),
+  productId: text("product_id").notNull(),
+  productNameSnapshot: text("product_name_snapshot").notNull(),
+  unitPriceSnapshot: integer("unit_price_snapshot").notNull(),
+  quantity: integer("quantity").notNull(),
+  lineTotal: integer("line_total").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_sale_items_id_class_uq").on(table.id, table.classId),
+  uniqueIndex("mart_sale_items_sale_product_uq").on(table.saleId, table.productId),
+  index("mart_sale_items_product_idx").on(table.productId, table.createdAt),
+  foreignKey({
+    columns: [table.saleId, table.classId],
+    foreignColumns: [martSales.id, martSales.classId],
+    name: "mart_sale_items_sale_class_fk",
+  }),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [martProducts.id, martProducts.classId],
+    name: "mart_sale_items_product_class_fk",
+  }),
+  check(
+    "mart_sale_items_name_ck",
+    sql`LENGTH(TRIM(${table.productNameSnapshot})) BETWEEN 1 AND 60`,
+  ),
+  check(
+    "mart_sale_items_amount_ck",
+    sql`${table.unitPriceSnapshot} BETWEEN 1 AND 1000000000
+      AND ${table.quantity} BETWEEN 1 AND 1000000000
+      AND ${table.lineTotal} = ${table.unitPriceSnapshot} * ${table.quantity}
+      AND ${table.lineTotal} BETWEEN 1 AND 1000000000`,
+  ),
+]);
+
+export const martSaleCancellations = sqliteTable("mart_sale_cancellations", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  saleId: text("sale_id").notNull(),
+  operationId: text("operation_id").notNull(),
+  expectedSaleRevision: integer("expected_sale_revision").notNull(),
+  reason: text("reason").notNull(),
+  cancelledAt: integer("cancelled_at").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_sale_cancellations_sale_uq").on(table.saleId),
+  uniqueIndex("mart_sale_cancellations_operation_uq").on(table.operationId),
+  foreignKey({
+    columns: [table.saleId, table.classId],
+    foreignColumns: [martSales.id, martSales.classId],
+    name: "mart_sale_cancellations_sale_class_fk",
+  }),
+  foreignKey({
+    columns: [table.operationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_sale_cancellations_operation_class_fk",
+  }),
+  check(
+    "mart_sale_cancellations_revision_ck",
+    sql`${table.expectedSaleRevision} >= 0`,
+  ),
+  check(
+    "mart_sale_cancellations_reason_ck",
+    sql`LENGTH(TRIM(${table.reason})) BETWEEN 2 AND 300`,
+  ),
+]);
+
+export const martInventoryMovements = sqliteTable("mart_inventory_movements", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  productId: text("product_id").notNull(),
+  operationId: text("operation_id").notNull(),
+  movementType: text("movement_type").notNull(),
+  delta: integer("delta").notNull(),
+  quantityBefore: integer("quantity_before").notNull(),
+  quantityAfter: integer("quantity_after").notNull(),
+  inventoryRevisionBefore: integer("inventory_revision_before").notNull(),
+  inventoryRevisionAfter: integer("inventory_revision_after").notNull(),
+  sourceSaleId: text("source_sale_id"),
+  sourceSaleItemId: text("source_sale_item_id"),
+  reason: text("reason"),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("mart_inventory_movements_product_revision_uq").on(
+    table.productId,
+    table.inventoryRevisionAfter,
+  ),
+  index("mart_inventory_movements_class_created_idx").on(table.classId, table.createdAt),
+  index("mart_inventory_movements_operation_idx").on(table.operationId),
+  index("mart_inventory_movements_sale_idx").on(table.sourceSaleId, table.movementType),
+  foreignKey({
+    columns: [table.productId, table.classId],
+    foreignColumns: [martProducts.id, martProducts.classId],
+    name: "mart_inventory_movements_product_class_fk",
+  }),
+  foreignKey({
+    columns: [table.operationId, table.classId],
+    foreignColumns: [martOperations.id, martOperations.classId],
+    name: "mart_inventory_movements_operation_class_fk",
+  }),
+  foreignKey({
+    columns: [table.sourceSaleId, table.classId],
+    foreignColumns: [martSales.id, martSales.classId],
+    name: "mart_inventory_movements_sale_class_fk",
+  }),
+  foreignKey({
+    columns: [table.sourceSaleItemId, table.classId],
+    foreignColumns: [martSaleItems.id, martSaleItems.classId],
+    name: "mart_inventory_movements_sale_item_class_fk",
+  }),
+  check(
+    "mart_inventory_movements_type_ck",
+    sql`${table.movementType} IN ('inbound', 'outbound', 'correction', 'sale', 'sale_cancel')`,
+  ),
+  check(
+    "mart_inventory_movements_quantity_ck",
+    sql`${table.delta} <> 0
+      AND ${table.quantityBefore} BETWEEN 0 AND 1000000000
+      AND ${table.quantityAfter} = ${table.quantityBefore} + ${table.delta}
+      AND ${table.quantityAfter} BETWEEN 0 AND 1000000000`,
+  ),
+  check(
+    "mart_inventory_movements_revision_ck",
+    sql`${table.inventoryRevisionBefore} >= 0
+      AND ${table.inventoryRevisionAfter} = ${table.inventoryRevisionBefore} + 1`,
+  ),
+  check(
+    "mart_inventory_movements_source_ck",
+    sql`(${table.movementType} IN ('inbound', 'outbound', 'correction')
+        AND ${table.sourceSaleId} IS NULL AND ${table.sourceSaleItemId} IS NULL)
+      OR
+      (${table.movementType} IN ('sale', 'sale_cancel')
+        AND ${table.sourceSaleId} IS NOT NULL AND ${table.sourceSaleItemId} IS NOT NULL)`,
+  ),
+  check(
+    "mart_inventory_movements_reason_ck",
+    sql`${table.movementType} NOT IN ('inbound', 'outbound', 'correction')
+      OR LENGTH(TRIM(COALESCE(${table.reason}, ''))) BETWEEN 2 AND 300`,
+  ),
+]);
+
 export const financeDepositContracts = sqliteTable("finance_deposit_contracts", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),
@@ -2769,6 +3123,240 @@ export const financeStockLiquidationEvents = sqliteTable(
           AND ${table.revision} = ${table.completedChunkCount} + 1
           AND ${table.remainingQuantity} > 0
           AND ${table.quantityDelta} = 0 AND ${table.walletDelta} = 0)`,
+    ),
+  ],
+);
+
+export const lifeCheckSeries = sqliteTable(
+  "life_check_series",
+  {
+    classId: text("class_id").notNull().references(() => classes.id),
+    checkType: text("check_type").notNull(),
+    revision: integer("revision").notNull().default(0),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.classId, table.checkType],
+      name: "life_check_series_class_type_pk",
+    }),
+    check("life_check_series_type_ck", sql`${table.checkType} IN ('tooth', 'milk', 'lunch')`),
+    check("life_check_series_revision_ck", sql`${table.revision} >= 0`),
+  ],
+);
+
+export const lifeCheckRecords = sqliteTable(
+  "life_check_records",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    checkType: text("check_type").notNull(),
+    checkDate: text("check_date").notNull(),
+    studentId: text("student_id").notNull().references(() => students.id),
+    passed: integer("passed").notNull().default(0),
+    revision: integer("revision").notNull().default(1),
+    lastActorType: text("last_actor_type").notNull(),
+    lastActorTeacherId: text("last_actor_teacher_id").references(() => teachers.id),
+    lastActorStudentId: text("last_actor_student_id").references(() => students.id),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("life_check_records_class_type_date_student_uq").on(
+      table.classId,
+      table.checkType,
+      table.checkDate,
+      table.studentId,
+    ),
+    index("life_check_records_scope_idx").on(
+      table.classId,
+      table.checkType,
+      table.checkDate,
+      table.studentId,
+    ),
+    check("life_check_records_type_ck", sql`${table.checkType} IN ('tooth', 'milk', 'lunch')`),
+    check("life_check_records_passed_ck", sql`${table.passed} IN (0, 1)`),
+    check("life_check_records_revision_ck", sql`${table.revision} > 0`),
+    check(
+      "life_check_records_actor_ck",
+      sql`(${table.lastActorType} = 'teacher'
+          AND ${table.lastActorTeacherId} IS NOT NULL
+          AND ${table.lastActorStudentId} IS NULL)
+        OR (${table.lastActorType} = 'checker'
+          AND ${table.lastActorTeacherId} IS NULL
+          AND ${table.lastActorStudentId} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const lifeCheckEvents = sqliteTable(
+  "life_check_events",
+  {
+    id: text("id").primaryKey(),
+    requestId: text("request_id").notNull(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    checkType: text("check_type").notNull(),
+    checkDate: text("check_date").notNull(),
+    studentId: text("student_id").notNull().references(() => students.id),
+    passed: integer("passed").notNull(),
+    reason: text("reason"),
+    actorType: text("actor_type").notNull(),
+    actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+    actorStudentId: text("actor_student_id").references(() => students.id),
+    seriesRevision: integer("series_revision").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("life_check_events_class_request_uq").on(table.classId, table.requestId),
+    index("life_check_events_scope_idx").on(table.classId, table.checkType, table.createdAt),
+    check("life_check_events_request_ck", sql`LENGTH(${table.requestId}) BETWEEN 1 AND 100`),
+    check("life_check_events_type_ck", sql`${table.checkType} IN ('tooth', 'milk', 'lunch')`),
+    check("life_check_events_passed_ck", sql`${table.passed} IN (0, 1)`),
+    check("life_check_events_revision_ck", sql`${table.seriesRevision} > 0`),
+    check(
+      "life_check_events_actor_ck",
+      sql`(${table.actorType} = 'teacher'
+          AND ${table.actorTeacherId} IS NOT NULL
+          AND ${table.actorStudentId} IS NULL)
+        OR (${table.actorType} = 'checker'
+          AND ${table.actorTeacherId} IS NULL
+          AND ${table.actorStudentId} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const lifeCheckPayouts = sqliteTable(
+  "life_check_payouts",
+  {
+    id: text("id").primaryKey(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    checkType: text("check_type").notNull(),
+    payoutYear: integer("payout_year").notNull(),
+    payoutMonth: integer("payout_month").notNull(),
+    payoutPeriod: text("payout_period").notNull(),
+    status: text("status").notNull().default("prepared"),
+    itemsJson: text("items_json").notNull(),
+    recipientCount: integer("recipient_count").notNull().default(0),
+    totalAmount: integer("total_amount").notNull().default(0),
+    sourceSeriesRevision: integer("source_series_revision").notNull(),
+    sourceCalendarRevision: integer("source_calendar_revision").notNull(),
+    revision: integer("revision").notNull().default(1),
+    createdByActorType: text("created_by_actor_type").notNull(),
+    createdByTeacherId: text("created_by_teacher_id").references(() => teachers.id),
+    createdByStudentId: text("created_by_student_id").references(() => students.id),
+    lastActorType: text("last_actor_type").notNull(),
+    lastActorTeacherId: text("last_actor_teacher_id").references(() => teachers.id),
+    lastActorStudentId: text("last_actor_student_id").references(() => students.id),
+    completedByActorType: text("completed_by_actor_type"),
+    completedByTeacherId: text("completed_by_teacher_id").references(() => teachers.id),
+    completedByStudentId: text("completed_by_student_id").references(() => students.id),
+    completedAt: integer("completed_at"),
+    cancelledAt: integer("cancelled_at"),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("life_check_payouts_class_period_uq").on(
+      table.classId,
+      table.checkType,
+      table.payoutYear,
+      table.payoutMonth,
+      table.payoutPeriod,
+    ),
+    uniqueIndex("life_check_payouts_id_class_uq").on(table.id, table.classId),
+    index("life_check_payouts_scope_idx").on(
+      table.classId,
+      table.payoutYear,
+      table.payoutMonth,
+      table.payoutPeriod,
+    ),
+    check("life_check_payouts_type_ck", sql`${table.checkType} IN ('tooth', 'milk', 'lunch')`),
+    check("life_check_payouts_year_ck", sql`${table.payoutYear} BETWEEN 2020 AND 2100`),
+    check("life_check_payouts_month_ck", sql`${table.payoutMonth} BETWEEN 1 AND 12`),
+    check("life_check_payouts_period_ck", sql`${table.payoutPeriod} IN ('first', 'second')`),
+    check("life_check_payouts_status_ck", sql`${table.status} IN ('prepared', 'completed', 'cancelled')`),
+    check("life_check_payouts_items_ck", sql`json_valid(${table.itemsJson}) = 1 AND json_type(${table.itemsJson}) = 'array'`),
+    check("life_check_payouts_amount_ck", sql`${table.recipientCount} > 0 AND ${table.totalAmount} > 0`),
+    check("life_check_payouts_revision_ck", sql`${table.sourceSeriesRevision} >= 0 AND ${table.sourceCalendarRevision} >= 0 AND ${table.revision} > 0`),
+    check(
+      "life_check_payouts_creator_ck",
+      sql`(${table.createdByActorType} = 'teacher'
+          AND ${table.createdByTeacherId} IS NOT NULL
+          AND ${table.createdByStudentId} IS NULL)
+        OR (${table.createdByActorType} = 'checker'
+          AND ${table.createdByTeacherId} IS NULL
+          AND ${table.createdByStudentId} IS NOT NULL)`,
+    ),
+    check(
+      "life_check_payouts_last_actor_ck",
+      sql`(${table.lastActorType} = 'teacher'
+          AND ${table.lastActorTeacherId} IS NOT NULL
+          AND ${table.lastActorStudentId} IS NULL)
+        OR (${table.lastActorType} = 'checker'
+          AND ${table.lastActorTeacherId} IS NULL
+          AND ${table.lastActorStudentId} IS NOT NULL)`,
+    ),
+    check(
+      "life_check_payouts_state_ck",
+      sql`(${table.status} = 'completed'
+          AND ${table.completedByActorType} IS NOT NULL
+          AND ${table.completedAt} IS NOT NULL
+          AND ${table.cancelledAt} IS NULL
+          AND ((${table.completedByActorType} = 'teacher'
+              AND ${table.completedByTeacherId} IS NOT NULL
+              AND ${table.completedByStudentId} IS NULL)
+            OR (${table.completedByActorType} = 'checker'
+              AND ${table.completedByTeacherId} IS NULL
+              AND ${table.completedByStudentId} IS NOT NULL)))
+        OR (${table.status} = 'cancelled'
+          AND ${table.completedByActorType} IS NULL
+          AND ${table.completedByTeacherId} IS NULL
+          AND ${table.completedByStudentId} IS NULL
+          AND ${table.completedAt} IS NULL
+          AND ${table.cancelledAt} IS NOT NULL)
+        OR (${table.status} = 'prepared'
+          AND ${table.completedByActorType} IS NULL
+          AND ${table.completedByTeacherId} IS NULL
+          AND ${table.completedByStudentId} IS NULL
+          AND ${table.completedAt} IS NULL
+          AND ${table.cancelledAt} IS NULL)`,
+    ),
+  ],
+);
+
+export const lifeCheckPayoutEvents = sqliteTable(
+  "life_check_payout_events",
+  {
+    id: text("id").primaryKey(),
+    requestId: text("request_id").notNull(),
+    payoutId: text("payout_id").notNull(),
+    classId: text("class_id").notNull().references(() => classes.id),
+    action: text("action").notNull(),
+    actorType: text("actor_type").notNull(),
+    actorTeacherId: text("actor_teacher_id").references(() => teachers.id),
+    actorStudentId: text("actor_student_id").references(() => students.id),
+    detail: text("detail"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("life_check_payout_events_class_request_uq").on(table.classId, table.requestId),
+    index("life_check_payout_events_scope_idx").on(table.classId, table.createdAt),
+    foreignKey({
+      columns: [table.payoutId, table.classId],
+      foreignColumns: [lifeCheckPayouts.id, lifeCheckPayouts.classId],
+      name: "life_check_payout_events_payout_class_fk",
+    }),
+    check("life_check_payout_events_request_ck", sql`LENGTH(${table.requestId}) BETWEEN 1 AND 100`),
+    check("life_check_payout_events_action_ck", sql`${table.action} IN ('prepared', 'refreshed', 'completed', 'cancelled', 'reopened')`),
+    check("life_check_payout_events_detail_ck", sql`${table.detail} IS NULL OR json_valid(${table.detail}) = 1`),
+    check(
+      "life_check_payout_events_actor_ck",
+      sql`(${table.actorType} = 'teacher'
+          AND ${table.actorTeacherId} IS NOT NULL
+          AND ${table.actorStudentId} IS NULL)
+        OR (${table.actorType} = 'checker'
+          AND ${table.actorTeacherId} IS NULL
+          AND ${table.actorStudentId} IS NOT NULL)`,
     ),
   ],
 );

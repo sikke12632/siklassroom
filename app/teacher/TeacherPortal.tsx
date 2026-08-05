@@ -2,7 +2,7 @@
 
 import { Fragment, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, BriefcaseBusiness, CheckCircle2, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CheckCircle2, ClipboardCheck, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, ShoppingBasket, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
@@ -250,6 +250,8 @@ export function TeacherPortal() {
             )
           )}
           {selectedClassId && <a href={`/finance?classId=${selectedClassId}`}><Landmark aria-hidden="true" /><span>금융센터</span></a>}
+          {selectedClassId && <a href={`/mart?classId=${selectedClassId}`}><ShoppingBasket aria-hidden="true" /><span>마트센터</span></a>}
+          {selectedClassId && <a href={`/life-checks?classId=${selectedClassId}`}><ClipboardCheck aria-hidden="true" /><span>생활확인</span></a>}
         </nav>
         <div className="sidebar-section-title">내 학급</div>
         <nav className="class-nav">
@@ -448,6 +450,34 @@ export function TeacherPortal() {
               <div className="job-dashboard-actions">
                 <a className="button button-primary" href={`/finance?classId=${classRoom.id}`}>
                   <Landmark aria-hidden="true" />금융센터 들어가기
+                </a>
+              </div>
+            </section>
+
+            <section className="job-dashboard-card">
+              <div className="job-dashboard-icon" aria-hidden="true"><ShoppingBasket /></div>
+              <div>
+                <p className="eyebrow">현물 학급화폐로 운영</p>
+                <h2>마트센터</h2>
+                <p><b>마트 직원이 상품·판매·재고를 직접 기록합니다.</b> 금융센터의 디지털 잔액과는 연결되지 않으며, 선생님은 기록 확인과 비상 정정만 할 수 있어요.</p>
+              </div>
+              <div className="job-dashboard-actions">
+                <a className="button button-primary" href={`/mart?classId=${classRoom.id}`}>
+                  <ShoppingBasket aria-hidden="true" />마트센터 들어가기
+                </a>
+              </div>
+            </section>
+
+            <section className="job-dashboard-card">
+              <div className="job-dashboard-icon" aria-hidden="true"><ClipboardCheck /></div>
+              <div>
+                <p className="eyebrow">담당 학생이 직접 기록</p>
+                <h2>생활확인</h2>
+                <p><b>양치·우유·급식 담당 학생이 학급 달력에 맞춰 확인합니다.</b> 기간별 보상 명단과 변경 기록을 선생님이 한눈에 확인할 수 있어요.</p>
+              </div>
+              <div className="job-dashboard-actions">
+                <a className="button button-primary" href={`/life-checks?classId=${classRoom.id}`}>
+                  <ClipboardCheck aria-hidden="true" />생활확인 들어가기
                 </a>
               </div>
             </section>

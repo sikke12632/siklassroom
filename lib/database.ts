@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { FINANCE_SCHEMA_STATEMENTS } from "./finance-schema";
+import { MART_SCHEMA_STATEMENTS } from "./mart-schema";
 
 export type RuntimeEnv = {
   DB?: D1Database;
@@ -353,6 +354,7 @@ const schemaStatements = [
     key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL
   )`,
   ...FINANCE_SCHEMA_STATEMENTS,
+  ...MART_SCHEMA_STATEMENTS,
   `CREATE TRIGGER IF NOT EXISTS teacher_email_verified_after_token_use
     AFTER UPDATE OF used_at ON teacher_email_verifications
     WHEN NEW.used_at IS NOT NULL AND OLD.used_at IS NULL

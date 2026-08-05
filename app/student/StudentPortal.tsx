@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowRight, BookOpen, BriefcaseBusiness, GraduationCap, Landmark, School } from "lucide-react";
+import { ArrowRight, BookOpen, BriefcaseBusiness, ClipboardCheck, GraduationCap, Landmark, School, ShoppingBasket } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { StudentEntryIntro } from "@/app/components/EntryIntro";
@@ -148,6 +148,24 @@ export function StudentPortal() {
             <small>우리 반 금융생활</small>
             <h2>금융센터</h2>
             <p>내 금융생활과 우리 반 은행 기능을 차례로 준비하고 있어요.</p>
+          </div>
+          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+        </a>
+        <a className="student-finance-card" href="/mart">
+          <span aria-hidden="true"><ShoppingBasket /></span>
+          <div>
+            <small>현물 학급화폐로 운영</small>
+            <h2>마트센터</h2>
+            <p>내 구매 기록을 보고, 마트 직원이라면 상품과 재고·판매를 운영해요.</p>
+          </div>
+          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+        </a>
+        <a className="student-finance-card" href="/life-checks">
+          <span aria-hidden="true"><ClipboardCheck /></span>
+          <div>
+            <small>우리 반 생활 기록</small>
+            <h2>생활확인</h2>
+            <p>내 확인 결과를 보고, 담당 직업이라면 양치·우유·급식을 기록해요.</p>
           </div>
           <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
         </a>

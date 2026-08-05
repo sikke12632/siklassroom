@@ -246,6 +246,20 @@
       "when": 1785918080299,
       "tag": "0034_finance_salary_stats_funding",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1785929565483,
+      "tag": "0035_mart_center",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1785929572441,
+      "tag": "0036_life_checks",
+      "breakpoints": true
     }
   ]
 }
