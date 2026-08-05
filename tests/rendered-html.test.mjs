@@ -247,6 +247,16 @@ test("관리자 교사 권한 변경은 revision과 복구 수단을 원자적�
   assert.match(adminPortal, /credential_revision/);
 });
 
+test("관리자 학교 요청 처리는 상태 변경과 감사 기록을 한 번에 저장한다", async () => {
+  const route = await readFile(
+    new URL("../app/api/admin/school-requests/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /systemAdminAuditStatement/);
+  assert.match(route, /statements\.push\([\s\S]*systemAdminAuditStatement[\s\S]*DELETE FROM registration_operation_guards/);
+  assert.doesNotMatch(route, /auditSystemAdmin\(/);
+});
+
 test("교사 권한이 올라갈 때 기존 세션을 폐기하고 요청자 세션만 교체한다", async () => {
   const [auth, verification, emailConfirm, inviteRedeem, schoolSelect, schoolManual] = await Promise.all([
     readFile(new URL("../lib/auth.ts", import.meta.url), "utf8"),

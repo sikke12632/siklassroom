@@ -2,7 +2,7 @@ import { database, isOperationGuardFailure } from "@/lib/database";
 import { cleanDisplayText, normalizeSchool } from "@/lib/identity";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 import { normalizeSchoolSearch } from "@/lib/schools";
-import { auditSystemAdmin } from "@/lib/system-admin-audit";
+import { systemAdminAuditStatement } from "@/lib/system-admin-audit";
 import { requireSystemAdmin } from "@/lib/system-admin-auth";
 
 export async function GET(request: Request) {
@@ -144,6 +144,14 @@ export async function PATCH(request: Request) {
       );
     }
     statements.push(
+      systemAdminAuditStatement({
+        adminKey: admin.adminKey,
+        action: action === "reject" ? "school_request_rejected" : action === "link" ? "school_request_linked" : "school_request_approved",
+        targetType: "school_manual_request",
+        targetId: id,
+        before: { status: current.status, linkedSchoolId: current.linked_school_id },
+        after: { status: nextStatus, linkedSchoolId, note },
+      }, now),
       database().prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
     );
     try {
@@ -154,14 +162,6 @@ export async function PATCH(request: Request) {
       }
       throw error;
     }
-    await auditSystemAdmin({
-      adminKey: admin.adminKey,
-      action: action === "reject" ? "school_request_rejected" : action === "link" ? "school_request_linked" : "school_request_approved",
-      targetType: "school_manual_request",
-      targetId: id,
-      before: { status: current.status, linkedSchoolId: current.linked_school_id },
-      after: { status: nextStatus, linkedSchoolId, note },
-    });
     return json({ ok: true, request: { id, status: nextStatus, linked_school_id: linkedSchoolId } });
   } catch (error) {
     return apiFailure(error);
