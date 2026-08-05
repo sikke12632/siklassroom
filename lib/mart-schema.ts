@@ -329,33 +329,43 @@ WHERE period.status = 'confirmed'
   ON mart_inventory_movements(operation_id);`,
   `CREATE INDEX IF NOT EXISTS mart_inventory_movements_sale_idx
   ON mart_inventory_movements(source_sale_id, movement_type);`,
-  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_access_guard
+  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_revision_guard
 BEFORE INSERT ON mart_operations
-BEGIN
-  SELECT CASE WHEN NEW.expected_class_revision <> (
-    SELECT COUNT(*) FROM mart_operations operation
-    WHERE operation.class_id = NEW.class_id
-  ) THEN RAISE(ABORT, 'MART_CONTEXT_STALE') END;
-  SELECT CASE WHEN NOT EXISTS (
-    SELECT 1 FROM classes classroom
-    WHERE classroom.id = NEW.class_id AND classroom.status = 'active'
-  ) THEN RAISE(ABORT, 'MART_CLASS_NOT_ACTIVE') END;
-  SELECT CASE WHEN NEW.actor_type = 'teacher' AND NOT EXISTS (
-    SELECT 1 FROM classes classroom
-    WHERE classroom.id = NEW.class_id
-      AND classroom.teacher_id = NEW.actor_teacher_id
-      AND classroom.status = 'active'
-  ) THEN RAISE(ABORT, 'MART_CLASS_ACCESS_DENIED') END;
-  SELECT CASE WHEN NEW.actor_type = 'market_clerk' AND NOT EXISTS (
-    SELECT 1 FROM mart_effective_market_clerks clerk
-    WHERE clerk.class_id = NEW.class_id
-      AND clerk.student_id = NEW.actor_student_id
-      AND clerk.period_id = NEW.actor_job_period_id
-  ) THEN RAISE(ABORT, 'MART_CLERK_ACCESS_DENIED') END;
-  SELECT CASE WHEN NEW.operation = 'inventory_correction'
-    AND NEW.actor_type <> 'teacher'
-  THEN RAISE(ABORT, 'MART_INVENTORY_CORRECTION_TEACHER_REQUIRED') END;
-END;`,
+WHEN NEW.expected_class_revision <> (
+  SELECT COUNT(*) FROM mart_operations operation
+  WHERE operation.class_id = NEW.class_id
+)
+BEGIN SELECT RAISE(ABORT, 'MART_CONTEXT_STALE'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_class_guard
+BEFORE INSERT ON mart_operations
+WHEN NOT EXISTS (
+  SELECT 1 FROM classes classroom
+  WHERE classroom.id = NEW.class_id AND classroom.status = 'active'
+)
+BEGIN SELECT RAISE(ABORT, 'MART_CLASS_NOT_ACTIVE'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_teacher_guard
+BEFORE INSERT ON mart_operations
+WHEN NEW.actor_type = 'teacher' AND NOT EXISTS (
+  SELECT 1 FROM classes classroom
+  WHERE classroom.id = NEW.class_id
+    AND classroom.teacher_id = NEW.actor_teacher_id
+    AND classroom.status = 'active'
+)
+BEGIN SELECT RAISE(ABORT, 'MART_CLASS_ACCESS_DENIED'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_clerk_guard
+BEFORE INSERT ON mart_operations
+WHEN NEW.actor_type = 'market_clerk' AND NOT EXISTS (
+  SELECT 1 FROM mart_effective_market_clerks clerk
+  WHERE clerk.class_id = NEW.class_id
+    AND clerk.student_id = NEW.actor_student_id
+    AND clerk.period_id = NEW.actor_job_period_id
+)
+BEGIN SELECT RAISE(ABORT, 'MART_CLERK_ACCESS_DENIED'); END;`,
+  `CREATE TRIGGER IF NOT EXISTS mart_operations_insert_correction_guard
+BEFORE INSERT ON mart_operations
+WHEN NEW.operation = 'inventory_correction'
+  AND NEW.actor_type <> 'teacher'
+BEGIN SELECT RAISE(ABORT, 'MART_INVENTORY_CORRECTION_TEACHER_REQUIRED'); END;`,
   `CREATE TRIGGER IF NOT EXISTS mart_operations_update_guard
 BEFORE UPDATE ON mart_operations
 BEGIN SELECT RAISE(ABORT, 'MART_OPERATION_IMMUTABLE'); END;`,
@@ -537,13 +547,7 @@ WHEN NOT EXISTS (
 BEGIN SELECT RAISE(ABORT, 'MART_INVENTORY_STALE'); END;`,
   `CREATE TRIGGER IF NOT EXISTS mart_inventory_movements_apply
 AFTER INSERT ON mart_inventory_movements
-BEGIN
-  UPDATE mart_inventory
-  SET quantity = NEW.quantity_after,
-      revision = NEW.inventory_revision_after,
-      updated_at = NEW.created_at
-  WHERE product_id = NEW.product_id AND class_id = NEW.class_id;
-END;`,
+BEGIN UPDATE mart_inventory SET quantity = NEW.quantity_after, revision = NEW.inventory_revision_after, updated_at = NEW.created_at WHERE product_id = NEW.product_id AND class_id = NEW.class_id; END;`,
   `CREATE TRIGGER IF NOT EXISTS mart_inventory_movements_update_guard
 BEFORE UPDATE ON mart_inventory_movements
 BEGIN SELECT RAISE(ABORT, 'MART_INVENTORY_MOVEMENT_IMMUTABLE'); END;`,
