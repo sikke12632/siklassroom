@@ -880,3 +880,10 @@ test("첫 직업 배정 화면은 최초 조회 오류를 화면 안에서 다�
   assert.match(assignment, /onClick=\{load\}>다시 시도/);
   assert.match(assignment, /role="status">달력과 첫 직업 배정 화면을 준비하고 있어요/);
 });
+
+test("다음 달 직업 선정 화면은 최초 조회 오류를 화면 안에서 다시 시도할 수 있다", async () => {
+  const monthly = await readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/MonthlyJobChoicePortal.tsx", import.meta.url), "utf8");
+  assert.match(monthly, /aria-busy=\{loading \|\| undefined\}/);
+  assert.match(monthly, /onClick=\{\(\) => void load\(true\)\}>다시 시도/);
+  assert.match(monthly, /role="status">지난달 결과와 다음 달 선택 순서를 준비하고 있어요/);
+});

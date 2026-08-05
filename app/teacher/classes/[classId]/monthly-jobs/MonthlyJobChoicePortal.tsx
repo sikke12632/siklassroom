@@ -702,12 +702,15 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
 
   if (loading || !board) {
     return (
-      <main className="job-page job-loading">
+      <main className="job-page job-loading" aria-busy={loading || undefined}>
         <Logo />
         <Notice message={error} tone="error" />
         {error
-          ? <a className="button button-primary" href="/teacher">교사 대시보드로</a>
-          : <p>지난달 결과와 다음 달 선택 순서를 준비하고 있어요…</p>}
+          ? <div className="button-row">
+              <button className="button button-primary" type="button" onClick={() => void load(true)}>다시 시도</button>
+              <a className="button button-light" href="/teacher">교사 대시보드로</a>
+            </div>
+          : <p role="status">지난달 결과와 다음 달 선택 순서를 준비하고 있어요…</p>}
       </main>
     );
   }
