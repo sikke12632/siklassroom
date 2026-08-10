@@ -1047,3 +1047,64 @@ test("예상하지 못한 오류·없는 주소·화면 전환에도 복구 가�
   assert.match(loading, /role="status"/);
   assert.match(loading, /aria-live="polite"/);
 });
+
+test("교사 수업 달력은 키보드 달력과 모바일 시간표 편집 계약을 제공한다", async () => {
+  const [overview, styles, portal, timetableDraft] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherScheduleOverview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherScheduleOverview.module.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/timetable-draft.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(overview, /aria-labelledby="class-schedule-title"/);
+  assert.match(overview, /aria-busy=\{monthBusy \|\| saving \|\| conflictLoading \|\| todayRefreshing\}/);
+  assert.match(overview, /aria-label="이전 달"/);
+  assert.match(overview, /aria-label="다음 달"/);
+  assert.match(overview, /<caption className="visually-hidden">[\s\S]*방향키로 날짜를 이동/);
+  assert.match(overview, /<th key=\{day\} scope="col">/);
+  assert.match(overview, /tabIndex=\{day\.date === selectedDate \? 0 : -1\}/);
+  assert.match(overview, /aria-pressed=\{day\.date === selectedDate\}/);
+  assert.match(overview, /aria-current=\{day\.date === data\.calendar\.serverTime\.date \? "date" : undefined\}/);
+  assert.match(overview, /onKeyDown=\{\(event\) => moveDateFocus\(event, day\.date\)\}/);
+  for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) {
+    assert.match(overview, new RegExp(`event\\.key === "${key}"`));
+  }
+  assert.match(overview, /dateButtonRefs\.current\.get\(target\.date\)\?\.focus\(\)/);
+  assert.match(overview, /<caption className="visually-hidden">월요일부터 금요일까지의 기초 시간표 입력<\/caption>/);
+  assert.match(overview, /htmlFor=\{`subject-\$\{weekday\.value\}-\$\{period\}`\}/);
+  assert.match(overview, /role="tablist" aria-label="시간표 요일 선택"/);
+  assert.match(overview, /role="tab"[\s\S]*aria-selected=\{mobileWeekday === weekday\.value\}/);
+  assert.match(overview, /role="tabpanel"[\s\S]*aria-labelledby=\{`weekday-tab-\$\{mobileWeekday\}`\}/);
+  const mobileTabsStart = overview.indexOf('role="tablist"');
+  const mobileTabsEnd = overview.indexOf('role="tabpanel"', mobileTabsStart);
+  assert.ok(mobileTabsStart >= 0 && mobileTabsEnd > mobileTabsStart);
+  assert.match(overview.slice(mobileTabsStart, mobileTabsEnd), /role="tab"[\s\S]*onKeyDown=/);
+  assert.match(overview, /weekdayTabRefs/);
+  assert.match(overview, /weekdayTabRefs\.current\.get\([^)]+\)\?\.focus\(\)/);
+  assert.match(overview, /requestController\.current\?\.abort\(\)/);
+  assert.match(overview, /sequence !== requestSequence\.current/);
+  assert.match(overview, /reason instanceof ClientApiError && reason\.code === "TIMETABLE_STALE"/);
+  assert.match(overview, /입력은 그대로 보관했습니다/);
+  assert.match(overview, /const savedTimetable = useMemo/);
+  assert.match(overview, /Array\.from\(\{ length: savedTimetable\.periodCount \}/);
+  assert.match(overview, /Array\.from\(\{ length: MAX_PERIODS \}/);
+  assert.match(timetableDraft, /highestLocalChangedPeriod/);
+  assert.match(overview, /최신 저장본 사용/);
+  assert.match(overview, /내 입력 우선으로 합치기/);
+  assert.match(overview, /disabled=\{editorLocked\}/);
+  assert.match(overview, /disabled=\{transitionLocked\}/);
+  assert.match(overview, /"\/api\/time"/);
+  assert.match(overview, /serverTime\.date === data\.calendar\.serverTime\.date/);
+  assert.match(overview, /window\.addEventListener\("beforeunload"/);
+  assert.match(portal, /const \[scheduleDirty, setScheduleDirty\] = useState\(false\)/);
+  assert.match(portal, /onDirtyChange=\{setScheduleDirty\}/);
+  assert.match(portal, /scheduleDirty && !confirm\("저장하지 않은 시간표 변경이 있어요/);
+  assert.match(portal, /readOnly=\{classRoom\.status !== "active"\}/);
+
+  assert.match(styles, /\.section \{[\s\S]*min-width: 0/);
+  assert.match(styles, /\.calendarScroll \{[\s\S]*overflow-x: auto/);
+  assert.match(styles, /\.monthHeader button \{[\s\S]*min-width: 44px;[\s\S]*min-height: 44px/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*\.desktopEditor \{\s*display: none;[\s\S]*\.mobileEditor \{\s*display: block;/);
+  assert.match(styles, /\.weekdayTabs button \{[\s\S]*min-width: 44px;[\s\S]*min-height: 44px/);
+  assert.match(styles, /@media \(max-width: 380px\)[\s\S]*\.serverDate \{\s*min-width: 0;/);
+});

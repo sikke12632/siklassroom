@@ -508,6 +508,37 @@ export const classCalendarDays = sqliteTable("class_calendar_days", {
   index("class_calendar_days_class_idx").on(table.classId),
 ]);
 
+export const classTimetables = sqliteTable("class_timetables", {
+  classId: text("class_id").primaryKey().references(() => classes.id),
+  periodCount: integer("period_count").notNull().default(6),
+  revision: integer("revision").notNull().default(1),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check("class_timetables_period_count_ck", sql`${table.periodCount} BETWEEN 1 AND 10`),
+  check("class_timetables_revision_ck", sql`${table.revision} >= 1`),
+]);
+
+export const classTimetableSlots = sqliteTable("class_timetable_slots", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classTimetables.classId),
+  weekday: integer("weekday").notNull(),
+  periodNumber: integer("period_number").notNull(),
+  subjectName: text("subject_name").notNull(),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  check("class_timetable_slots_weekday_ck", sql`${table.weekday} BETWEEN 1 AND 5`),
+  check("class_timetable_slots_period_ck", sql`${table.periodNumber} BETWEEN 1 AND 10`),
+  check(
+    "class_timetable_slots_subject_ck",
+    sql`length(trim(${table.subjectName})) BETWEEN 1 AND 40`,
+  ),
+  uniqueIndex("class_timetable_slots_class_weekday_period_uq")
+    .on(table.classId, table.weekday, table.periodNumber),
+  index("class_timetable_slots_class_idx").on(table.classId),
+]);
+
 export const jobAssignmentCandidates = sqliteTable("job_assignment_candidates", {
   id: text("id").primaryKey(),
   periodId: text("period_id").notNull().references(() => classJobAssignmentPeriods.id),

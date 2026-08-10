@@ -43,7 +43,7 @@ test("최신 D1 마이그레이션 DB는 Worker 시작 때 전체 스키마를 �
     readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/life-check-access.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(databaseSource, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0038_finance_payroll_lifecycle_guards\.sql"/);
+  assert.match(databaseSource, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0039_class_timetable\.sql"/);
   assert.match(databaseSource, /SELECT 1 AS applied FROM d1_migrations WHERE name = \? LIMIT 1/);
   assert.match(databaseSource, /if \(await hasLatestRuntimeMigration\(db\)\) \{\s*schemaProvidedByMigrations = true;\s*return;/);
   assert.match(lifeAccessSource, /if \(runtimeSchemaProvidedByMigrations\(\)\) return;/);

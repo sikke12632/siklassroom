@@ -19,7 +19,7 @@ let schemaProvidedByMigrations = false;
 // Bump this filename whenever a migration adds or changes runtime schema.
 // A database with this migration already applied does not need hundreds of
 // defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
-const LATEST_RUNTIME_SCHEMA_MIGRATION = "0038_finance_payroll_lifecycle_guards.sql";
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0039_class_timetable.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -180,6 +180,26 @@ const schemaStatements = [
     ON class_calendar_days(class_id, calendar_date)`,
   `CREATE INDEX IF NOT EXISTS class_calendar_days_class_idx
     ON class_calendar_days(class_id)`,
+  `CREATE TABLE IF NOT EXISTS class_timetables (
+    class_id TEXT PRIMARY KEY, period_count INTEGER NOT NULL DEFAULT 6,
+    revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    CONSTRAINT class_timetables_period_count_ck CHECK (period_count BETWEEN 1 AND 10),
+    CONSTRAINT class_timetables_revision_ck CHECK (revision >= 1)
+  )`,
+  `CREATE TABLE IF NOT EXISTS class_timetable_slots (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, weekday INTEGER NOT NULL,
+    period_number INTEGER NOT NULL, subject_name TEXT NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES class_timetables(class_id),
+    CONSTRAINT class_timetable_slots_weekday_ck CHECK (weekday BETWEEN 1 AND 5),
+    CONSTRAINT class_timetable_slots_period_ck CHECK (period_number BETWEEN 1 AND 10),
+    CONSTRAINT class_timetable_slots_subject_ck CHECK (length(trim(subject_name)) BETWEEN 1 AND 40)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_timetable_slots_class_weekday_period_uq
+    ON class_timetable_slots(class_id, weekday, period_number)`,
+  `CREATE INDEX IF NOT EXISTS class_timetable_slots_class_idx
+    ON class_timetable_slots(class_id)`,
   `CREATE TABLE IF NOT EXISTS class_job_assignment_periods (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
     assignment_year INTEGER NOT NULL, assignment_month INTEGER NOT NULL,

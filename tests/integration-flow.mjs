@@ -610,6 +610,123 @@ await request("/api/classes", {
   expected: 409,
 });
 
+const teachingCalendarPath = `/api/classes/${classId}/teaching-calendar`;
+const historicalCalendarMonth = "2099-03";
+const historicalCalendarDraft = await request(
+  `/api/classes/${classId}/calendar?month=${historicalCalendarMonth}`,
+  { cookie: teacherCookie },
+);
+await request(`/api/classes/${classId}/calendar`, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: historicalCalendarDraft.data.calendar.revision,
+    schoolYear: 2099,
+    classStartDate: "2099-03-02",
+    firstJobStartDate: "2099-03-09",
+    firstJobEndDate: "2099-03-27",
+    days: historicalCalendarDraft.data.calendar.days.map(({ date, dayType, memo }) => ({
+      date,
+      dayType,
+      memo,
+    })),
+  },
+});
+const operationalCalendarBeforeTimetable = await request(
+  `/api/classes/${classId}/calendar?month=${encodeURIComponent(historicalCalendarMonth)}`,
+  { cookie: teacherCookie },
+);
+const initialTeachingCalendar = await request(teachingCalendarPath, { cookie: teacherCookie });
+assert.equal(initialTeachingCalendar.data.class.id, classId);
+assert.equal(initialTeachingCalendar.data.timetable.saved, false);
+assert.equal(initialTeachingCalendar.data.timetable.periodCount, 6);
+assert.equal(initialTeachingCalendar.data.timetable.revision, 0);
+assert.deepEqual(initialTeachingCalendar.data.timetable.slots, []);
+assert.equal(
+  initialTeachingCalendar.data.calendar.monthValue,
+  initialTeachingCalendar.data.calendar.serverTime.date.slice(0, 7),
+  "수업 달력은 기존 첫 직업 시작 월이 아니라 서울 기준 현재 월을 먼저 연다",
+);
+assert.notEqual(initialTeachingCalendar.data.calendar.monthValue, historicalCalendarMonth);
+
+const timetableSaved = await request(teachingCalendarPath, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    periodCount: 7,
+    slots: [
+      { weekday: 1, period: 1, subject: "국어" },
+      { weekday: 1, period: 2, subject: "수학" },
+      { weekday: 5, period: 7, subject: "창의적 체험활동" },
+    ],
+  },
+});
+assert.equal(timetableSaved.data.timetable.saved, true);
+assert.equal(timetableSaved.data.timetable.revision, 1);
+assert.equal(timetableSaved.data.timetable.periodCount, 7);
+assert.deepEqual(timetableSaved.data.timetable.slots, [
+  { id: `${classId}:timetable:1:1`, weekday: 1, period: 1, subject: "국어" },
+  { id: `${classId}:timetable:1:2`, weekday: 1, period: 2, subject: "수학" },
+  { id: `${classId}:timetable:5:7`, weekday: 5, period: 7, subject: "창의적 체험활동" },
+]);
+
+const restoredTeachingCalendar = await request(
+  `${teachingCalendarPath}?month=${encodeURIComponent(initialTeachingCalendar.data.calendar.monthValue)}`,
+  { cookie: teacherCookie },
+);
+assert.deepEqual(restoredTeachingCalendar.data.timetable, timetableSaved.data.timetable);
+assert.equal(
+  restoredTeachingCalendar.data.calendar.revision,
+  operationalCalendarBeforeTimetable.data.calendar.revision,
+);
+assert.equal(
+  restoredTeachingCalendar.data.calendar.saved,
+  operationalCalendarBeforeTimetable.data.calendar.saved,
+);
+
+const staleTimetable = await request(teachingCalendarPath, {
+  cookie: teacherCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: 0,
+    periodCount: 6,
+    slots: [{ weekday: 2, period: 1, subject: "과학" }],
+  },
+  expected: 409,
+});
+assert.equal(staleTimetable.data.code, "TIMETABLE_STALE");
+const timetableAfterStale = await request(teachingCalendarPath, { cookie: teacherCookie });
+assert.deepEqual(timetableAfterStale.data.timetable, timetableSaved.data.timetable);
+
+const operationalCalendarAfterTimetable = await request(
+  `/api/classes/${classId}/calendar?month=${encodeURIComponent(initialTeachingCalendar.data.calendar.monthValue)}`,
+  { cookie: teacherCookie },
+);
+assert.equal(
+  operationalCalendarAfterTimetable.data.calendar.revision,
+  operationalCalendarBeforeTimetable.data.calendar.revision,
+);
+assert.equal(
+  operationalCalendarAfterTimetable.data.calendar.saved,
+  operationalCalendarBeforeTimetable.data.calendar.saved,
+);
+await request(teachingCalendarPath, { cookie: outsiderCookie, expected: 404 });
+await request(teachingCalendarPath, {
+  cookie: outsiderCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: timetableSaved.data.timetable.revision,
+    periodCount: timetableSaved.data.timetable.periodCount,
+    slots: timetableSaved.data.timetable.slots.map(({ weekday, period, subject }) => ({
+      weekday,
+      period,
+      subject,
+    })),
+  },
+  expected: 404,
+});
+
 const roster = await request(`/api/classes/${classId}/students`, {
   cookie: teacherCookie,
   method: "POST",
@@ -1452,6 +1569,21 @@ await request("/api/student/login", {
   body: { schoolName, schoolYear: 2098, grade: 5, classNumber: 9, studentNumber: 1, password: "258025" },
   expected: 401,
 });
+const archivedTeachingCalendarPath = `/api/classes/${previousYearClass.data.class.id}/teaching-calendar`;
+const archivedTeachingCalendar = await request(archivedTeachingCalendarPath, {
+  cookie: reapprovedCookie,
+});
+const archivedTimetableWrite = await request(archivedTeachingCalendarPath, {
+  cookie: reapprovedCookie,
+  method: "PUT",
+  body: {
+    expectedRevision: archivedTeachingCalendar.data.timetable.revision,
+    periodCount: 6,
+    slots: [{ weekday: 1, period: 1, subject: "국어" }],
+  },
+  expected: 409,
+});
+assert.equal(archivedTimetableWrite.data.code, "CLASS_ARCHIVED");
 await request(`/api/classes/${previousYearClass.data.class.id}`, {
   cookie: reapprovedCookie,
   method: "PATCH",

@@ -2,13 +2,14 @@
 
 import { Fragment, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, BriefcaseBusiness, CheckCircle2, ClipboardCheck, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, ShoppingBasket, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CalendarDays, CheckCircle2, ClipboardCheck, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, ShoppingBasket, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
+import { TeacherScheduleOverview } from "./TeacherScheduleOverview";
 import { api, ClientApiError, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
 import { PROVINCES, SCHOOL_LEVELS } from "@/lib/schools";
 
@@ -71,6 +72,7 @@ export function TeacherPortal() {
     completedCount: number;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scheduleDirty, setScheduleDirty] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [sessionError, setSessionError] = useState("");
@@ -161,6 +163,9 @@ export function TeacherPortal() {
   }, [actor, selectedClassId, loadClass]);
 
   function selectClass(id: string) {
+    if (id === selectedClassId && !showClassForm) return;
+    if (scheduleDirty && !confirm("저장하지 않은 시간표 변경이 있어요. 변경을 버리고 다른 학급으로 이동할까요?")) return;
+    setScheduleDirty(false);
     classLoadSequence.current += 1;
     setClassRoom(null);
     setStudents([]);
@@ -170,6 +175,8 @@ export function TeacherPortal() {
   }
 
   function startClassCreation() {
+    if (scheduleDirty && !confirm("저장하지 않은 시간표 변경이 있어요. 변경을 버리고 새 학급 만들기로 이동할까요?")) return;
+    setScheduleDirty(false);
     classLoadSequence.current += 1;
     setClassRoom(null);
     setStudents([]);
@@ -178,6 +185,7 @@ export function TeacherPortal() {
   }
 
   async function logout() {
+    if (scheduleDirty && !confirm("저장하지 않은 시간표 변경이 있어요. 변경을 버리고 로그아웃할까요?")) return;
     await api("/api/session", { method: "DELETE" });
     router.replace("/teacher");
     router.refresh();
@@ -266,6 +274,7 @@ export function TeacherPortal() {
         <nav className="primary-nav" aria-label="주요 메뉴">
           <a className="active" href="#dashboard"><Home aria-hidden="true" /><span>홈</span></a>
           <a href="#students"><UsersRound aria-hidden="true" /><span>학생 관리</span></a>
+          {selectedClassId && <a href="#class-schedule"><CalendarDays aria-hidden="true" /><span>달력·시간표</span></a>}
           {selectedClassId && <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" /><span>우리 반 직업</span></a>}
           {selectedClassId && selectedSummary?.job_status === "completed" && (
             <a href={`/teacher/classes/${selectedClassId}/job-assignments`}><Dices aria-hidden="true" /><span>첫 직업 배정</span></a>
@@ -366,6 +375,13 @@ export function TeacherPortal() {
               <i />
               <div className={selectedSummary.assignment_status === "confirmed" ? "done" : ""}><b>5</b><span>설정 완료<small>{selectedSummary.assignment_status === "confirmed" ? "완료" : "대기"}</small></span></div>
             </section>
+
+            <TeacherScheduleOverview
+              key={classRoom.id}
+              classId={classRoom.id}
+              readOnly={classRoom.status !== "active"}
+              onDirtyChange={setScheduleDirty}
+            />
 
             <div data-dashboard-section="students">
               {students.length === 0 ? (
