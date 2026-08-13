@@ -949,6 +949,12 @@ function resultInsertStatement(
   );
 }
 
+function jobEvaluationCloseWriteConflict(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("NOT NULL constraint failed: class_job_evaluation_sessions.status")
+    || message.includes("UNIQUE constraint failed: class_job_evaluation_results.session_id");
+}
+
 export async function closeJobEvaluation(input: {
   classId: string;
   teacherId: string;
@@ -1077,7 +1083,7 @@ export async function closeJobEvaluation(input: {
         evaluation: await teacherEvaluationFromRow(latest),
       };
     }
-    if (!(error instanceof ApiError)) throw error;
+    if (!jobEvaluationCloseWriteConflict(error)) throw error;
     throw new ApiError(
       409,
       "마감하는 동안 학생 제출 현황이 바뀌었어요. 최신 정보를 확인해 주세요.",

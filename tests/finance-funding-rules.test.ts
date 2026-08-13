@@ -16,6 +16,31 @@ import {
   normalizeFinanceFundingCampaignFields,
   normalizeFinanceFundingContribution,
 } from "../lib/finance-funding-rules";
+import { stableActionKey } from "../app/finance/FinanceFundingPanel";
+
+test("펀딩 재시도 키는 같은 입력에만 재사용하고 금액·revision 변경 시 교체한다", () => {
+  const attempts: Record<string, { fingerprint: string; key: string }> = {};
+  const first = stableActionKey(attempts, "contribute:campaign-1", "funding-contribute", {
+    amount: 100,
+    expectedCampaignRevision: 3,
+  });
+  const identicalRetry = stableActionKey(attempts, "contribute:campaign-1", "funding-contribute", {
+    amount: 100,
+    expectedCampaignRevision: 3,
+  });
+  const changedAmount = stableActionKey(attempts, "contribute:campaign-1", "funding-contribute", {
+    amount: 200,
+    expectedCampaignRevision: 3,
+  });
+  const changedRevision = stableActionKey(attempts, "contribute:campaign-1", "funding-contribute", {
+    amount: 200,
+    expectedCampaignRevision: 4,
+  });
+
+  assert.equal(identicalRetry, first);
+  assert.notEqual(changedAmount, first);
+  assert.notEqual(changedRevision, changedAmount);
+});
 
 function fundingError(code: string) {
   return (error: unknown) => (

@@ -1033,31 +1033,40 @@ type SubmittedAssignment = {
   method: AssignmentMethod;
 };
 
-function submittedAssignments(
-  value: unknown,
-  board: Awaited<ReturnType<typeof loadInitialAssignmentBoard>>,
-) {
+function parseSubmittedAssignmentPayload(value: unknown) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 60) {
     throw new ApiError(400, "전체 배정표를 다시 확인해 주세요.", "INVALID_ASSIGNMENTS");
   }
-  const studentOrder = new Map(board.students.map((student, index) => [student.id, index]));
-  const studentIds = new Set(board.students.map((student) => student.id));
-  const jobIds = new Set(board.jobs.map((job) => job.id));
   const seenStudents = new Set<string>();
-  const jobCounts = new Map<string, number>();
-  const assignments = value.map((item): SubmittedAssignment => {
+  return value.map((item): SubmittedAssignment => {
     const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
     const classJobId = cleanDisplayText(row.classJobId, 100);
     const studentId = cleanDisplayText(row.studentId, 100);
     const method = row.method === "random" || row.method === "manual" ? row.method : null;
-    if (!jobIds.has(classJobId) || !studentIds.has(studentId) || !method || seenStudents.has(studentId)) {
+    if (!classJobId || !studentId || !method || seenStudents.has(studentId)) {
       throw new ApiError(400, "학생 또는 직업이 중복되었거나 현재 학급 정보와 맞지 않아요.", "INVALID_ASSIGNMENTS");
     }
     seenStudents.add(studentId);
-    jobCounts.set(classJobId, (jobCounts.get(classJobId) ?? 0) + 1);
     return { classJobId, studentId, method };
   });
-  if (assignments.length !== board.students.length || seenStudents.size !== board.students.length) {
+}
+
+function submittedAssignments(
+  value: unknown,
+  board: Awaited<ReturnType<typeof loadInitialAssignmentBoard>>,
+) {
+  const assignments = parseSubmittedAssignmentPayload(value);
+  const studentOrder = new Map(board.students.map((student, index) => [student.id, index]));
+  const studentIds = new Set(board.students.map((student) => student.id));
+  const jobIds = new Set(board.jobs.map((job) => job.id));
+  const jobCounts = new Map<string, number>();
+  for (const assignment of assignments) {
+    if (!jobIds.has(assignment.classJobId) || !studentIds.has(assignment.studentId)) {
+      throw new ApiError(400, "학생 또는 직업이 중복되었거나 현재 학급 정보와 맞지 않아요.", "INVALID_ASSIGNMENTS");
+    }
+    jobCounts.set(assignment.classJobId, (jobCounts.get(assignment.classJobId) ?? 0) + 1);
+  }
+  if (assignments.length !== board.students.length) {
     throw new ApiError(422, "활성 학생 모두에게 직업을 하나씩 배정해 주세요.", "ASSIGNMENT_INCOMPLETE");
   }
   if (board.jobs.some((job) => (jobCounts.get(job.id) ?? 0) !== Number(job.memberCapacity))) {
@@ -1108,20 +1117,20 @@ async function completeSubmittedAssignments(input: {
     throw new ApiError(400, "달력 버전을 확인할 수 없어요. 새로고침한 뒤 다시 시도해 주세요.", "INVALID_CALENDAR_REVISION");
   }
   const idempotencyKey = compositeRequestId(input.requestId);
+  const submittedPayload = parseSubmittedAssignmentPayload(input.assignments);
   const currentBoard = await loadInitialAssignmentBoard(input.classId);
   const currentPeriod = currentBoard.assignmentPeriodRecord;
   if (currentPeriod?.status === "confirmed") {
-    const submitted = submittedAssignments(input.assignments, currentBoard);
     const requestState = isExactSubmittedCompletion({
       stored: currentBoard.assignments,
-      submitted,
+      submitted: submittedPayload,
       requestId: idempotencyKey,
     });
     if (requestState.exact && currentPeriod.mode === mode) {
       return {
         periodId: currentPeriod.id,
         confirmedAt: Number(currentPeriod.confirmed_at),
-        assignmentCount: submitted.length,
+        assignmentCount: submittedPayload.length,
         source: "local_draft",
         idempotent: true,
       };
@@ -1158,7 +1167,7 @@ async function completeSubmittedAssignments(input: {
       "ASSIGNMENT_CONFIRM_CONFLICT",
     );
   }
-  const assignments = submittedAssignments(input.assignments, board);
+  const assignments = submittedAssignments(submittedPayload, board);
   const now = Date.now();
   const db = database();
   const reservationGuardId = crypto.randomUUID();

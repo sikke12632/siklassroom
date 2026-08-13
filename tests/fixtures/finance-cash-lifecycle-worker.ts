@@ -59,6 +59,7 @@ let studentFieldAfterReadHook: {
   matched: boolean;
 } | null = null;
 let calendarAfterReadHook: { matched: boolean } | null = null;
+let schoolAfterReadHook: { matched: boolean } | null = null;
 
 function isUnresolvedCashRequestCount(query: string) {
   return query.includes("finance_cash_requests") && query.includes("COUNT");
@@ -75,6 +76,19 @@ function isOwnedStudentRead(query: string) {
 
 function isCalendarRead(query: string) {
   return query.includes("FROM class_calendars WHERE class_id = ?");
+}
+
+function isOfficialSchoolRead(query: string) {
+  return query.includes("SELECT official_name AS school_name")
+    && query.includes("FROM schools");
+}
+
+async function changeTeacherSchoolAfterRead() {
+  if (!rawDatabase) throw new Error("The lifecycle test database is unavailable.");
+  await rawDatabase.prepare(
+    `UPDATE teachers SET school_id = 'school-cash-race', updated_at = updated_at + 1
+     WHERE id = 'teacher-cash-lifecycle'`,
+  ).run();
 }
 
 async function updateCalendarAfterRead() {
@@ -290,6 +304,15 @@ function wrapPreparedStatement(
             calendarHook.matched = true;
             await updateCalendarAfterRead();
           }
+          const schoolHook = schoolAfterReadHook;
+          if (
+            schoolHook
+            && !schoolHook.matched
+            && isOfficialSchoolRead(query)
+          ) {
+            schoolHook.matched = true;
+            await changeTeacherSchoolAfterRead();
+          }
           const hook = injectionHook;
           if (
             hook
@@ -394,6 +417,7 @@ const financeCashLifecycleWorker = {
       "x-test-student-field-after-read",
     );
     const calendarAfterRead = request.headers.get("x-test-calendar-after-read");
+    const schoolAfterRead = request.headers.get("x-test-school-after-read");
     if (
       requestedScope !== null
       && requestedScope !== "class"
@@ -423,6 +447,9 @@ const financeCashLifecycleWorker = {
     if (calendarAfterRead !== null && calendarAfterRead !== "1") {
       return Response.json({ error: "Unknown calendar race hook." }, { status: 400 });
     }
+    if (schoolAfterRead !== null && schoolAfterRead !== "1") {
+      return Response.json({ error: "Unknown school race hook." }, { status: 400 });
+    }
     if (
       injectionHook
       || archiveAfterClassReadHook
@@ -431,6 +458,7 @@ const financeCashLifecycleWorker = {
       || activateAfterStudentReadHook
       || studentFieldAfterReadHook
       || calendarAfterReadHook
+      || schoolAfterReadHook
     ) {
       return Response.json(
         { error: "A lifecycle injection hook is already active." },
@@ -457,6 +485,9 @@ const financeCashLifecycleWorker = {
     }
     if (calendarAfterRead === "1") {
       calendarAfterReadHook = { matched: false };
+    }
+    if (schoolAfterRead === "1") {
+      schoolAfterReadHook = { matched: false };
     }
 
     try {
@@ -610,7 +641,8 @@ const financeCashLifecycleWorker = {
           || (excludeAfterStudentReadHook?.matched ?? false)
           || (activateAfterStudentReadHook?.matched ?? false)
           || (studentFieldAfterReadHook?.matched ?? false)
-          || (calendarAfterReadHook?.matched ?? false),
+          || (calendarAfterReadHook?.matched ?? false)
+          || (schoolAfterReadHook?.matched ?? false),
       );
     } finally {
       injectionHook = null;
@@ -620,6 +652,7 @@ const financeCashLifecycleWorker = {
       activateAfterStudentReadHook = null;
       studentFieldAfterReadHook = null;
       calendarAfterReadHook = null;
+      schoolAfterReadHook = null;
     }
   },
 };

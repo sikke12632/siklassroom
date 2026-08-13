@@ -20,20 +20,21 @@ import {
   normalizeFinanceReversal,
 } from "../lib/finance-request-rules";
 
-test("1분 금융 자동화는 D1 한도 안에서 한 종류씩 작은 배치로 처리한다", async () => {
+test("금융 자동화는 매분 모든 영역을 독립된 작은 묶음으로 처리한다", async () => {
   const [worker, funding, stocks] = await Promise.all([
     readFile(new URL("../worker/index.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/finance-funding.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(worker, /Math\.floor\(now \/ 60_000\) % FINANCE_AUTOMATION_PHASES/);
-  assert.match(worker, /settleDueDepositContracts\(db, \{ now, limit: 2 \}\)/);
-  assert.match(worker, /processFinanceStockMarketTicks\(db, \{ now, limit: 2, newsLimit: 2 \}\)/);
+  assert.doesNotMatch(worker, /financeAutomationLane|FINANCE_AUTOMATION_PHASES/);
+  assert.match(worker, /settleDueDepositContracts\(db, \{ now, limit: 4 \}\)/);
+  assert.match(worker, /\(\) => processPendingFinancePayroll\(\)/);
+  assert.match(worker, /processFinanceStockMarketTicks\(db, \{ now, limit: 4, newsLimit: 4 \}\)/);
   assert.match(stocks, /UPDATE finance_stock_news[\s\S]*LIMIT \?/);
   assert.match(stocks, /FINANCE_STOCK_NEWS_PER_TICK_LIMIT = 20/);
   assert.match(stocks, /unappliedNewsForStockTick[\s\S]*ORDER BY news\.created_at, news\.id[\s\S]*LIMIT \?/);
-  assert.match(worker, /processDueFundingCampaigns\(db, \{[\s\S]*limit: 1,[\s\S]*refundLimit: 1/);
-  assert.match(worker, /processPendingFinancePayroll\(\)/);
+  assert.match(worker, /processDueFundingCampaigns\(db, \{[\s\S]*limit: 2,[\s\S]*refundLimit: 8/);
+  assert.match(worker, /controller\.scheduledTime > 0 \? controller\.scheduledTime : Date\.now\(\)/);
   assert.doesNotMatch(worker, /Promise\.allSettled/);
   assert.match(funding, /refundLimit\?: number/);
   assert.match(funding, /refundFundingCampaign\([\s\S]*refundLimit/);

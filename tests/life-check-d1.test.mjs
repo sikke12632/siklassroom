@@ -111,6 +111,7 @@ test("생활확인은 직업 권한·학급 격리·중복 방지·기록 전용
 
     const current = seoulMonth();
     const payoutMonth = shiftedMonth(current, -1);
+    const syntheticPastMonth = shiftedMonth(payoutMonth, -1);
     const futureMonth = shiftedMonth(current, 1);
     const selectedDates = [1, 2, 3, 4].map(
       (day) => `${payoutMonth.value}-${String(day).padStart(2, "0")}`,
@@ -265,6 +266,7 @@ test("생활확인은 직업 권한·학급 격리·중복 방지·기록 전용
     const checkerOverview = await call(worker, tokens.tooth, `/overview?type=tooth&period=first&month=${payoutMonth.value}`);
     assert.equal(checkerOverview.response.status, 200);
     assert.equal(checkerOverview.body.context.role, "checker");
+    assert.equal(checkerOverview.body.calendar.monthSaved, true);
     assert.equal(checkerOverview.body.students.length, 4);
     assert.deepEqual(checkerOverview.body.calendar.dates, selectedDates.slice(0, 2));
 
@@ -350,6 +352,13 @@ test("생활확인은 직업 권한·학급 격리·중복 방지·기록 전용
     assert.equal(offDay.response.status, 422);
     assert.equal(offDay.body.code, "LIFE_CHECK_NOT_CLASS_DAY");
 
+    const syntheticPastRecord = await setRecord(tokens.tooth, {
+      type: "tooth", date: `${syntheticPastMonth.value}-01`, studentId: "student-ordinary",
+      passed: true, expectedRevision: 4, requestId: "tooth-unsaved-past-month",
+    });
+    assert.equal(syntheticPastRecord.response.status, 409);
+    assert.equal(syntheticPastRecord.body.code, "LIFE_CHECK_CALENDAR_MONTH_REQUIRED");
+
     const futureRecord = await setRecord(tokens.tooth, {
       type: "tooth", date: futureRecordDate, studentId: "student-ordinary",
       passed: true, expectedRevision: 4, requestId: "tooth-future-date",
@@ -365,8 +374,8 @@ test("생활확인은 직업 권한·학급 격리·중복 방지·기록 전용
         expectedPayoutRevision: 0, requestId: "tooth-future-payout",
       }),
     });
-    assert.equal(futurePayout.response.status, 422);
-    assert.equal(futurePayout.body.code, "LIFE_CHECK_PERIOD_IN_PROGRESS");
+    assert.equal(futurePayout.response.status, 409);
+    assert.equal(futurePayout.body.code, "LIFE_CHECK_CALENDAR_MONTH_REQUIRED");
 
     const financeBefore = lastResults(executeSql(
       persistPath,

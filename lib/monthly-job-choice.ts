@@ -622,6 +622,13 @@ export async function loadMonthlyJobChoiceBoard(classId: string) {
   return serializeBoard(await loadContext(classId));
 }
 
+function monthlyClosureWriteConflict(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("NOT NULL constraint failed: class_job_month_closures.status")
+    || message.includes("UNIQUE constraint failed: class_job_month_closures")
+    || message.includes("UNIQUE constraint failed: class_job_month_results");
+}
+
 export async function closeMonthlyJobSource(input: {
   classId: string;
   teacherId: string;
@@ -819,7 +826,7 @@ export async function closeMonthlyJobSource(input: {
       const nextContext = await loadContext(input.classId);
       return { idempotent: true, closureId: raced.id, board: serializeBoard(nextContext) };
     }
-    if (!(error instanceof ApiError)) throw error;
+    if (!monthlyClosureWriteConflict(error)) throw error;
     throw new ApiError(
       409,
       "월마감 직전에 학생이나 지난달 배정이 바뀌었어요. 최신 화면을 다시 확인해 주세요.",
@@ -1108,19 +1115,12 @@ type SubmittedAssignment = {
   classJobId: string;
 };
 
-function parseSubmittedAssignments(
-  value: unknown,
-  students: StudentRow[],
-  jobs: JobRow[],
-) {
+function parseSubmittedAssignmentPayload(value: unknown) {
   if (!Array.isArray(value)) {
     throw new ApiError(400, "학생별 직업 선택 결과를 확인해 주세요.", "INVALID_MONTHLY_ASSIGNMENTS");
   }
-  const studentIds = new Set(students.map((student) => student.id));
-  const jobIds = new Set(jobs.map((job) => job.id));
   const seen = new Set<string>();
-  const counts = new Map<string, number>();
-  const parsed = value.map((raw): SubmittedAssignment => {
+  return value.map((raw): SubmittedAssignment => {
     const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
     const studentId = textId(
       item.studentId,
@@ -1132,7 +1132,7 @@ function parseSubmittedAssignments(
       "선택 결과의 직업 정보를 확인해 주세요.",
       "INVALID_MONTHLY_ASSIGNMENTS",
     );
-    if (!studentIds.has(studentId) || !jobIds.has(classJobId) || seen.has(studentId)) {
+    if (seen.has(studentId)) {
       throw new ApiError(
         400,
         "학생 또는 직업이 중복되었거나 현재 학급 정보와 맞지 않아요.",
@@ -1140,10 +1140,30 @@ function parseSubmittedAssignments(
       );
     }
     seen.add(studentId);
-    counts.set(classJobId, (counts.get(classJobId) ?? 0) + 1);
     return { studentId, classJobId };
   });
-  if (parsed.length !== students.length || seen.size !== students.length) {
+}
+
+function parseSubmittedAssignments(
+  value: unknown,
+  students: StudentRow[],
+  jobs: JobRow[],
+) {
+  const parsed = parseSubmittedAssignmentPayload(value);
+  const studentIds = new Set(students.map((student) => student.id));
+  const jobIds = new Set(jobs.map((job) => job.id));
+  const counts = new Map<string, number>();
+  for (const assignment of parsed) {
+    if (!studentIds.has(assignment.studentId) || !jobIds.has(assignment.classJobId)) {
+      throw new ApiError(
+        400,
+        "학생 또는 직업이 중복되었거나 현재 학급 정보와 맞지 않아요.",
+        "INVALID_MONTHLY_ASSIGNMENTS",
+      );
+    }
+    counts.set(assignment.classJobId, (counts.get(assignment.classJobId) ?? 0) + 1);
+  }
+  if (parsed.length !== students.length) {
     throw new ApiError(
       422,
       "활성 학생 모두가 직업을 하나씩 선택해야 해요.",
@@ -1233,10 +1253,10 @@ export async function completeMonthlyJobChoice(input: {
     );
   }
   const context = await loadContext(input.classId);
-  const assignments = parseSubmittedAssignments(input.assignments, context.students, context.jobs);
+  const submittedPayload = parseSubmittedAssignmentPayload(input.assignments);
   const confirmedRequest = confirmedMonthlyRequestState({
     context,
-    assignments,
+    assignments: submittedPayload,
     requestId,
     expectedRevision,
     expectedJobSetupRevision,
@@ -1246,7 +1266,7 @@ export async function completeMonthlyJobChoice(input: {
       periodId: confirmedRequest.session.confirmed_period_id!,
       sessionId: confirmedRequest.session.id,
       confirmedAt: Number(confirmedRequest.session.confirmed_at),
-      assignmentCount: assignments.length,
+      assignmentCount: submittedPayload.length,
       targetYear: Number(confirmedRequest.session.target_year),
       targetMonth: Number(confirmedRequest.session.target_month),
       idempotent: true,
@@ -1260,6 +1280,7 @@ export async function completeMonthlyJobChoice(input: {
       "MONTHLY_CHOICE_REQUEST_REUSED",
     );
   }
+  const assignments = parseSubmittedAssignments(submittedPayload, context.students, context.jobs);
   const session = requireFreshDraftSession(context);
   if (
     Number(session.revision) !== expectedRevision

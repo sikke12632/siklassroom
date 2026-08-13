@@ -533,6 +533,13 @@ const requestToReject = await request("/api/schools/manual", {
 });
 manualCookie = cookieFrom(requestToReject.response);
 await request("/api/classes", { cookie: manualCookie });
+const pendingSchoolClass = await request("/api/classes", {
+  cookie: manualCookie,
+  method: "POST",
+  body: { schoolYear: 2099, grade: 6, classNumber: 7 },
+  expected: 409,
+});
+assert.equal(pendingSchoolClass.data.code, "SCHOOL_APPROVAL_REQUIRED");
 await request("/api/admin/school-requests", {
   cookie: adminCookie,
   method: "PATCH",
@@ -1404,7 +1411,7 @@ const recovery = await request("/api/teacher/password/request", {
   method: "POST",
   body: { email: teacherEmail },
 });
-assert.equal(recovery.data.emailConfigured, false);
+assert.equal("emailConfigured" in recovery.data, false);
 assert.ok(recovery.data.developmentResetUrl);
 assert.match(recovery.response.headers.get("cache-control") || "", /no-store/i);
 const missingRecovery = await request("/api/teacher/password/request", {
@@ -1413,7 +1420,7 @@ const missingRecovery = await request("/api/teacher/password/request", {
 });
 assert.equal(missingRecovery.data.message, recovery.data.message);
 assert.equal(missingRecovery.data.ok, recovery.data.ok);
-assert.equal(missingRecovery.data.emailConfigured, recovery.data.emailConfigured);
+assert.equal("emailConfigured" in missingRecovery.data, false);
 assert.deepEqual(Object.keys(missingRecovery.data).sort(), Object.keys(recovery.data).sort());
 assert.ok(missingRecovery.data.developmentResetUrl);
 const missingResetToken = bearerTokenFromFragment(missingRecovery.data.developmentResetUrl, "token");

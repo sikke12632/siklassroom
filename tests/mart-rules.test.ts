@@ -20,17 +20,27 @@ function martError(code: string) {
 test("product values are normalized without allowing free or negative prices", () => {
   assert.deepEqual(normalizeMartProduct({
     name: "  딸기   우유  ",
+    category: "  음료  ",
     description: "  차갑게 보관  ",
     unitPrice: 500,
     isActive: true,
   }), {
     name: "딸기 우유",
-    category: "차갑게 보관",
+    category: "음료",
     description: "차갑게 보관",
     unitPrice: 500,
     lowStockThreshold: 2,
     isActive: true,
   });
+  assert.throws(
+    () => normalizeMartProduct({
+      name: "분류 없는 상품",
+      description: "설명은 분류를 대신하지 않아요",
+      unitPrice: 500,
+      isActive: true,
+    }),
+    martError("MART_INPUT_REQUIRED"),
+  );
   for (const unitPrice of [0, -1, 1.5, MART_MAX_AMOUNT + 1]) {
     assert.throws(
       () => normalizeMartProduct({ name: "상품", category: "간식", unitPrice, isActive: true }),

@@ -1,4 +1,5 @@
 import { database, ensureSchema, isOperationGuardFailure } from "./database";
+import { classCalendarBounds } from "./class-calendar-rules";
 import { cleanDisplayText, integerInRange } from "./identity";
 import { ApiError } from "./responses";
 import { SEOUL_TIME_ZONE, seoulServerTime } from "./seoul-time";
@@ -79,7 +80,10 @@ async function calendarRow(classId: string) {
   ).bind(classId).first<CalendarRow>();
 }
 
-async function calendarDays(classId: string, monthValue: string): Promise<ClassCalendarDay[]> {
+async function calendarDays(classId: string, monthValue: string): Promise<{
+  days: ClassCalendarDay[];
+  saved: boolean;
+}> {
   const count = daysInMonth(monthValue);
   const stored = await database().prepare(
     `SELECT calendar_date, day_type, memo
@@ -89,7 +93,7 @@ async function calendarDays(classId: string, monthValue: string): Promise<ClassC
   ).bind(classId, `${monthValue}-01`, `${monthValue}-${String(count).padStart(2, "0")}`)
     .all<{ calendar_date: string; day_type: CalendarDayType; memo: string | null }>();
   const byDate = new Map(stored.results.map((row) => [row.calendar_date, row]));
-  return Array.from({ length: count }, (_, index) => {
+  const days = Array.from({ length: count }, (_, index) => {
     const date = `${monthValue}-${String(index + 1).padStart(2, "0")}`;
     const saved = byDate.get(date);
     const weekend = isWeekend(date);
@@ -102,6 +106,21 @@ async function calendarDays(classId: string, monthValue: string): Promise<ClassC
       isWeekend: weekend,
     };
   });
+  return {
+    days,
+    saved: stored.results.length === count,
+  };
+}
+
+function assertDateInClassYear(date: string, schoolYear: number, label: string) {
+  const bounds = classCalendarBounds(schoolYear);
+  if (date < bounds.start || date > bounds.end) {
+    throw new ApiError(
+      422,
+      `${label}은 ${schoolYear}학년도 범위(${bounds.start}~${bounds.end}) 안에서 정해 주세요.`,
+      "CALENDAR_DATE_OUT_OF_SCHOOL_YEAR",
+    );
+  }
 }
 
 export async function loadClassCalendar(
@@ -112,9 +131,10 @@ export async function loadClassCalendar(
   const current = await calendarRow(classId);
   const defaults = defaultCalendarDates(serverTime.epochMs);
   const monthValue = options.monthValue || current?.first_job_start_date.slice(0, 7) || serverTime.monthValue;
-  const days = await calendarDays(classId, monthValue);
+  const month = await calendarDays(classId, monthValue);
   return {
     saved: Boolean(current),
+    monthSaved: Boolean(current) && month.saved,
     schoolYear: Number(current?.school_year ?? serverTime.year),
     timeZone: current?.time_zone ?? SEOUL_TIME_ZONE,
     timeZoneLabel: "대한민국 표준시",
@@ -125,7 +145,7 @@ export async function loadClassCalendar(
     savedAt: current?.saved_at ? Number(current.saved_at) : null,
     updatedAt: current?.updated_at ? Number(current.updated_at) : null,
     monthValue,
-    days,
+    days: month.days,
     serverTime,
   };
 }
@@ -166,6 +186,9 @@ export async function saveClassCalendar(input: {
   const classStartDate = assertDate(input.classStartDate, "학급 운영 시작일");
   const firstJobStartDate = assertDate(input.firstJobStartDate, "첫 직업 시작일");
   const firstJobEndDate = assertDate(input.firstJobEndDate, "첫 직업 종료일");
+  assertDateInClassYear(classStartDate, schoolYear, "학급 운영 시작일");
+  assertDateInClassYear(firstJobStartDate, schoolYear, "첫 직업 시작일");
+  assertDateInClassYear(firstJobEndDate, schoolYear, "첫 직업 종료일");
   if (classStartDate > firstJobStartDate) {
     throw new ApiError(422, "첫 직업 시작일은 학급 운영 시작일보다 빠를 수 없어요.", "INVALID_JOB_PERIOD");
   }
@@ -179,6 +202,7 @@ export async function saveClassCalendar(input: {
   const days = input.days.map((raw) => {
     const item = (raw ?? {}) as { date?: unknown; dayType?: unknown; memo?: unknown };
     const date = assertDate(item.date, "달력 날짜");
+    assertDateInClassYear(date, schoolYear, "달력 날짜");
     if (seen.has(date)) throw new ApiError(400, "같은 날짜를 두 번 저장할 수 없어요.", "DUPLICATE_CALENDAR_DATE");
     seen.add(date);
     const dayType = item.dayType === "off" ? "off" : item.dayType === "class" ? "class" : null;
@@ -221,15 +245,21 @@ export async function saveClassCalendar(input: {
     ? db.prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        SELECT CASE WHEN EXISTS (
-         SELECT 1 FROM class_calendars WHERE class_id = ? AND revision = ?
+         SELECT 1 FROM class_calendars calendar
+         JOIN classes classroom ON classroom.id = calendar.class_id
+         WHERE calendar.class_id = ? AND calendar.revision = ?
+           AND classroom.teacher_id = ? AND classroom.status = 'active'
        ) THEN ? ELSE NULL END, 'class_calendar_save', ?`,
-    ).bind(input.classId, expectedRevision, guardId, now)
+    ).bind(input.classId, expectedRevision, input.teacherId, guardId, now)
     : db.prepare(
       `INSERT INTO registration_operation_guards (id, operation, created_at)
        SELECT CASE WHEN NOT EXISTS (
          SELECT 1 FROM class_calendars WHERE class_id = ?
+       ) AND EXISTS (
+         SELECT 1 FROM classes
+         WHERE id = ? AND teacher_id = ? AND status = 'active'
        ) THEN ? ELSE NULL END, 'class_calendar_save', ?`,
-    ).bind(input.classId, guardId, now);
+    ).bind(input.classId, input.classId, input.teacherId, guardId, now);
   try {
     await db.batch([
       currentRevisionGuard,

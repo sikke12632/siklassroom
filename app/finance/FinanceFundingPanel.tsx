@@ -68,6 +68,7 @@ type FundingPayload = {
 };
 
 type Notice = { tone: "success" | "warning" | "danger"; message: string };
+type ActionAttempt = { fingerprint: string; key: string };
 
 const STATUS_LABELS: Record<FinanceFundingStatus, string> = {
   active: "모금 중",
@@ -81,6 +82,23 @@ const STATUS_LABELS: Record<FinanceFundingStatus, string> = {
 
 function actionKey(prefix: string) {
   return `${prefix}:${crypto.randomUUID()}`;
+}
+
+export function stableActionKey(
+  attempts: Record<string, ActionAttempt>,
+  slot: string,
+  prefix: string,
+  payload: unknown,
+) {
+  const fingerprint = JSON.stringify(payload);
+  if (attempts[slot]?.fingerprint !== fingerprint) {
+    attempts[slot] = { fingerprint, key: actionKey(prefix) };
+  }
+  return attempts[slot].key;
+}
+
+function requestCode(error: unknown) {
+  return (error as { code?: string } | null)?.code;
 }
 
 function amountText(amount: number, unit: string) {
@@ -147,7 +165,7 @@ export function FinanceFundingPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [emergencyReasons, setEmergencyReasons] = useState<Record<string, string>>({});
-  const keys = useRef<Record<string, string>>({});
+  const attempts = useRef<Record<string, ActionAttempt>>({});
   const requestSequence = useRef(0);
   const activeRequest = useRef<AbortController | null>(null);
 
@@ -225,14 +243,26 @@ export function FinanceFundingPanel({
     event.preventDefault();
     if (!data || busy) return;
     const keyId = editingId ? `edit:${editingId}` : "create";
-    keys.current[keyId] ??= actionKey(`funding-${editingId ? "edit" : "create"}`);
+    const campaign = editingCampaign;
+    const deadlineAt = campaign && editingDeadlineDate === deadline
+      ? campaign.deadlineAt
+      : financeFundingDeadlineAtEndOfSeoulDay(deadline);
+    const payload = {
+      ...(editingId ? { action: "edit", expectedRevision: campaign?.revision } : {}),
+      title,
+      description,
+      targetAmount: Number(targetAmount),
+      deadlineAt,
+    };
+    const idempotencyKey = stableActionKey(
+      attempts.current,
+      keyId,
+      `funding-${editingId ? "edit" : "create"}`,
+      payload,
+    );
     setBusy(keyId);
     setNotice(null);
     try {
-      const campaign = editingCampaign;
-      const deadlineAt = campaign && editingDeadlineDate === deadline
-        ? campaign.deadlineAt
-        : financeFundingDeadlineAtEndOfSeoulDay(deadline);
       const response = await fetch(
         editingId
           ? `/api/finance/funding/campaigns/${encodeURIComponent(editingId)}${query}`
@@ -241,22 +271,24 @@ export function FinanceFundingPanel({
           method: editingId ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            ...(editingId ? { action: "edit", expectedRevision: campaign?.revision } : {}),
-            title,
-            description,
-            targetAmount: Number(targetAmount),
-            deadlineAt,
-            idempotencyKey: keys.current[keyId],
+            ...payload,
+            idempotencyKey,
           }),
         },
       );
       await responseJson(response);
-      delete keys.current[keyId];
+      delete attempts.current[keyId];
       resetForm();
       setNotice({ tone: "success", message: editingId ? "펀딩 내용을 고쳤습니다." : "새 펀딩을 시작했습니다." });
       await refreshAll();
     } catch (error) {
-      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩을 저장하지 못했습니다." });
+      if (requestCode(error) === "FINANCE_FUNDING_IDEMPOTENCY_CONFLICT") {
+        delete attempts.current[keyId];
+        await refreshAll().catch(() => undefined);
+        setNotice({ tone: "warning", message: "최신 펀딩 상태를 다시 불러왔어요. 입력한 내용은 그대로 두었으니 확인한 뒤 다시 저장해 주세요." });
+      } else {
+        setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩을 저장하지 못했습니다." });
+      }
     } finally {
       setBusy(null);
     }
@@ -270,7 +302,12 @@ export function FinanceFundingPanel({
     if (busy) return;
     if (action === "cancel" && !window.confirm("이 펀딩을 취소하고 참여 금액을 모두 환불할까요?")) return;
     const keyId = `${action}:${campaign.id}`;
-    keys.current[keyId] ??= actionKey(`funding-${action}`);
+    const payload = {
+      action,
+      expectedRevision: campaign.revision,
+      interventionReason: reason,
+    };
+    const idempotencyKey = stableActionKey(attempts.current, keyId, `funding-${action}`, payload);
     setBusy(keyId);
     setNotice(null);
     try {
@@ -280,15 +317,13 @@ export function FinanceFundingPanel({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action,
-            expectedRevision: campaign.revision,
-            idempotencyKey: keys.current[keyId],
-            interventionReason: reason,
+            ...payload,
+            idempotencyKey,
           }),
         },
       );
       await responseJson(response);
-      delete keys.current[keyId];
+      delete attempts.current[keyId];
       setNotice({
         tone: "success",
         message: action === "pause" ? "펀딩을 잠시 멈췄습니다."
@@ -297,7 +332,13 @@ export function FinanceFundingPanel({
       });
       await refreshAll();
     } catch (error) {
-      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩 상태를 바꾸지 못했습니다." });
+      if (requestCode(error) === "FINANCE_FUNDING_IDEMPOTENCY_CONFLICT") {
+        delete attempts.current[keyId];
+        await refreshAll().catch(() => undefined);
+        setNotice({ tone: "warning", message: "펀딩 상태가 달라져 최신 내용을 불러왔어요. 확인한 뒤 다시 시도해 주세요." });
+      } else {
+        setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩 상태를 바꾸지 못했습니다." });
+      }
     } finally {
       setBusy(null);
     }
@@ -306,7 +347,11 @@ export function FinanceFundingPanel({
   const contribute = async (campaign: FundingCampaign) => {
     if (busy) return;
     const keyId = `contribute:${campaign.id}`;
-    keys.current[keyId] ??= actionKey("funding-contribute");
+    const payload = {
+      amount: Number(amounts[campaign.id]),
+      expectedCampaignRevision: campaign.revision,
+    };
+    const idempotencyKey = stableActionKey(attempts.current, keyId, "funding-contribute", payload);
     setBusy(keyId);
     setNotice(null);
     try {
@@ -316,14 +361,13 @@ export function FinanceFundingPanel({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            amount: Number(amounts[campaign.id]),
-            expectedCampaignRevision: campaign.revision,
-            idempotencyKey: keys.current[keyId],
+            ...payload,
+            idempotencyKey,
           }),
         },
       );
       const result = await responseJson<{ settlementPending?: boolean }>(response);
-      delete keys.current[keyId];
+      delete attempts.current[keyId];
       setAmounts((current) => ({ ...current, [campaign.id]: "" }));
       setNotice({
         tone: result.settlementPending ? "warning" : "success",
@@ -333,7 +377,13 @@ export function FinanceFundingPanel({
       });
       await refreshAll();
     } catch (error) {
-      setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩 참여를 반영하지 못했습니다." });
+      if (requestCode(error) === "FINANCE_FUNDING_IDEMPOTENCY_CONFLICT") {
+        delete attempts.current[keyId];
+        await refreshAll().catch(() => undefined);
+        setNotice({ tone: "warning", message: "모금 현황이 바뀌어 최신 상태를 불러왔어요. 참여 금액은 그대로 두었으니 확인한 뒤 다시 눌러 주세요." });
+      } else {
+        setNotice({ tone: "danger", message: error instanceof Error ? error.message : "펀딩 참여를 반영하지 못했습니다." });
+      }
     } finally {
       setBusy(null);
     }

@@ -34,13 +34,19 @@ export async function POST(request: Request) {
     const key = await credentialThrottleKey(request, "student-login", identifier);
     const subjectKey = await subjectThrottleKey("student-login", identifier);
     await consumeRateLimit(ipKey, { maxAttempts: 500 });
-    await consumeRateLimit(key, { maxAttempts: 7 });
-    // The IP-specific key avoids classroom-wide lockouts, while this account-wide
-    // one-hour ceiling stops distributed brute-force attempts against legacy PINs.
+    // Reserve one of this account's seven direct-PIN attempts atomically before
+    // PBKDF2. Concurrent or distributed guesses therefore cannot all slip past
+    // a separate "is blocked" read. A locked student can still prove possession
+    // of the reusable personal QR card and sign in through that flow.
     await consumeRateLimit(subjectKey, {
       maxAttempts: 7,
       windowMs: 60 * 60 * 1_000,
       blockMs: 60 * 60 * 1_000,
+    });
+    await consumeRateLimit(key, {
+      maxAttempts: 7,
+      windowMs: 60 * 60 * 1_000,
+      blockMs: 15 * 60 * 1_000,
     });
     await ensureSchema();
     const studentRows = await database().prepare(

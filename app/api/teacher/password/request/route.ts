@@ -4,6 +4,26 @@ import { sendTeacherPasswordReset } from "@/lib/email";
 import { normalizeEmail } from "@/lib/identity";
 import { consumeRateLimit, subjectThrottleKey, throttleKey } from "@/lib/rate-limit";
 import { apiFailure, json, readJson } from "@/lib/responses";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+
+function resetOrigin(request: Request) {
+  const requestUrl = new URL(request.url);
+  if (requestUrl.hostname === "localhost" || requestUrl.hostname === "127.0.0.1") {
+    return requestUrl.origin;
+  }
+  const configured = runtimeEnv().APP_ORIGIN?.trim();
+  if (configured) {
+    try {
+      const url = new URL(configured);
+      if (url.protocol === "https:" || url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+        return url.origin;
+      }
+    } catch {
+      // A bad optional deployment value must not break password recovery.
+    }
+  }
+  return requestUrl.origin;
+}
 
 export async function POST(request: Request) {
   try {
@@ -50,22 +70,22 @@ export async function POST(request: Request) {
         now,
       ),
     ]);
-    const resetUrl = new URL("/teacher/reset", request.url);
+    const resetUrl = new URL("/teacher/reset", resetOrigin(request));
     resetUrl.hash = new URLSearchParams({ token: rawToken }).toString();
     const url = resetUrl.toString();
     // Keep the public response indistinguishable, but never use the service as
     // an email relay for addresses that do not belong to an eligible account.
     if (teacher) {
-      await sendTeacherPasswordReset(email, url).catch(() => ({ sent: false }));
+      const delivery = sendTeacherPasswordReset(email, url).catch(() => ({ sent: false }));
+      const executionContext = getRequestExecutionContext();
+      if (executionContext) executionContext.waitUntil(delivery);
+      else await delivery;
     }
     const hostname = new URL(request.url).hostname;
     const developmentResetUrl = hostname === "localhost" || hostname === "127.0.0.1" ? url : undefined;
-    const { RESEND_API_KEY, MAIL_FROM } = runtimeEnv();
-    const emailConfigured = Boolean(RESEND_API_KEY && MAIL_FROM);
     return json({
       ok: true,
       message: "가입된 이메일이라면 비밀번호 재설정 안내를 보냈습니다.",
-      emailConfigured,
       ...(developmentResetUrl ? { developmentResetUrl } : {}),
     }, 200, { "Cache-Control": "no-store" });
   } catch (error) {

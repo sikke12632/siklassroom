@@ -7,7 +7,7 @@ import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { StudentEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { api, postJson } from "@/lib/client-api";
+import { api, ClientApiError, postJson } from "@/lib/client-api";
 import { JobEvaluationPanel } from "./JobEvaluationPanel";
 
 type StudentInfo = {
@@ -35,6 +35,7 @@ export function StudentPortal() {
   const [studentNumber, setStudentNumber] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const [error, setError] = useState("");
   const [sessionError, setSessionError] = useState("");
   const [sessionRetryKey, setSessionRetryKey] = useState(0);
@@ -99,30 +100,50 @@ export function StudentPortal() {
         studentNumber: Number(studentNumber),
         password,
       });
-      localStorage.setItem(preferenceKey, JSON.stringify({
-        schoolName,
-        schoolYear: Number(schoolYear),
-        grade: Number(grade),
-        classNumber: Number(classNumber),
-      }));
+      try {
+        localStorage.setItem(preferenceKey, JSON.stringify({
+          schoolName,
+          schoolYear: Number(schoolYear),
+          grade: Number(grade),
+          classNumber: Number(classNumber),
+        }));
+      } catch {
+        // 브라우저가 로컬 저장소를 막아도 서버 로그인은 정상적으로 이어갑니다.
+      }
       const data = await api<{ student: StudentInfo }>("/api/student/me");
       setStudent(data.student); setPassword(""); setSessionError("");
-    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+    } catch (reason) {
+      setError(
+        reason instanceof ClientApiError && reason.code === "TOO_MANY_ATTEMPTS"
+          ? "비밀번호를 여러 번 확인했어요. 잠시 뒤 다시 시도하거나 개인 QR 카드로 로그인해 주세요. 카드가 없으면 선생님께 다시 보여 달라고 해도 괜찮아요."
+          : (reason as Error).message,
+      );
+    } finally { setBusy(false); }
   }
 
   async function logout() {
-    await api("/api/session", { method: "DELETE" });
-    setStudent(null); setTeacherSession(false); setStudentNumber(""); setPassword("");
+    if (logoutBusy) return;
+    setLogoutBusy(true);
+    setError("");
+    try {
+      await api("/api/session", { method: "DELETE" });
+      setStudent(null); setTeacherSession(false); setStudentNumber(""); setPassword("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "로그아웃하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setLogoutBusy(false);
+    }
   }
 
   if (sessionStatus === "checking") return <div className="student-loading" role="status"><span><BookOpen aria-hidden="true" /></span><p>우리 반을 찾고 있어요</p></div>;
   if (teacherSession) return (
-    <main className="student-page"><header><Logo compact /><ThemeToggle compact /></header><section className="student-message-card"><span className="message-icon"><GraduationCap aria-hidden="true" /></span><h1>선생님으로 로그인되어 있어요</h1><p>교사 화면으로 돌아가거나 로그아웃한 뒤 학생으로 들어와 주세요.</p><a className="button button-primary button-large" href="/teacher">교사 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></section></main>
+    <main className="student-page"><header><Logo compact /><ThemeToggle compact /></header><section className="student-message-card"><span className="message-icon"><GraduationCap aria-hidden="true" /></span><h1>선생님으로 로그인되어 있어요</h1><p>교사 화면으로 돌아가거나 로그아웃한 뒤 학생으로 들어와 주세요.</p><Notice message={error} tone="error" /><a className="button button-primary button-large" href="/teacher">교사 화면으로</a><button className="button button-light" disabled={logoutBusy} onClick={() => void logout()}>{logoutBusy ? "로그아웃 중…" : "로그아웃"}</button></section></main>
   );
   if (student) return (
     <main className="student-page student-home">
-      <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><button className="student-logout" onClick={logout}>로그아웃</button></div></header>
+      <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><button className="student-logout" disabled={logoutBusy} onClick={() => void logout()}>{logoutBusy ? "로그아웃 중…" : "로그아웃"}</button></div></header>
       <AnnouncementBanner />
+      <Notice message={error} tone="error" />
       <section className="student-welcome">
         <span className="student-avatar">{student.student_number}</span>
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>

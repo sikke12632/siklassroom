@@ -84,6 +84,7 @@ export const registrationTokens = sqliteTable("registration_tokens", {
 }, (table) => [
   uniqueIndex("registration_tokens_hash_uq").on(table.tokenHash),
   index("registration_tokens_student_idx").on(table.studentId),
+  index("registration_tokens_expires_idx").on(table.expiresAt),
   uniqueIndex("registration_tokens_student_generation_uq")
     .on(table.studentId, table.generation)
     .where(sql`${table.revokedAt} IS NULL`),
@@ -143,6 +144,7 @@ export const sessions = sqliteTable("sessions", {
   uniqueIndex("sessions_hash_uq").on(table.tokenHash),
   index("sessions_teacher_idx").on(table.teacherId),
   index("sessions_student_idx").on(table.studentId),
+  index("sessions_expires_idx").on(table.expiresAt),
 ]);
 
 export const teacherPasswordResets = sqliteTable("teacher_password_resets", {
@@ -155,6 +157,7 @@ export const teacherPasswordResets = sqliteTable("teacher_password_resets", {
 }, (table) => [
   uniqueIndex("teacher_password_resets_hash_uq").on(table.tokenHash),
   index("teacher_password_resets_teacher_idx").on(table.teacherId),
+  index("teacher_password_resets_expires_idx").on(table.expiresAt),
 ]);
 
 export const loginThrottles = sqliteTable("login_throttles", {
@@ -175,6 +178,7 @@ export const auditLogs = sqliteTable("audit_logs", {
 }, (table) => [
   index("audit_logs_teacher_idx").on(table.teacherId),
   index("audit_logs_class_idx").on(table.classId),
+  index("audit_logs_created_idx").on(table.createdAt),
 ]);
 
 export const schools = sqliteTable("schools", {
@@ -567,6 +571,7 @@ export const systemAdminSessions = sqliteTable("system_admin_sessions", {
 }, (table) => [
   uniqueIndex("system_admin_sessions_token_uq").on(table.tokenHash),
   index("system_admin_sessions_admin_idx").on(table.adminKey),
+  index("system_admin_sessions_expires_idx").on(table.expiresAt),
 ]);
 
 export const serviceAnnouncements = sqliteTable("service_announcements", {

@@ -1,5 +1,6 @@
 import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { randomToken, sha256 } from "./crypto";
+import { requestCookie } from "./cookies";
 import { ApiError } from "./responses";
 import { teacherAccountIssue } from "./teacher-access-rules";
 
@@ -22,15 +23,6 @@ export type TeacherAccess = {
   schoolId: string | null;
   manualSchoolRequestId: string | null;
 };
-
-function requestCookie(request: Request, name: string): string | null {
-  const source = request.headers.get("cookie") ?? "";
-  for (const part of source.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
-  }
-  return null;
-}
 
 function secureCookieSuffix(request?: Request) {
   return request && new URL(request.url).protocol !== "https:" ? "" : "; Secure";

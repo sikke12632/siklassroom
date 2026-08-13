@@ -72,6 +72,7 @@ export function TeacherPortal() {
     completedCount: number;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const [scheduleDirty, setScheduleDirty] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -185,10 +186,19 @@ export function TeacherPortal() {
   }
 
   async function logout() {
+    if (logoutBusy) return;
     if (scheduleDirty && !confirm("저장하지 않은 시간표 변경이 있어요. 변경을 버리고 로그아웃할까요?")) return;
-    await api("/api/session", { method: "DELETE" });
-    router.replace("/teacher");
-    router.refresh();
+    setLogoutBusy(true);
+    setError("");
+    try {
+      await api("/api/session", { method: "DELETE" });
+      router.replace("/teacher");
+      router.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "로그아웃하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setLogoutBusy(false);
+    }
   }
 
   async function retrySession() {
@@ -209,7 +219,8 @@ export function TeacherPortal() {
       <Logo />
       <h1>학생으로 로그인되어 있어요</h1>
       <p>학생 화면으로 이동하거나 로그아웃한 뒤 교사 계정으로 들어와 주세요.</p>
-      <div className="button-stack"><a className="button button-primary" href="/student">학생 화면으로</a><button className="button button-light" onClick={logout}>로그아웃</button></div>
+      <Notice message={error} tone="error" />
+      <div className="button-stack"><a className="button button-primary" href="/student">학생 화면으로</a><button className="button button-light" disabled={logoutBusy} onClick={() => void logout()}>{logoutBusy ? "로그아웃 중…" : "로그아웃"}</button></div>
     </CenteredCard>
   );
   if (!actor) return (
@@ -859,8 +870,8 @@ function TeacherAuth({ mode, setMode, notice, initialError, sessionError, onRetr
     event.preventDefault(); setError(""); setMessage(""); setBusy(true);
     try {
       if (mode === "forgot") {
-        const data = await postJson<{ message: string; developmentResetUrl?: string; emailConfigured: boolean }>("/api/teacher/password/request", { email });
-        setMessage(data.message + (!data.emailConfigured && !data.developmentResetUrl ? " 이메일 발송 설정이 끝나면 메일로 받을 수 있어요." : ""));
+        const data = await postJson<{ message: string; developmentResetUrl?: string }>("/api/teacher/password/request", { email });
+        setMessage(data.message);
         setDevelopmentUrl(data.developmentResetUrl || "");
       } else {
         if (mode === "signup" && password !== confirmPassword) throw new Error("비밀번호가 서로 달라요.");
