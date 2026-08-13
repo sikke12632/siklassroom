@@ -679,6 +679,10 @@ test("unresolved cash requests atomically block class archive and student exclus
         'school-cash-lifecycle', 'TEST', 'CASH-LIFECYCLE',
         'Lifecycle School', 'lifecycle school', 'lifecycle school',
         'elementary', 'Test Province', 'active', 'test', 1, 1
+      ), (
+        'school-cash-race', 'TEST', 'CASH-RACE',
+        'Race School', 'race school', 'race school',
+        'elementary', 'Test Province', 'active', 'test', 1, 1
       );
       INSERT INTO teachers (
         id, email, password_hash, status, email_verified_at,
@@ -877,7 +881,7 @@ test("unresolved cash requests atomically block class archive and student exclus
       JSON.stringify(passwordResetRequestSuccessBody),
     );
     assert.equal(passwordResetRequestSuccessBody.ok, true);
-    assert.equal(passwordResetRequestSuccessBody.emailConfigured, false);
+    assert.equal("emailConfigured" in passwordResetRequestSuccessBody, false);
     assert.match(passwordResetRequestSuccessBody.developmentResetUrl, /token=/);
     assert.deepEqual(passwordResetRequestState(), [{ token_count: 1, audit_count: 1 }]);
 
@@ -910,6 +914,32 @@ test("unresolved cash requests atomically block class archive and student exclus
           WHERE action = 'class_created') AS audit_count;`,
     )), [{ class_count: 0, audit_count: 0 }]);
     executeSql(persistPath, "DROP TRIGGER test_class_create_audit_insert_failure;");
+
+    const classCreateAfterSchoolChange = await worker.fetch(
+      "http://test.local/classes",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          "x-test-school-after-read": "1",
+        },
+        body: JSON.stringify({ schoolYear: 2099, grade: 6, classNumber: 23 }),
+      },
+    );
+    const classCreateAfterSchoolChangeBody = await classCreateAfterSchoolChange.json();
+    assert.equal(classCreateAfterSchoolChange.status, 409, JSON.stringify(classCreateAfterSchoolChangeBody));
+    assert.equal(classCreateAfterSchoolChangeBody.code, "CLASS_CONTEXT_STALE");
+    assert.equal(classCreateAfterSchoolChange.headers.get("x-test-injection-matched"), "1");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT COUNT(*) AS class_count FROM classes
+       WHERE school_year = 2099 AND grade = 6 AND class_number = 23;`,
+    )), [{ class_count: 0 }]);
+    executeSql(persistPath, `
+      UPDATE teachers SET school_id = 'school-cash-lifecycle', updated_at = updated_at + 1
+      WHERE id = 'teacher-cash-lifecycle';
+    `);
 
     const rosterCountsBefore = lastResults(executeSql(
       persistPath,
@@ -1040,7 +1070,7 @@ test("unresolved cash requests atomically block class archive and student exclus
         body: JSON.stringify({
           ...initialCalendarPayload,
           expectedRevision: 1,
-          schoolYear: 2096,
+          schoolYear: 2097,
           firstJobEndDate: "2098-01-06",
           days: [{ date: "2098-01-01", dayType: "off", memo: "Stale calendar" }],
         }),
@@ -1730,6 +1760,52 @@ test("unresolved cash requests atomically block class archive and student exclus
       guard_count: 0,
     }]);
 
+    executeSql(persistPath, `
+      UPDATE students SET status = 'excluded', updated_at = 4
+      WHERE id = 'student-cash-archive-peer';
+    `);
+    const completionRetryAfterRosterChange = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(completionPayload),
+      },
+    );
+    const completionRetryAfterRosterChangeBody = await completionRetryAfterRosterChange.json();
+    assert.equal(
+      completionRetryAfterRosterChange.status,
+      200,
+      JSON.stringify(completionRetryAfterRosterChangeBody),
+    );
+    assert.equal(completionRetryAfterRosterChangeBody.idempotent, true);
+
+    const reusedCompletionAfterRosterChange = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-assignments/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...completionPayload,
+          assignments: completionPayload.assignments.map((assignment, index) => ({
+            ...assignment,
+            method: index === 0 ? "random" : assignment.method,
+          })),
+        }),
+      },
+    );
+    const reusedCompletionAfterRosterChangeBody = await reusedCompletionAfterRosterChange.json();
+    assert.equal(
+      reusedCompletionAfterRosterChange.status,
+      409,
+      JSON.stringify(reusedCompletionAfterRosterChangeBody),
+    );
+    assert.equal(reusedCompletionAfterRosterChangeBody.code, "ASSIGNMENT_REQUEST_REUSED");
+    executeSql(persistPath, `
+      UPDATE students SET status = 'active', updated_at = 5
+      WHERE id = 'student-cash-archive-peer';
+    `);
+
     const reusedCompletion = await worker.fetch(
       "http://test.local/classes/class-cash-archive/job-assignments/complete",
       {
@@ -1956,6 +2032,54 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 1,
     }]);
 
+    executeSql(persistPath, `
+      UPDATE students SET status = 'excluded', updated_at = 6
+      WHERE id = 'student-cash-archive-peer';
+    `);
+    const monthlyRetryAfterRosterChange = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyCompletionPayload),
+      },
+    );
+    const monthlyRetryAfterRosterChangeBody = await monthlyRetryAfterRosterChange.json();
+    assert.equal(
+      monthlyRetryAfterRosterChange.status,
+      200,
+      JSON.stringify(monthlyRetryAfterRosterChangeBody),
+    );
+    assert.equal(monthlyRetryAfterRosterChangeBody.idempotent, true);
+    assert.equal(monthlyRetryAfterRosterChangeBody.periodId, confirmedMonthlyPeriodId);
+
+    const reusedMonthlyCompletionAfterRosterChange = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/complete",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...monthlyCompletionPayload,
+          assignments: monthlyCompletionPayload.assignments.slice(0, 1),
+        }),
+      },
+    );
+    const reusedMonthlyCompletionAfterRosterChangeBody =
+      await reusedMonthlyCompletionAfterRosterChange.json();
+    assert.equal(
+      reusedMonthlyCompletionAfterRosterChange.status,
+      409,
+      JSON.stringify(reusedMonthlyCompletionAfterRosterChangeBody),
+    );
+    assert.equal(
+      reusedMonthlyCompletionAfterRosterChangeBody.code,
+      "MONTHLY_CHOICE_REQUEST_REUSED",
+    );
+    executeSql(persistPath, `
+      UPDATE students SET status = 'active', updated_at = 7
+      WHERE id = 'student-cash-archive-peer';
+    `);
+
     const evaluationOpenState = () => lastResults(executeSql(
       persistPath,
       `SELECT
@@ -2169,6 +2293,38 @@ test("unresolved cash requests atomically block class archive and student exclus
     }]);
     executeSql(persistPath, "DROP TRIGGER test_evaluation_close_audit_insert_failure;");
 
+    executeSql(persistPath, `
+      CREATE TRIGGER test_evaluation_close_race_conflict
+      BEFORE INSERT ON class_job_evaluation_results
+      WHEN NEW.session_id = '${evaluationId}'
+      BEGIN
+        SELECT RAISE(ABORT,
+          'UNIQUE constraint failed: class_job_evaluation_results.session_id, class_job_evaluation_results.class_job_id');
+      END;
+    `);
+    const evaluationCloseRaceConflict = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/job-evaluation/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(evaluationClosePayload),
+      },
+    );
+    const evaluationCloseRaceConflictBody = await evaluationCloseRaceConflict.json();
+    assert.equal(
+      evaluationCloseRaceConflict.status,
+      409,
+      JSON.stringify(evaluationCloseRaceConflictBody),
+    );
+    assert.equal(evaluationCloseRaceConflictBody.code, "JOB_EVALUATION_STALE");
+    assert.deepEqual(evaluationCloseState(), [{
+      evaluation_status: "open",
+      evaluation_revision: 0,
+      result_count: 0,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_evaluation_close_race_conflict;");
+
     const evaluationCloseSuccess = await worker.fetch(
       "http://test.local/classes/class-cash-archive/job-evaluation/close",
       {
@@ -2340,6 +2496,36 @@ test("unresolved cash requests atomically block class archive and student exclus
       audit_count: 0,
     }]);
     executeSql(persistPath, "DROP TRIGGER test_monthly_closure_audit_insert_failure;");
+
+    executeSql(persistPath, `
+      CREATE TRIGGER test_monthly_closure_race_conflict
+      BEFORE UPDATE OF status ON class_job_month_closures
+      WHEN NEW.class_id = 'class-cash-archive'
+      BEGIN
+        SELECT RAISE(ABORT, 'NOT NULL constraint failed: class_job_month_closures.status');
+      END;
+    `);
+    const monthlyClosureRaceConflict = await worker.fetch(
+      "http://test.local/classes/class-cash-archive/monthly-job-choice/close",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(monthlyClosurePayload),
+      },
+    );
+    const monthlyClosureRaceConflictBody = await monthlyClosureRaceConflict.json();
+    assert.equal(
+      monthlyClosureRaceConflict.status,
+      409,
+      JSON.stringify(monthlyClosureRaceConflictBody),
+    );
+    assert.equal(monthlyClosureRaceConflictBody.code, "MONTHLY_CHOICE_STALE");
+    assert.deepEqual(monthlyClosureState(), [{
+      closure_count: 0,
+      result_count: 0,
+      audit_count: 0,
+    }]);
+    executeSql(persistPath, "DROP TRIGGER test_monthly_closure_race_conflict;");
 
     const monthlyClosureSuccess = await worker.fetch(
       "http://test.local/classes/class-cash-archive/monthly-job-choice/close",

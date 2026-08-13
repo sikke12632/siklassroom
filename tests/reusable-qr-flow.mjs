@@ -145,6 +145,7 @@ const roster = await request(`/api/classes/${classId}/students`, {
     students: [
       { number: 1, name: "재사용학생" },
       { number: 2, name: "동시요청학생" },
+      { number: 3, name: "동시로그인학생" },
     ],
   },
   expected: 201,
@@ -369,6 +370,60 @@ assert.deepEqual(
   [401, 401, 401, 401, 401, 401, 401, 429],
   "여러 IP에서도 같은 학생 계정의 PIN 추측을 제한한다",
 );
+await request("/api/student/login", {
+  method: "POST",
+  headers: { "x-forwarded-for": `student-login-${runNumber}-7` },
+  body: {
+    schoolName: classCreated.data.class.school_name,
+    schoolYear: classCreated.data.class.school_year,
+    grade: classCreated.data.class.grade,
+    classNumber: classCreated.data.class.class_number,
+    studentNumber: limitedStudent.student_number,
+    password: "135790",
+  },
+  expected: 429,
+});
+const lockedAccountQr = await verifyQr(limitedToken, "login");
+const lockedAccountQrLogin = await request("/api/registration/complete", {
+  cookie: lockedAccountQr.cookie,
+  method: "POST",
+  body: { password: "135790" },
+});
+assert.match(responseCookie(lockedAccountQrLogin.response), /^job_classroom_session=/);
+
+const concurrentStudent = roster.data.students[2];
+const concurrentToken = activationTokenFrom(concurrentStudent.activation_url);
+const concurrentActivation = await verifyQr(concurrentToken, "activate");
+await request("/api/registration/complete", {
+  cookie: concurrentActivation.cookie,
+  method: "POST",
+  body: { password: "246802" },
+});
+const concurrentPinAttempts = await Promise.all(Array.from({ length: 8 }, (_, index) => fetch(
+  `${baseUrl}/api/student/login`,
+  {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-forwarded-for": `concurrent-pin-${runNumber}-${index}`,
+    },
+    body: JSON.stringify({
+      schoolName: classCreated.data.class.school_name,
+      schoolYear: classCreated.data.class.school_year,
+      grade: classCreated.data.class.grade,
+      classNumber: classCreated.data.class.class_number,
+      studentNumber: concurrentStudent.student_number,
+      password: index === 7 ? "246802" : "9999",
+    }),
+  },
+)));
+const concurrentStatuses = concurrentPinAttempts.map((response) => response.status);
+assert.equal(concurrentStatuses.filter((status) => status === 429).length, 1);
+assert.ok(concurrentStatuses.every((status) => [200, 401, 429].includes(status)));
+assert.ok(
+  concurrentStatuses.filter((status) => status === 401).length <= 7,
+  "동시에 보낸 PIN도 계정 시도권 일곱 개를 넘지 않아야 합니다.",
+);
 const limitedChallenges = [];
 for (let index = 0; index < 8; index += 1) {
   limitedChallenges.push(await verifyQr(limitedToken, "login"));
@@ -390,7 +445,7 @@ assert.deepEqual(
   [401, 401, 401, 401, 401, 401, 401, 429],
   "동시 PIN 요청도 원자적으로 시도 횟수를 제한한다",
 );
-for (let index = 0; index < 3; index += 1) {
+for (let index = 0; index < 2; index += 1) {
   await verifyQr(limitedToken, "login");
 }
 await request("/api/registration/verify", {

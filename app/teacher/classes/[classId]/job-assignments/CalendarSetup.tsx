@@ -14,6 +14,7 @@ export type CalendarDay = {
 
 export type CalendarState = {
   saved: boolean;
+  monthSaved: boolean;
   schoolYear: number;
   timeZone: string;
   timeZoneLabel: string;

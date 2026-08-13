@@ -110,7 +110,7 @@ export function normalizeMartProduct(input: {
   return {
     name: requiredText(input.name, "상품명", 60),
     category: requiredText(
-      input.category ?? input.description,
+      input.category,
       "상품 분류",
       40,
     ),

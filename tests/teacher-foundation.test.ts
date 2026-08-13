@@ -4,6 +4,22 @@ import { readFile } from "node:fs/promises";
 import { manualSchoolInput, normalizeSchoolSearch, schoolSearchVariants } from "../lib/schools";
 import { generateInviteCode, normalizeInviteCode } from "../lib/invite-code";
 import { teacherAccountIssue } from "../lib/teacher-access-rules";
+import { requestCookie } from "../lib/cookies";
+
+test("손상된 퍼센트 인코딩 쿠키는 API 예외 대신 없는 쿠키로 처리한다", () => {
+  const malformed = new Request("https://example.test/api/session", {
+    headers: { cookie: "job_classroom_session=%E0%A4%A; another=value" },
+  });
+  assert.equal(requestCookie(malformed, "job_classroom_session"), null);
+  assert.equal(requestCookie(malformed, "another"), "value");
+});
+
+test("쿠키 값은 첫 등호 뒤의 전체 값을 보존해 디코딩한다", () => {
+  const request = new Request("https://example.test", {
+    headers: { cookie: "token=part%3Done%3Dtwo" },
+  });
+  assert.equal(requestCookie(request, "token"), "part=one=two");
+});
 
 test("권한이 회수되거나 비활성화된 교사는 학급 API를 사용할 수 없다", () => {
   assert.equal(teacherAccountIssue("active", "invite_verified"), null);
@@ -39,14 +55,23 @@ test("초대코드는 사람이 읽기 쉬운 20자 일회용 형식이다", () 
 });
 
 test("최신 D1 마이그레이션 DB는 Worker 시작 때 전체 스키마를 다시 만들지 않는다", async () => {
-  const [databaseSource, lifeAccessSource] = await Promise.all([
+  const [databaseSource, lifeAccessSource, journalSource] = await Promise.all([
     readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/life-check-access.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/meta/_journal.json", import.meta.url), "utf8"),
   ]);
-  assert.match(databaseSource, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0039_class_timetable\.sql"/);
+  const journal = JSON.parse(journalSource) as { entries: Array<{ tag: string }> };
+  const latestMigration = `${journal.entries.at(-1)?.tag}.sql`;
+  assert.match(
+    databaseSource,
+    new RegExp(`LATEST_RUNTIME_SCHEMA_MIGRATION = "${latestMigration.replaceAll(".", "\\.")}"`),
+    "마이그레이션이 추가되면 런타임 스키마 기준 파일도 함께 갱신해야 합니다.",
+  );
   assert.match(databaseSource, /SELECT 1 AS applied FROM d1_migrations WHERE name = \? LIMIT 1/);
   assert.match(databaseSource, /if \(await hasLatestRuntimeMigration\(db\)\) \{\s*schemaProvidedByMigrations = true;\s*return;/);
   assert.match(lifeAccessSource, /if \(runtimeSchemaProvidedByMigrations\(\)\) return;/);
+  const adminAuthSource = await readFile(new URL("../lib/system-admin-auth.ts", import.meta.url), "utf8");
+  assert.match(adminAuthSource, /CREATE INDEX IF NOT EXISTS system_admin_sessions_expires_idx/);
 });
 
 test("기본 직업 시드는 DB마다 한 번만 저장하고 같은 Worker의 동시 조회가 공유한다", async () => {
@@ -73,4 +98,9 @@ test("공개 가입 중에도 교사 한 명의 학급과 학교 요청이 무�
   assert.match(manualSchoolRoute, /submitted_by_teacher_id = \? AND status = 'pending'/);
   assert.match(manualSchoolRoute, /'manual_school_request'/);
   assert.match(manualSchoolRoute, /MANUAL_SCHOOL_REQUEST_PENDING/);
+  assert.match(classesRoute, /if \(!access\.schoolId\)/);
+  assert.match(classesRoute, /SCHOOL_APPROVAL_REQUIRED/);
+  assert.match(classesRoute, /WHERE id = \? AND status = 'active'/);
+  assert.match(classesRoute, /teacher\.school_id = \?/);
+  assert.match(classesRoute, /teacher\.manual_school_request_id IS NULL/);
 });

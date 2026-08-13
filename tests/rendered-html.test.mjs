@@ -299,7 +299,13 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", identifier\)/);
   assert.match(teacherLogin, /subjectThrottleKey\("teacher-login", email\)/);
   assert.match(studentLogin, /subjectThrottleKey\("student-login", identifier\)/);
-  assert.match(studentLogin, /maxAttempts: 7,[\s\S]*windowMs: 60 \* 60 \* 1_000,[\s\S]*blockMs: 60 \* 60 \* 1_000/);
+  assert.match(studentLogin, /consumeRateLimit\(subjectKey,[\s\S]*maxAttempts: 7/);
+  assert.match(studentLogin, /consumeRateLimit\(key,[\s\S]*maxAttempts: 7/);
+  assert.ok(
+    studentLogin.indexOf("consumeRateLimit(subjectKey")
+      < studentLogin.indexOf("const passwordMatches = await verifyPasswordOrDummy"),
+    "학생 계정의 PIN 시도권은 비밀번호 검증 전에 원자적으로 예약해야 합니다.",
+  );
   assert.match(teacherLogin, /maxAttempts: 50,[\s\S]*windowMs: 60 \* 60 \* 1_000,[\s\S]*blockMs: 60 \* 60 \* 1_000/);
   assert.match(adminLogin, /consumeRateLimit\(ipKey/);
   assert.match(signup, /teacher-signup-ip/);
@@ -307,6 +313,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(passwordRequest, /teacher-password-reset-ip/);
   assert.match(passwordRequest, /INSERT INTO teacher_password_resets[\s\S]*SELECT \?, id, \?, \?, \? FROM teachers/);
   assert.match(passwordRequest, /if \(teacher\) \{[\s\S]*sendTeacherPasswordReset\(email, url\)\.catch/);
+  assert.match(passwordRequest, /getRequestExecutionContext\(\)/);
+  assert.match(passwordRequest, /executionContext\.waitUntil\(delivery\)/);
+  assert.doesNotMatch(passwordRequest, /emailConfigured/);
   assert.match(passwordRequest, /database\(\)\.batch/);
   assert.match(passwordRequest, /teacher_password_reset_requested/);
   assert.match(passwordRequest, /teacher\?\.id \?\? null/);

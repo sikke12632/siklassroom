@@ -29,38 +29,47 @@ interface ScheduledController {
   noRetry(): void;
 }
 
-const FINANCE_AUTOMATION_PHASES = 4;
+async function financeAutomationStep<T>(label: string, task: () => Promise<T>) {
+  try {
+    return await task();
+  } catch (error) {
+    console.error(`${label} failed`, error);
+    return null;
+  }
+}
 
 async function runScheduledFinanceAutomation(db: D1Database, now: number) {
-  const phase = Math.floor(now / 60_000) % FINANCE_AUTOMATION_PHASES;
-  if (phase === 0) {
-    const result = await settleDueDepositContracts(db, { now, limit: 2 });
-    if (result.failed > 0 || result.deferred > 0 || result.retrySchedulingFailed > 0) {
-      console.error("finance deposit maturity processing incomplete", result);
-    }
-    return;
+  const deposits = await financeAutomationStep(
+    "finance deposit maturity processing",
+    () => settleDueDepositContracts(db, { now, limit: 4 }),
+  );
+  if (deposits && (deposits.failed > 0 || deposits.deferred > 0 || deposits.retrySchedulingFailed > 0)) {
+    console.error("finance deposit maturity processing incomplete", deposits);
   }
-  if (phase === 1) {
-    const result = await processFinanceStockMarketTicks(db, { now, limit: 2, newsLimit: 2 });
-    if (result.failed > 0 || result.retrySchedulingFailed > 0) {
-      console.error("finance stock tick processing incomplete", result);
-    }
-    return;
+  const stocks = await financeAutomationStep(
+    "finance stock tick processing",
+    () => processFinanceStockMarketTicks(db, { now, limit: 4, newsLimit: 4 }),
+  );
+  if (stocks && (stocks.failed > 0 || stocks.retrySchedulingFailed > 0)) {
+    console.error("finance stock tick processing incomplete", stocks);
   }
-  if (phase === 2) {
-    const result = await processDueFundingCampaigns(db, {
+  const funding = await financeAutomationStep(
+    "finance funding processing",
+    () => processDueFundingCampaigns(db, {
       now,
-      limit: 1,
-      refundLimit: 1,
-    });
-    if (result.failed > 0) {
-      console.error("finance funding processing incomplete", result);
-    }
-    return;
+      limit: 2,
+      refundLimit: 8,
+    }),
+  );
+  if (funding && funding.failed > 0) {
+    console.error("finance funding processing incomplete", funding);
   }
-  const result = await processPendingFinancePayroll();
-  if (result.remaining > 0 || result.failed > 0) {
-    console.error("finance payroll processing will continue", result);
+  const payroll = await financeAutomationStep(
+    "finance payroll processing",
+    () => processPendingFinancePayroll(),
+  );
+  if (payroll && (payroll.remaining > 0 || payroll.failed > 0)) {
+    console.error("finance payroll processing will continue", payroll);
   }
 }
 
@@ -119,7 +128,7 @@ const worker = {
   },
 
   scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    const now = Math.max(Date.now(), controller.scheduledTime);
+    const now = controller.scheduledTime > 0 ? controller.scheduledTime : Date.now();
     ctx.waitUntil(runScheduledFinanceAutomation(env.DB, now).catch((error) => {
       console.error("finance scheduled automation failed", error);
     }));

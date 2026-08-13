@@ -6,6 +6,7 @@ export type RuntimeEnv = {
   DB?: D1Database;
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;
+  APP_ORIGIN?: string;
   NEIS_API_KEY?: string;
   SYSTEM_ADMIN_USERNAME?: string;
   SYSTEM_ADMIN_PASSWORD_HASH?: string;
@@ -19,7 +20,7 @@ let schemaProvidedByMigrations = false;
 // Bump this filename whenever a migration adds or changes runtime schema.
 // A database with this migration already applied does not need hundreds of
 // defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
-const LATEST_RUNTIME_SCHEMA_MIGRATION = "0039_class_timetable.sql";
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0040_operational_indexes.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -57,6 +58,7 @@ const schemaStatements = [
     FOREIGN KEY (student_id) REFERENCES students(id)
   )`,
   `CREATE INDEX IF NOT EXISTS registration_tokens_student_idx ON registration_tokens(student_id)`,
+  `CREATE INDEX IF NOT EXISTS registration_tokens_expires_idx ON registration_tokens(expires_at)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS registration_tokens_student_generation_uq ON registration_tokens(student_id, generation)
    WHERE revoked_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS student_qr_reset_grants (
@@ -90,12 +92,14 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS sessions_teacher_idx ON sessions(teacher_id)`,
   `CREATE INDEX IF NOT EXISTS sessions_student_idx ON sessions(student_id)`,
+  `CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS teacher_password_resets (
     id TEXT PRIMARY KEY, teacher_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL, used_at INTEGER, created_at INTEGER NOT NULL,
     FOREIGN KEY (teacher_id) REFERENCES teachers(id)
   )`,
   `CREATE INDEX IF NOT EXISTS teacher_password_resets_teacher_idx ON teacher_password_resets(teacher_id)`,
+  `CREATE INDEX IF NOT EXISTS teacher_password_resets_expires_idx ON teacher_password_resets(expires_at)`,
   `CREATE TABLE IF NOT EXISTS login_throttles (
     key TEXT PRIMARY KEY, attempts INTEGER NOT NULL, window_started_at INTEGER NOT NULL, blocked_until INTEGER
   )`,
@@ -105,6 +109,7 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS audit_logs_teacher_idx ON audit_logs(teacher_id)`,
   `CREATE INDEX IF NOT EXISTS audit_logs_class_idx ON audit_logs(class_id)`,
+  `CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at)`,
   `CREATE TRIGGER IF NOT EXISTS audit_logs_update_guard
     BEFORE UPDATE ON audit_logs
     BEGIN

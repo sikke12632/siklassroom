@@ -44,6 +44,7 @@ type CalendarDay = {
 
 type CalendarState = {
   saved: boolean;
+  monthSaved: boolean;
   schoolYear: number;
   timeZone: string;
   timeZoneLabel: string;
@@ -544,7 +545,7 @@ export function TeacherScheduleOverview({
             </span>
           ) : (
             <a className="button button-light" href={`/teacher/classes/${classId}/job-assignments`}>
-              <CalendarDays aria-hidden="true" />{data.calendar.saved ? "달력 보기·수정" : "달력 설정"}
+              <CalendarDays aria-hidden="true" />{data.calendar.monthSaved ? "달력 보기·수정" : "이 달의 달력 설정"}
             </a>
           )}
           <button
@@ -564,9 +565,11 @@ export function TeacherScheduleOverview({
         </div>
       </header>
 
-      {!data.calendar.saved && (
+      {!data.calendar.monthSaved && (
         <div className={styles.calendarPending} role="status">
-          운영 달력을 아직 저장하지 않았어요. 아래 달력은 주말을 쉬는 날로 제안한 미리보기입니다.
+          {data.calendar.saved
+            ? "현재 보고 있는 달의 운영 달력을 아직 저장하지 않았어요. 아래 달력은 주말을 쉬는 날로 제안한 미리보기입니다."
+            : "운영 달력을 아직 저장하지 않았어요. 아래 달력은 주말을 쉬는 날로 제안한 미리보기입니다."}
         </div>
       )}
       {readOnly && (

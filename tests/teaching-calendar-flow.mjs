@@ -5,6 +5,9 @@ const runId = process.env.TEST_RUN_ID || `${Date.now()}-${Math.random().toString
 const password = "Teacher!234";
 const teacherEmail = `calendar-${runId}@example.test`;
 const outsiderEmail = `calendar-outsider-${runId}@example.test`;
+const adminUsername = process.env.SYSTEM_ADMIN_USERNAME;
+const adminPassword = process.env.SYSTEM_ADMIN_PASSWORD;
+assert.ok(adminUsername && adminPassword, "수업 달력 통합 테스트용 관리자 환경 변수가 필요합니다.");
 
 function cookieFrom(response) {
   return response.headers.get("set-cookie")?.split(";")[0] || "";
@@ -15,6 +18,7 @@ async function request(path, {
   method = "GET",
   body,
   expected = 200,
+  headers = {},
 } = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -22,6 +26,7 @@ async function request(path, {
       "x-forwarded-for": `teaching-calendar-${runId}`,
       ...(cookie ? { cookie } : {}),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -33,6 +38,23 @@ async function request(path, {
   );
   return { response, data };
 }
+
+function fragmentToken(url, name) {
+  const parsed = new URL(url);
+  assert.equal(parsed.search, "", `${name} 토큰은 주소의 query string에 두지 않습니다.`);
+  const token = new URLSearchParams(parsed.hash.replace(/^#/, "")).get(name);
+  assert.ok(token, `${name} 토큰이 주소 fragment에 있어야 합니다.`);
+  return token;
+}
+
+const adminLogin = await request("/api/admin/auth/login", {
+  method: "POST",
+  body: { username: adminUsername, password: adminPassword },
+});
+const adminCookie = cookieFrom(adminLogin.response);
+const adminCsrf = adminLogin.data.csrfToken;
+assert.match(adminCookie, /^job_classroom_admin_session=/);
+assert.ok(adminCsrf);
 
 async function openTeacher(email) {
   await request("/api/teacher/signup", {
@@ -46,7 +68,39 @@ async function openTeacher(email) {
   });
   let cookie = cookieFrom(login.response);
   assert.match(cookie, /^job_classroom_session=/);
-  assert.equal(login.data.teacher.teacher_access_status, "invite_verified");
+  assert.equal(login.data.teacher.teacher_access_status, "pending");
+
+  const verification = await request("/api/teacher/email-verification/request", {
+    cookie,
+    method: "POST",
+  });
+  const verified = await request("/api/teacher/email-verification/confirm", {
+    cookie,
+    method: "POST",
+    body: {
+      token: fragmentToken(
+        verification.data.verification.developmentUrl,
+        "verifyEmailToken",
+      ),
+    },
+  });
+  cookie = cookieFrom(verified.response);
+
+  const invite = await request("/api/admin/invite-codes", {
+    cookie: adminCookie,
+    method: "POST",
+    headers: { "x-admin-csrf": adminCsrf },
+    body: { expiresAt: Date.now() + 24 * 60 * 60 * 1000 },
+    expected: 201,
+  });
+  const redeemed = await request("/api/teacher/invite-code/redeem", {
+    cookie,
+    method: "POST",
+    body: { code: invite.data.code },
+  });
+  cookie = cookieFrom(redeemed.response);
+  const access = await request("/api/session", { cookie });
+  assert.equal(access.data.actor.teacher_access_status, "invite_verified");
 
   const schools = await request(
     `/api/schools/search?q=${encodeURIComponent("서울서이초등학교")}`,

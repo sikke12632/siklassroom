@@ -44,7 +44,14 @@ type Overview = {
     periodLabel: string;
   };
   serverTime: { date: string };
-  calendar: { saved: boolean; revision: number; dates: string[]; firstDates: string[]; secondDates: string[] };
+  calendar: {
+    saved: boolean;
+    monthSaved: boolean;
+    revision: number;
+    dates: string[];
+    firstDates: string[];
+    secondDates: string[];
+  };
   series: { revision: number; updatedAt: number };
   students: Array<{
     id: string;
@@ -230,7 +237,8 @@ export function LifeCheckPortal() {
   const canWriteSelected = Boolean(
     overview?.context.permissions.canRecord
     && overview.context.allowedWriteTypes.includes(type)
-    && overview.context.classroom.status === "active",
+    && overview.context.classroom.status === "active"
+    && overview.calendar.monthSaved,
   );
   const payoutOutdated = Boolean(
     overview?.payout
@@ -548,8 +556,8 @@ export function LifeCheckPortal() {
         </div>
       </section>
 
-      {!overview.calendar.saved && (
-        <div className={styles.notice}><CalendarDays aria-hidden="true" /><span>학급 달력을 아직 저장하지 않아 평일을 수업일로 표시하고 있어요. 선생님이 달력을 저장하면 쉬는 날이 자동 반영됩니다.</span></div>
+      {!overview.calendar.monthSaved && (
+        <div className={styles.notice}><CalendarDays aria-hidden="true" /><span>{overview.calendar.saved ? "선택한 달의 학급 달력을 아직 저장하지 않았어요. 선생님이 이 달의 수업일을 저장하면 기록할 수 있습니다." : "학급 달력을 아직 저장하지 않아 평일을 임시 수업일로 표시하고 있어요. 선생님이 달력을 저장하면 기록할 수 있습니다."}</span></div>
       )}
 
       <section className={styles.recordPanel} aria-labelledby="life-record-title">
@@ -623,11 +631,11 @@ export function LifeCheckPortal() {
         {overview.context.permissions.canManagePayouts && canWriteSelected && (
           <div className={styles.actions}>
             {(!overview.payout || overview.payout.status === "prepared") && (
-              <button className="button button-primary" disabled={busy || savingCells.size > 0 || periodInProgress || !overview.preview.items.length} onClick={() => void preparePayout()}>
+              <button className="button button-primary" disabled={busy || savingCells.size > 0 || !overview.calendar.monthSaved || periodInProgress || !overview.preview.items.length} onClick={() => void preparePayout()}>
                 {overview.payout?.status === "prepared" ? "최신 명단으로 다시 만들기" : "지급 명단 만들기"}
               </button>
             )}
-            {overview.payout?.status === "prepared" && !payoutOutdated && <button className="button button-light" disabled={busy || savingCells.size > 0 || periodInProgress} onClick={() => void updatePayout("complete")}>실제 지급 완료</button>}
+            {overview.payout?.status === "prepared" && !payoutOutdated && <button className="button button-light" disabled={busy || savingCells.size > 0 || !overview.calendar.monthSaved || periodInProgress} onClick={() => void updatePayout("complete")}>실제 지급 완료</button>}
             {overview.payout?.status === "prepared" && <button className="button button-light" disabled={busy || savingCells.size > 0} onClick={() => void updatePayout("cancel")}>명단 취소</button>}
             {overview.payout && overview.payout.status !== "prepared" && overview.context.permissions.canOverride && <button className="button button-light" disabled={busy || savingCells.size > 0} onClick={() => void updatePayout("reopen")}>교사 비상 재개</button>}
           </div>

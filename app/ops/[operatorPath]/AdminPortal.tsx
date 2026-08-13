@@ -83,6 +83,7 @@ export function AdminPortal() {
   const [message, setMessage] = useState("");
   const [sessionError, setSessionError] = useState("");
   const [sessionRetryKey, setSessionRetryKey] = useState(0);
+  const [logoutBusy, setLogoutBusy] = useState(false);
 
   const request = useCallback(async <T,>(url: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -121,9 +122,18 @@ export function AdminPortal() {
   }, [sessionRetryKey]);
 
   async function logout() {
-    await request("/api/admin/auth/session", { method: "DELETE" }).catch(() => null);
-    setAuthenticated(false);
-    setCsrfToken("");
+    if (logoutBusy) return;
+    setLogoutBusy(true);
+    setError("");
+    try {
+      await request("/api/admin/auth/session", { method: "DELETE" });
+      setAuthenticated(false);
+      setCsrfToken("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "로그아웃하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setLogoutBusy(false);
+    }
   }
 
   if (loading) return <main className="admin-loading"><p>관리자 세션을 확인하고 있습니다.</p></main>;
@@ -160,7 +170,7 @@ export function AdminPortal() {
             </button>
           ))}
         </nav>
-        <div className="admin-account"><ThemeToggle /><button type="button" onClick={logout}><LogOut aria-hidden="true" />로그아웃</button></div>
+        <div className="admin-account"><ThemeToggle /><button type="button" disabled={logoutBusy} onClick={() => void logout()}><LogOut aria-hidden="true" />{logoutBusy ? "로그아웃 중" : "로그아웃"}</button></div>
       </aside>
       <main className="admin-main">
         <header><div><p className="eyebrow">서비스 운영자 전용</p><h1>{tabs.find((item) => item.id === tab)?.label}</h1></div></header>
@@ -263,6 +273,15 @@ function useAdminLoader(load: () => Promise<void>, onError: (value: string) => v
   return { status, retry };
 }
 
+function useDebouncedValue<T>(value: T, delayMs: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
+}
+
 function AdminLoadState({ status, label, onRetry }: {
   status: AdminLoadStatus;
   label: string;
@@ -305,35 +324,66 @@ function InviteManager({ request, onError, onMessage }: { request: Requester; on
   const [expiresAt, setExpiresAt] = useState(() => seoulDateInput(Date.now() + 30 * DAY_MS));
   const [memo, setMemo] = useState("");
   const [newCode, setNewCode] = useState("");
+  const actionInFlight = useRef<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const load = useCallback(async () => {
     const data = await request<{ codes: InviteCode[] }>("/api/admin/invite-codes");
     setCodes(data.codes);
   }, [request]);
   const loader = useAdminLoader(load, onError);
   async function create(event: FormEvent) {
-    event.preventDefault(); onError(""); setNewCode("");
+    event.preventDefault();
+    if (actionInFlight.current) return;
+    onError(""); setNewCode("");
+    actionInFlight.current = "create";
+    setBusyAction("create");
     try {
       const data = await request<{ code: string }>("/api/admin/invite-codes", { method: "POST", body: JSON.stringify({ expiresAt: new Date(`${expiresAt}T23:59:59+09:00`).getTime(), memo }) });
       setNewCode(data.code); setMemo(""); onMessage("초대코드를 만들었습니다. 원문은 지금 한 번만 표시됩니다."); await loader.retry();
     } catch (reason) { onError((reason as Error).message); }
+    finally { actionInFlight.current = null; setBusyAction(null); }
   }
   async function revoke(id: string) {
+    if (actionInFlight.current) return;
+    if (!window.confirm("이 초대코드를 폐기할까요? 폐기한 코드는 다시 사용할 수 없습니다.")) return;
+    actionInFlight.current = id;
+    setBusyAction(id);
     try { await request("/api/admin/invite-codes", { method: "DELETE", body: JSON.stringify({ id }) }); onMessage("초대코드를 폐기했습니다."); await loader.retry(); }
     catch (reason) { onError((reason as Error).message); }
+    finally { actionInFlight.current = null; setBusyAction(null); }
   }
-  return <section className="admin-section"><AdminLoadState status={loader.status} label="초대코드를" onRetry={loader.retry} /><form className="admin-inline-form" onSubmit={create}><label>만료일<input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} required /></label><label>용도·메모<input value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={120} /></label><button className="button button-primary">새 코드 발급</button></form>{newCode && <div className="one-time-secret"><b>한 번만 표시되는 코드</b><code>{newCode}</code><button type="button" onClick={() => navigator.clipboard.writeText(newCode)}>복사</button></div>}<div className="admin-table-wrap"><table><thead><tr><th>상태</th><th>메모</th><th>만료</th><th>사용 계정</th><th></th></tr></thead><tbody>{codes.map((code) => <tr key={code.id}><td>{code.status}</td><td>{code.memo || "—"}</td><td>{when(code.expires_at)}</td><td>{code.used_by_email || "—"}</td><td>{code.status === "active" && <button type="button" className="danger-link" onClick={() => revoke(code.id)}>폐기</button>}</td></tr>)}</tbody></table></div></section>;
+  return <section className="admin-section"><AdminLoadState status={loader.status} label="초대코드를" onRetry={loader.retry} /><form className="admin-inline-form" onSubmit={create}><label>만료일<input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} required /></label><label>용도·메모<input value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={120} /></label><button className="button button-primary" disabled={busyAction !== null}>{busyAction === "create" ? "발급 중…" : "새 코드 발급"}</button></form>{newCode && <div className="one-time-secret"><b>한 번만 표시되는 코드</b><code>{newCode}</code><button type="button" onClick={() => navigator.clipboard.writeText(newCode)}>복사</button></div>}<div className="admin-table-wrap"><table><thead><tr><th>상태</th><th>메모</th><th>만료</th><th>사용 계정</th><th></th></tr></thead><tbody>{codes.map((code) => <tr key={code.id}><td>{code.status}</td><td>{code.memo || "—"}</td><td>{when(code.expires_at)}</td><td>{code.used_by_email || "—"}</td><td>{code.status === "active" && <button type="button" className="danger-link" disabled={busyAction !== null} onClick={() => void revoke(code.id)}>{busyAction === code.id ? "폐기 중…" : "폐기"}</button>}</td></tr>)}</tbody></table></div></section>;
 }
 
 function TeacherManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 300);
   const [status, setStatus] = useState("all");
   const actionInFlight = useRef<string | null>(null);
   const [busyTeacherId, setBusyTeacherId] = useState<string | null>(null);
+  const searchSequence = useRef(0);
+  const searchRequest = useRef<AbortController | null>(null);
   const load = useCallback(async () => {
-    const data = await request<{ teachers: Teacher[] }>(`/api/admin/teachers?q=${encodeURIComponent(query)}&status=${status}`);
-    setTeachers(data.teachers);
-  }, [request, query, status]);
+    const requestId = searchSequence.current + 1;
+    searchSequence.current = requestId;
+    searchRequest.current?.abort();
+    const controller = new AbortController();
+    searchRequest.current = controller;
+    try {
+      const data = await request<{ teachers: Teacher[] }>(`/api/admin/teachers?q=${encodeURIComponent(debouncedQuery)}&status=${status}`, { signal: controller.signal });
+      if (requestId === searchSequence.current) setTeachers(data.teachers);
+    } catch (reason) {
+      if (controller.signal.aborted || requestId !== searchSequence.current || (reason as { name?: string })?.name === "AbortError") return;
+      throw reason;
+    } finally {
+      if (searchRequest.current === controller) searchRequest.current = null;
+    }
+  }, [request, debouncedQuery, status]);
+  useEffect(() => () => {
+    searchSequence.current += 1;
+    searchRequest.current?.abort();
+  }, []);
   const loader = useAdminLoader(load, onError);
   async function change(id: string, action: string, expectedRevision: number) {
     if (actionInFlight.current) return;
@@ -355,6 +405,8 @@ function SchoolManager({ request, onError, onMessage }: { request: Requester; on
   const [items, setItems] = useState<SchoolRequest[]>([]);
   const [schools, setSchools] = useState<SchoolOption[]>([]);
   const [selected, setSelected] = useState<Record<string, string>>({});
+  const actionInFlight = useRef<string | null>(null);
+  const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
   const load = useCallback(async () => {
     const data = await request<{ requests: SchoolRequest[]; schools: SchoolOption[] }>("/api/admin/school-requests");
     setItems(data.requests);
@@ -362,15 +414,23 @@ function SchoolManager({ request, onError, onMessage }: { request: Requester; on
   }, [request]);
   const loader = useAdminLoader(load, onError);
   async function review(id: string, action: string) {
-    const note = prompt("검토 메모(선택)") || "";
+    if (actionInFlight.current) return;
+    const enteredNote = prompt("검토 메모(선택)");
+    if (enteredNote === null) return;
+    const note = enteredNote;
+    actionInFlight.current = id;
+    setBusyRequestId(id);
     try { await request("/api/admin/school-requests", { method: "PATCH", body: JSON.stringify({ id, action, schoolId: selected[id], note }) }); onMessage("학교 확인 요청을 처리했습니다."); await loader.retry(); }
     catch (reason) { onError((reason as Error).message); }
+    finally { actionInFlight.current = null; setBusyRequestId(null); }
   }
-  return <section className="admin-section school-review-list"><AdminLoadState status={loader.status} label="학교 확인 요청을" onRetry={loader.retry} />{items.map((item) => <article key={item.id} className="admin-review-card"><div><span className={`status-badge status-${item.status}`}>{item.status}</span><h2>{item.entered_name}</h2><p>{item.province_name} · {item.school_level} · {item.district_or_address || "지역 정보 없음"}</p><small>{item.teacher_email} · {when(item.created_at)}</small>{item.note && <blockquote>{item.note}</blockquote>}</div>{item.status === "pending" && <div className="admin-review-actions"><select aria-label={`${item.entered_name} 요청에 연결할 공식 학교`} value={selected[item.id] || ""} onChange={(e) => setSelected((current) => ({ ...current, [item.id]: e.target.value }))}><option value="">기존 공식 학교 선택</option>{schools.filter((school) => school.province_name === item.province_name && school.school_level === item.school_level).map((school) => <option value={school.id} key={school.id}>{school.official_name} · {school.district_name || ""}</option>)}</select><button type="button" disabled={!selected[item.id]} onClick={() => review(item.id, "link")}>공식 학교와 연결</button><button type="button" onClick={() => review(item.id, "approve_new")}>신규 학교 승인</button><button type="button" className="danger-link" onClick={() => review(item.id, "reject")}>반려</button></div>}</article>)}</section>;
+  return <section className="admin-section school-review-list"><AdminLoadState status={loader.status} label="학교 확인 요청을" onRetry={loader.retry} />{items.map((item) => <article key={item.id} className="admin-review-card" aria-busy={busyRequestId === item.id}><div><span className={`status-badge status-${item.status}`}>{item.status}</span><h2>{item.entered_name}</h2><p>{item.province_name} · {item.school_level} · {item.district_or_address || "지역 정보 없음"}</p><small>{item.teacher_email} · {when(item.created_at)}</small>{item.note && <blockquote>{item.note}</blockquote>}</div>{item.status === "pending" && <div className="admin-review-actions"><select aria-label={`${item.entered_name} 요청에 연결할 공식 학교`} disabled={busyRequestId !== null} value={selected[item.id] || ""} onChange={(e) => setSelected((current) => ({ ...current, [item.id]: e.target.value }))}><option value="">기존 공식 학교 선택</option>{schools.filter((school) => school.province_name === item.province_name && school.school_level === item.school_level).map((school) => <option value={school.id} key={school.id}>{school.official_name} · {school.district_name || ""}</option>)}</select><button type="button" disabled={busyRequestId !== null || !selected[item.id]} onClick={() => void review(item.id, "link")}>공식 학교와 연결</button><button type="button" disabled={busyRequestId !== null} onClick={() => void review(item.id, "approve_new")}>신규 학교 승인</button><button type="button" disabled={busyRequestId !== null} className="danger-link" onClick={() => void review(item.id, "reject")}>{busyRequestId === item.id ? "처리 중…" : "반려"}</button></div>}</article>)}</section>;
 }
 
 function JobManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
   const [templates, setTemplates] = useState<JobTemplate[]>([]);
+  const actionInFlight = useRef<string | null>(null);
+  const [busyTemplateId, setBusyTemplateId] = useState<string | null>(null);
   const load = useCallback(async () => {
     const data = await request<{ templates: JobTemplate[] }>("/api/admin/job-templates");
     setTemplates(data.templates);
@@ -378,10 +438,14 @@ function JobManager({ request, onError, onMessage }: { request: Requester; onErr
   const loader = useAdminLoader(load, onError);
   function updateLocal(id: string, patch: Partial<JobTemplate>) { setTemplates((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); }
   async function save(item: JobTemplate) {
+    if (actionInFlight.current) return;
+    actionInFlight.current = item.id;
+    setBusyTemplateId(item.id);
     try { await request("/api/admin/job-templates", { method: "PATCH", body: JSON.stringify({ id: item.id, isActive: Boolean(item.is_active), recommendedMinMembers: item.recommended_min_members, recommendedMaxMembers: item.recommended_max_members, defaultPriority: item.default_priority }) }); onMessage(`${item.name} 설정을 저장했습니다.`); await loader.retry(); }
     catch (reason) { onError((reason as Error).message); }
+    finally { actionInFlight.current = null; setBusyTemplateId(null); }
   }
-  return <section className="admin-section"><AdminLoadState status={loader.status} label="기본 직업을" onRetry={loader.retry} /><p className="admin-help">이 설정은 앞으로 새로 직업 구성을 시작하는 학급에만 적용됩니다.</p><div className="admin-table-wrap"><table><thead><tr><th>기본 직업</th><th>활성</th><th>최소 인원</th><th>최대 인원</th><th>우선순위</th><th>저장</th></tr></thead><tbody>{templates.map((item) => <tr key={item.id}><td><b>{item.name}</b><small>{item.category}</small></td><td><input type="checkbox" aria-label={`${item.name} 기본 직업 활성화`} checked={Boolean(item.is_active)} onChange={(e) => updateLocal(item.id, { is_active: e.target.checked ? 1 : 0 })} /></td><td><input type="number" aria-label={`${item.name} 권장 최소 인원`} min="1" max="60" value={item.recommended_min_members} onChange={(e) => updateLocal(item.id, { recommended_min_members: Number(e.target.value) })} /></td><td><input type="number" aria-label={`${item.name} 권장 최대 인원`} min="1" max="60" value={item.recommended_max_members} onChange={(e) => updateLocal(item.id, { recommended_max_members: Number(e.target.value) })} /></td><td><input type="number" aria-label={`${item.name} 기본 우선순위`} min="1" max="999" value={item.default_priority} onChange={(e) => updateLocal(item.id, { default_priority: Number(e.target.value) })} /></td><td><button type="button" aria-label={`${item.name} 설정 저장`} onClick={() => save(item)}>저장</button></td></tr>)}</tbody></table></div></section>;
+  return <section className="admin-section"><AdminLoadState status={loader.status} label="기본 직업을" onRetry={loader.retry} /><p className="admin-help">이 설정은 앞으로 새로 직업 구성을 시작하는 학급에만 적용됩니다.</p><div className="admin-table-wrap"><table><thead><tr><th>기본 직업</th><th>활성</th><th>최소 인원</th><th>최대 인원</th><th>우선순위</th><th>저장</th></tr></thead><tbody>{templates.map((item) => <tr key={item.id} aria-busy={busyTemplateId === item.id}><td><b>{item.name}</b><small>{item.category}</small></td><td><input type="checkbox" aria-label={`${item.name} 기본 직업 활성화`} checked={Boolean(item.is_active)} onChange={(e) => updateLocal(item.id, { is_active: e.target.checked ? 1 : 0 })} /></td><td><input type="number" aria-label={`${item.name} 권장 최소 인원`} min="1" max="60" value={item.recommended_min_members} onChange={(e) => updateLocal(item.id, { recommended_min_members: Number(e.target.value) })} /></td><td><input type="number" aria-label={`${item.name} 권장 최대 인원`} min="1" max="60" value={item.recommended_max_members} onChange={(e) => updateLocal(item.id, { recommended_max_members: Number(e.target.value) })} /></td><td><input type="number" aria-label={`${item.name} 기본 우선순위`} min="1" max="999" value={item.default_priority} onChange={(e) => updateLocal(item.id, { default_priority: Number(e.target.value) })} /></td><td><button type="button" disabled={busyTemplateId !== null} aria-label={`${item.name} 설정 저장`} onClick={() => void save(item)}>{busyTemplateId === item.id ? "저장 중…" : "저장"}</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function NoticeManager({ request, onError, onMessage }: { request: Requester; onError: (v: string) => void; onMessage: (v: string) => void }) {
@@ -389,6 +453,8 @@ function NoticeManager({ request, onError, onMessage }: { request: Requester; on
   const [body, setBody] = useState("");
   const [audience, setAudience] = useState("all");
   const [active, setActive] = useState(false);
+  const actionInFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     const { announcement } = await request<{ announcement: Announcement }>("/api/admin/announcement");
     setTitle(announcement?.title || "");
@@ -399,10 +465,14 @@ function NoticeManager({ request, onError, onMessage }: { request: Requester; on
   const loader = useAdminLoader(load, onError);
   async function save(event: FormEvent) {
     event.preventDefault();
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setBusy(true);
     try { await request("/api/admin/announcement", { method: "PATCH", body: JSON.stringify({ title, body, audience, isActive: active }) }); onMessage("전체 공지를 저장했습니다."); await loader.retry(); }
     catch (reason) { onError((reason as Error).message); }
+    finally { actionInFlight.current = false; setBusy(false); }
   }
-  return <section className="admin-section admin-form-card"><AdminLoadState status={loader.status} label="전체 공지를" onRetry={loader.retry} /><form onSubmit={save} className="form-stack"><label>제목<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} required /></label><label>본문<textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={500} rows={6} required /></label><label>대상<select value={audience} onChange={(e) => setAudience(e.target.value)}><option value="all">전체</option><option value="teacher">교사</option><option value="student">학생</option></select></label><label className="check-row"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> 공지 사용</label><button className="button button-primary">공지 저장</button></form></section>;
+  return <section className="admin-section admin-form-card"><AdminLoadState status={loader.status} label="전체 공지를" onRetry={loader.retry} /><form onSubmit={save} className="form-stack" aria-busy={busy}><label>제목<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} required /></label><label>본문<textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={500} rows={6} required /></label><label>대상<select value={audience} onChange={(e) => setAudience(e.target.value)}><option value="all">전체</option><option value="teacher">교사</option><option value="student">학생</option></select></label><label className="check-row"><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /> 공지 사용</label><button className="button button-primary" disabled={busy}>{busy ? "저장 중…" : "공지 저장"}</button></form></section>;
 }
 
 function AuditManager({ request, onError }: { request: Requester; onError: (v: string) => void }) {

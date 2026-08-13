@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { classCalendarBounds } from "../lib/class-calendar-rules";
 import { seoulServerTime } from "../lib/seoul-time";
 import {
   changedFields,
@@ -34,6 +35,17 @@ test("수업 달력의 오늘과 월 경계는 브라우저 현지 시각이 아
   assert.equal(newYear.monthValue, "2027-01");
   assert.equal(beforeMidnight.timeZone, "Asia/Seoul");
   assert.equal(atMidnight.timeZone, "Asia/Seoul");
+});
+
+test("학급 운영 달력은 해당 학년도와 다음 해 2월 안에서만 저장한다", () => {
+  assert.deepEqual(classCalendarBounds(2026), {
+    start: "2026-01-01",
+    end: "2027-02-28",
+  });
+  assert.deepEqual(classCalendarBounds(2027), {
+    start: "2027-01-01",
+    end: "2028-02-29",
+  });
 });
 
 test("서버가 교시 수를 줄여도 로컬에서 수정한 더 늦은 교시와 필요한 교시 수를 보존한다", () => {
@@ -171,7 +183,7 @@ test("시간표 저장소는 기존 직업 운영 달력을 수정하지 않고 
 
   assert.match(schema, /export const classTimetables = sqliteTable\("class_timetables"/);
   assert.match(schema, /export const classTimetableSlots = sqliteTable\("class_timetable_slots"/);
-  assert.match(database, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0039_class_timetable\.sql"/);
+  assert.match(database, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0040_operational_indexes\.sql"/);
   assert.match(database, /CREATE TABLE IF NOT EXISTS class_timetables/);
   assert.match(database, /CREATE TABLE IF NOT EXISTS class_timetable_slots/);
   assert.match(migration, /CREATE TABLE `class_timetables`/);

@@ -6,6 +6,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "keep_vars": true,
+  "vars": {
+    "APP_ORIGIN": "https://job-classroom.deokinec.workers.dev"
+  },
   "triggers": {
     "crons": ["* * * * *"]
   },

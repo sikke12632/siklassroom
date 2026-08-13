@@ -1,18 +1,42 @@
 import { database, ensureSchema, runtimeEnv } from "./database";
 import { randomToken, secureStringEqual, sha256, verifyPassword } from "./crypto";
+import { requestCookie } from "./cookies";
 import { ApiError } from "./responses";
 
 export const ADMIN_SESSION_COOKIE = "job_classroom_admin_session";
 const ADMIN_SESSION_MS = 8 * 60 * 60 * 1000;
 const ADMIN_SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+let adminSchemaReady: Promise<void> | null = null;
 
-function requestCookie(request: Request, name: string) {
-  const source = request.headers.get("cookie") ?? "";
-  for (const part of source.split(";")) {
-    const [key, ...rest] = part.trim().split("=");
-    if (key === name) return decodeURIComponent(rest.join("="));
-  }
-  return null;
+async function ensureSystemAdminSessionSchema() {
+  if (adminSchemaReady) return adminSchemaReady;
+  adminSchemaReady = (async () => {
+    const db = database();
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS system_admin_sessions (
+         id TEXT PRIMARY KEY,
+         token_hash TEXT NOT NULL UNIQUE,
+         csrf_hash TEXT NOT NULL,
+         admin_key TEXT NOT NULL,
+         expires_at INTEGER NOT NULL,
+         revoked_at INTEGER,
+         created_at INTEGER NOT NULL,
+         last_seen_at INTEGER NOT NULL
+       )`,
+    ).run();
+    await db.prepare(
+      `CREATE INDEX IF NOT EXISTS system_admin_sessions_admin_idx
+       ON system_admin_sessions(admin_key)`,
+    ).run();
+    await db.prepare(
+      `CREATE INDEX IF NOT EXISTS system_admin_sessions_expires_idx
+       ON system_admin_sessions(expires_at)`,
+    ).run();
+  })().catch((error) => {
+    adminSchemaReady = null;
+    throw error;
+  });
+  return adminSchemaReady;
 }
 
 function secureSuffix(request: Request) {
@@ -39,6 +63,7 @@ export async function verifySystemAdminCredentials(username: string, password: s
 
 export async function prepareSystemAdminSession(request: Request, options: { clearThrottleKeys?: string[] } = {}) {
   await ensureSchema();
+  await ensureSystemAdminSessionSchema();
   const rawToken = randomToken(32);
   const csrfToken = randomToken(24);
   const now = Date.now();
@@ -75,6 +100,7 @@ export async function createSystemAdminSession(request: Request, options: { clea
 
 export async function requireSystemAdmin(request: Request, options: { csrf?: boolean } = {}) {
   await ensureSchema();
+  await ensureSystemAdminSessionSchema();
   const rawToken = requestCookie(request, ADMIN_SESSION_COOKIE);
   if (!rawToken) throw new ApiError(401, "관리자 로그인이 필요합니다.", "ADMIN_LOGIN_REQUIRED");
   const tokenHash = await sha256(rawToken);

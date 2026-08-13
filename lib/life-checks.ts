@@ -450,6 +450,25 @@ async function currentCalendarRevision(classId: string) {
   return Number(row?.revision ?? 0);
 }
 
+function requireConfiguredLifeCheckMonth(calendar: {
+  saved: boolean;
+  monthSaved: boolean;
+}) {
+  if (!calendar.saved || !calendar.monthSaved) {
+    throw new ApiError(
+      409,
+      "선택한 달의 학급 달력을 먼저 저장해 주세요.",
+      "LIFE_CHECK_CALENDAR_MONTH_REQUIRED",
+    );
+  }
+}
+
+function classDaysForLifeChecks(calendar: Awaited<ReturnType<typeof loadClassCalendar>>) {
+  return calendar.days
+    .filter((day) => day.dayType === "class" && day.date >= calendar.classStartDate)
+    .map((day) => day.date);
+}
+
 async function assertLifeCheckPeriodEnded(input: {
   classId: string;
   year: number;
@@ -458,9 +477,8 @@ async function assertLifeCheckPeriodEnded(input: {
 }) {
   const month = `${input.year}-${String(input.month).padStart(2, "0")}`;
   const calendar = await loadClassCalendar(input.classId, { monthValue: month });
-  const schoolDays = calendar.days
-    .filter((day) => day.dayType === "class")
-    .map((day) => day.date);
+  requireConfiguredLifeCheckMonth(calendar);
+  const schoolDays = classDaysForLifeChecks(calendar);
   const selectedDates = splitSchoolDays(schoolDays)[input.period];
   if (selectedDates.some((date) => date > calendar.serverTime.date)) {
     throw new ApiError(
@@ -480,7 +498,7 @@ async function monthData(input: {
 }) {
   const { context, type, period } = input;
   const calendar = await loadClassCalendar(context.classroom.id, { monthValue: input.monthValue });
-  const schoolDays = calendar.days.filter((day) => day.dayType === "class").map((day) => day.date);
+  const schoolDays = classDaysForLifeChecks(calendar);
   const periods = splitSchoolDays(schoolDays);
   const selectedDates = [...periods[period]];
   const [year, month] = input.monthValue.split("-").map(Number);
@@ -632,6 +650,7 @@ export async function lifeCheckOverviewForRequest(request: Request) {
     serverTime,
     calendar: {
       saved: data.calendar.saved,
+      monthSaved: data.calendar.monthSaved,
       revision: data.calendar.revision,
       dates: data.selectedDates,
       firstDates: data.periods.first,
@@ -709,6 +728,14 @@ export async function setLifeCheckRecord(request: Request, body: {
   }
 
   const calendar = await loadClassCalendar(context.classroom.id, { monthValue: date.slice(0, 7) });
+  requireConfiguredLifeCheckMonth(calendar);
+  if (date < calendar.classStartDate) {
+    throw new ApiError(
+      422,
+      "학급 운영 시작일 전에는 생활확인 결과를 기록할 수 없어요.",
+      "LIFE_CHECK_BEFORE_CLASS_START",
+    );
+  }
   const day = calendar.days.find((item) => item.date === date);
   if (!day || day.dayType !== "class") {
     throw new ApiError(422, "수업일에만 확인 결과를 기록할 수 있어요.", "LIFE_CHECK_NOT_CLASS_DAY");
@@ -852,6 +879,7 @@ export async function prepareLifeCheckPayout(request: Request, body: {
     throw new ApiError(409, "확인 기록이 달라졌어요. 최신 계산 결과를 확인해 주세요.", "LIFE_CHECK_STALE");
   }
   const data = await monthData({ context: { ...context, permissions: { ...context.permissions, canViewClass: true } }, type, monthValue: selectedMonth, period });
+  requireConfiguredLifeCheckMonth(data.calendar);
   if (Number(data.calendar.revision) !== expectedCalendar) {
     throw new ApiError(409, "학급 달력이 바뀌었어요. 최신 지급 계산을 다시 확인해 주세요.", "LIFE_CHECK_CALENDAR_STALE");
   }
