@@ -1,4 +1,4 @@
-# 직업교실
+# 우리반운영센터
 
 교사와 학생이 한 번 로그인해 학급 운영, 수업 달력, 직업, 금융, 마트, 생활확인을 함께 사용하는 Cloudflare 기반 통합학급운영시스템입니다. 교사는 준비와 문제 해결을 돕고, 학생은 맡은 직업에 따라 실제 운영에 참여합니다.
 
@@ -51,7 +51,7 @@ npm run test:integration
 - D1 바인딩 이름: `DB`
 - 교사 비밀번호 재설정 메일(선택이 아니라 운영 전 필수):
   - `RESEND_API_KEY`
-  - `MAIL_FROM` (예: `직업교실 <account@example.com>`)
+  - `MAIL_FROM` (예: `우리반운영센터 <account@example.com>`)
 
 직접 배포 준비와 전환 순서는 [`docs/CLOUDFLARE_MIGRATION.md`](docs/CLOUDFLARE_MIGRATION.md)에 정리되어 있습니다. 실제 운영본은 Git 저장소에서 빌드해 Cloudflare Worker와 D1에 직접 배포합니다.
 

@@ -144,10 +144,10 @@ export function StudentPortal() {
       <header><Logo compact /><div className="header-actions"><ThemeToggle compact /><button className="student-logout" disabled={logoutBusy} onClick={() => void logout()}>{logoutBusy ? "로그아웃 중…" : "로그아웃"}</button></div></header>
       <AnnouncementBanner />
       <Notice message={error} tone="error" />
-      <section className="student-welcome">
+      <section className="student-welcome" aria-labelledby="student-home-title">
         <span className="student-avatar">{student.student_number}</span>
         <p>{student.school_name} {student.grade}학년 {student.class_number}반</p>
-        <h1>{student.official_name}님,<br />직업교실에 잘 들어왔어요!</h1>
+        <h1 id="student-home-title">{student.official_name}님,<br />우리반운영센터에 잘 들어왔어요!</h1>
         <div className="student-id-card"><span>내 공식 정보</span><strong>{student.student_number}번 · {student.official_name}</strong><small>이름과 번호는 선생님만 고칠 수 있어요.</small></div>
         <JobEvaluationPanel studentId={student.id} />
         {student.current_job ? (
@@ -167,33 +167,42 @@ export function StudentPortal() {
         ) : (
           <div className="future-card"><b>직업 배정을 기다리고 있어요</b><p>선생님이 이번 직업을 최종 확정하면 이 화면에서 바로 확인할 수 있어요.</p></div>
         )}
-        <a className="student-finance-card" href="/finance">
-          <span aria-hidden="true"><Landmark /></span>
-          <div>
-            <small>우리 반 금융생활</small>
-            <h2>금융센터</h2>
-            <p>내 금융생활과 우리 반 은행 기능을 차례로 준비하고 있어요.</p>
+        <section className="student-service-section" aria-labelledby="student-services-title">
+          <div className="student-service-heading">
+            <p className="eyebrow">우리 반 바로가기</p>
+            <h2 id="student-services-title">우리 반 서비스</h2>
+            <p>필요한 활동을 골라 바로 들어가요.</p>
           </div>
-          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
-        </a>
-        <a className="student-finance-card" href="/mart">
-          <span aria-hidden="true"><ShoppingBasket /></span>
-          <div>
-            <small>현물 학급화폐로 운영</small>
-            <h2>마트센터</h2>
-            <p>내 구매 기록을 보고, 마트 직원이라면 상품과 재고·판매를 운영해요.</p>
+          <div className="student-service-grid">
+            <a className="student-finance-card student-service-card finance" href="/finance">
+              <span aria-hidden="true"><Landmark /></span>
+              <div>
+                <small>우리 반 금융생활</small>
+                <h3>금융센터</h3>
+                <p>내 금융 활동을 확인하고, 은행원이라면 우리 반 은행을 운영해요.</p>
+              </div>
+              <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+            </a>
+            <a className="student-finance-card student-service-card mart" href="/mart">
+              <span aria-hidden="true"><ShoppingBasket /></span>
+              <div>
+                <small>현물 학급화폐로 운영</small>
+                <h3>마트센터</h3>
+                <p>내 구매 기록을 보고, 마트 직원이라면 상품과 재고·판매를 운영해요.</p>
+              </div>
+              <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+            </a>
+            <a className="student-finance-card student-service-card life" href="/life-checks">
+              <span aria-hidden="true"><ClipboardCheck /></span>
+              <div>
+                <small>우리 반 생활 기록</small>
+                <h3>생활확인</h3>
+                <p>내 확인 결과를 보고, 담당 직업이라면 양치·우유·급식을 기록해요.</p>
+              </div>
+              <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
+            </a>
           </div>
-          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
-        </a>
-        <a className="student-finance-card" href="/life-checks">
-          <span aria-hidden="true"><ClipboardCheck /></span>
-          <div>
-            <small>우리 반 생활 기록</small>
-            <h2>생활확인</h2>
-            <p>내 확인 결과를 보고, 담당 직업이라면 양치·우유·급식을 기록해요.</p>
-          </div>
-          <strong>들어가기 <ArrowRight aria-hidden="true" /></strong>
-        </a>
+        </section>
       </section>
     </main>
   );

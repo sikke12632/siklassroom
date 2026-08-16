@@ -52,7 +52,7 @@ function portalError(error: unknown): PortalError {
     ? Number((error as { status: number }).status)
     : 0;
   if (status === 401) {
-    return { kind: "login", message: "직업교실에 로그인한 뒤 마트센터를 이용해 주세요." };
+    return { kind: "login", message: "우리반운영센터에 로그인한 뒤 마트센터를 이용해 주세요." };
   }
   if (status === 400) {
     return { kind: "class", message: "운영할 학급을 먼저 선택해 주세요." };

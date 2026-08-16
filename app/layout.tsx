@@ -2,19 +2,19 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: { default: "직업교실", template: "%s | 직업교실" },
-  description: "학급과 학생 계정을 준비하고 우리 반 직업을 추천·편집하는 통합 학급 운영 시스템.",
+  title: { default: "우리반운영센터", template: "%s | 우리반운영센터" },
+  description: "학생 관리, 일정, 직업, 금융과 마트를 한곳에서 연결하는 통합 학급 운영 시스템.",
   openGraph: {
-    title: "직업교실",
-    description: "학급과 학생 계정을 만들고 우리 반 직업을 준비하세요.",
+    title: "우리반운영센터",
+    description: "선생님과 학생이 함께 사용하는 우리 반 통합 운영 공간.",
     locale: "ko_KR",
     type: "website",
-    images: [{ url: "/og.png", width: 1536, height: 1024, alt: "직업교실 학급 운영 대시보드" }],
+    images: [{ url: "/og.png", width: 1536, height: 1024, alt: "우리반운영센터 학급 운영 대시보드" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "직업교실",
-    description: "학급과 학생 계정을 만들고 우리 반 직업을 준비하세요.",
+    title: "우리반운영센터",
+    description: "선생님과 학생이 함께 사용하는 우리 반 통합 운영 공간.",
     images: ["/og.png"],
   },
 };

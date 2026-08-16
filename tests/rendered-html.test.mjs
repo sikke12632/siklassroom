@@ -204,9 +204,11 @@ test("첫 화면은 교사와 학생의 입구를 분명히 보여 준다", asyn
     readFile(new URL("../app/components/EntryIntro.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(layout, /<html lang="ko"[^>]*>/);
-  assert.match(layout, /default: "직업교실"/);
-  assert.match(entryIntro, /우리 반 운영센터/);
-  assert.match(entryIntro, /선생님과 학생이 함께 사용하는 우리 반 공간이에요/);
+  assert.match(layout, /default: "우리반운영센터"/);
+  assert.match(entryIntro, /title: "우리반운영센터"/);
+  assert.match(entryIntro, /학생 관리부터 일정, 직업, 금융, 마트까지/);
+  assert.match(page, /SchoolIllustration/);
+  assert.match(page, /aria-label="로그인 유형 선택"/);
   assert.match(page, /선생님으로 들어가기/);
   assert.match(page, /학생으로 들어가기/);
   assert.doesNotMatch(page, /학급 준비부터|우리 반 직업까지|관리자/);
@@ -221,7 +223,7 @@ test("서비스의 보안·기록 원칙을 사용자에게 설명한다", async
     readFile(new URL("../app/api/registration/complete/route.ts", import.meta.url), "utf8"),
   ]);
   assert.match(entryIntro, /비밀번호는 선생님도 볼 수 없음/);
-  assert.match(entryIntro, /학급 준비부터 우리 반 직업까지/);
+  assert.match(entryIntro, /학생 관리·일정·직업·금융을 한곳에서 연결/);
   assert.match(schema, /classes_identity_uq/);
   assert.match(schema, /students_class_number_uq/);
   assert.match(auth, /HttpOnly/);
@@ -686,19 +688,51 @@ test("학생 개별 수정은 빈 요청과 오래된 화면의 덮어쓰기를 
 });
 
 test("학생 명단이 직업 설정보다 먼저 나오고 QR 인쇄는 카드만 출력한다", async () => {
-  const [portal, printCards, styles] = await Promise.all([
+  const [portal, dashboard, printCards, styles] = await Promise.all([
     readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherDashboardHome.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/components/PrintCards.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.ok(
-    portal.indexOf('data-dashboard-section="students"')
-      < portal.indexOf('data-dashboard-section="jobs"'),
+    dashboard.indexOf('title="학생 관리"')
+      < dashboard.indexOf('title="직업센터"'),
   );
-  assert.match(portal, /학생 명단 먼저 등록/);
+  assert.match(dashboard, /studentCount < 1[\s\S]*href: "#students"[\s\S]*학생 명단 먼저/);
+  assert.match(portal, /status !== "excluded"/);
   assert.match(printCards, /document\.body\.classList\.add\("qr-printing"\)/);
   assert.match(styles, /body\.qr-printing \.teacher-shell > :not\(\.print-overlay\)/);
   assert.match(styles, /display: none !important/);
+});
+
+test("학생 번호 범위를 한 번에 행으로 만들고 팝업을 안전하게 조작한다", async () => {
+  const [portal, styles] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /parseStudentNumberRanges\(rangeInput, \{ maxCount: 60 \}\)/);
+  assert.match(portal, /placeholder="예: 1~13 51~63"/);
+  assert.match(portal, /existingStudentNumbers\.length\s*\? \[emptyDraft\(""\)\]/);
+  assert.match(portal, /document\.body\.style\.overflow = "hidden"/);
+  assert.match(portal, /role="dialog"/);
+  assert.match(portal, /event\.key === "Escape"/);
+  assert.match(styles, /\.range-example-list button \{ min-height: 44px;/);
+  assert.match(styles, /\.range-dialog-backdrop \{[^}]*overscroll-behavior: contain;/);
+});
+
+test("교사 홈은 시간표 저장과 월 경계 일정을 즉시 다시 확인한다", async () => {
+  const [portal, dashboard, overview, styles] = await Promise.all([
+    readFile(new URL("../app/teacher/TeacherPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherDashboardHome.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/TeacherScheduleOverview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(portal, /onTimetableSaved=\{\(\) => setDashboardScheduleRevision/);
+  assert.match(overview, /onTimetableSaved\?\.\(\)/);
+  assert.match(dashboard, /adjacentMonths[\s\S]*teaching-calendar\?month=/);
+  assert.match(dashboard, /schedule\.timetable\.saved \? `\$\{todayLessons\.length\}개` : "시간표 미설정"/);
+  assert.match(dashboard, /portal-mobile-date/);
+  assert.match(styles, /@media \(max-width: 1100px\) \{\s*\.portal-summary-grid \{ grid-template-columns: repeat\(2,/);
 });
 
 test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
@@ -883,7 +917,8 @@ test("연속 월 평가 상태와 학생 로컬 초안을 최신 서버 상태�
   assert.match(monthlyPortal, /&& !board\.evaluation/);
   assert.match(monthlyPortal, /job_classroom_job_grade_draft_v1/);
   assert.match(teacherPortal, /monthlyChoiceAccessible/);
-  assert.match(teacherPortal, /&& !selectedSummary\.job_evaluation_status/);
+  assert.match(teacherPortal, /\|\| selectedSummary\?\.job_evaluation_status/);
+  assert.match(monthlyPortal, /추천등급/);
   assert.match(classesApi, /evaluation\.source_period_id/);
   assert.match(classesApi, /source\.assignment_month <= clock\.current_month/);
   assert.match(studentPanel, /baseResponseRevision/);
