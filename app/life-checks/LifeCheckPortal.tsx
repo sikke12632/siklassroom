@@ -501,7 +501,7 @@ export function LifeCheckPortal() {
 
       <section className={styles.hero}>
         <div>
-          <p className="eyebrow">직업교실 · 생활확인</p>
+          <p className="eyebrow">우리반운영센터 · 생활확인</p>
           <h1>{overview.context.classroom.displayName} 생활확인</h1>
           <p>{overview.context.role === "teacher"
             ? "담당 학생들의 기록을 확인하고, 꼭 필요할 때만 도와주세요."

@@ -2,16 +2,19 @@
 
 import { Fragment, FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, BriefcaseBusiness, CalendarDays, CheckCircle2, ClipboardCheck, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, RefreshCw, Search, School, ShoppingBasket, UsersRound } from "lucide-react";
+import { BookOpen, BriefcaseBusiness, CalendarDays, CheckCircle2, ClipboardCheck, Dices, Home, KeyRound, Landmark, ListOrdered, LogOut, MailCheck, Plus, Search, School, ShoppingBasket, UsersRound } from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { AnnouncementBanner } from "@/app/components/AnnouncementBanner";
 import { TeacherEntryIntro } from "@/app/components/EntryIntro";
 import { Notice } from "@/app/components/Notice";
 import { PrintCards, RegistrationCard } from "@/app/components/PrintCards";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
+import { SchoolIllustration } from "@/app/components/SchoolIllustration";
 import { TeacherScheduleOverview } from "./TeacherScheduleOverview";
+import { TeacherDashboardHome } from "./TeacherDashboardHome";
 import { api, ClientApiError, friendlyStatus, patchJson, postJson } from "@/lib/client-api";
 import { PROVINCES, SCHOOL_LEVELS } from "@/lib/schools";
+import { parseStudentNumberRanges } from "@/lib/student-number-ranges";
 
 type TeacherActor = {
   type: "teacher";
@@ -74,6 +77,7 @@ export function TeacherPortal() {
   const [busy, setBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [scheduleDirty, setScheduleDirty] = useState(false);
+  const [dashboardScheduleRevision, setDashboardScheduleRevision] = useState(0);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [sessionError, setSessionError] = useState("");
@@ -256,6 +260,7 @@ export function TeacherPortal() {
   const pendingCount = students.filter((student) => student.status === "pending").length;
   const activeCount = students.filter((student) => student.status === "active").length;
   const attentionCount = students.filter((student) => student.status === "reset_required" || student.status === "locked").length;
+  const operationalStudentCount = students.filter((student) => student.status !== "excluded").length;
   const monthlyChoiceReady = Boolean(
     selectedSummary
       && Number(selectedSummary.job_student_count ?? 0) > 0
@@ -283,7 +288,7 @@ export function TeacherPortal() {
       <aside className="teacher-sidebar">
         <Logo compact />
         <nav className="primary-nav" aria-label="주요 메뉴">
-          <a className="active" href="#dashboard"><Home aria-hidden="true" /><span>홈</span></a>
+          <a href="#dashboard"><Home aria-hidden="true" /><span>홈</span></a>
           <a href="#students"><UsersRound aria-hidden="true" /><span>학생 관리</span></a>
           {selectedClassId && <a href="#class-schedule"><CalendarDays aria-hidden="true" /><span>달력·시간표</span></a>}
           {selectedClassId && <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" /><span>우리 반 직업</span></a>}
@@ -308,16 +313,8 @@ export function TeacherPortal() {
           {selectedClassId && <a href={`/mart?classId=${selectedClassId}`}><ShoppingBasket aria-hidden="true" /><span>마트센터</span></a>}
           {selectedClassId && <a href={`/life-checks?classId=${selectedClassId}`}><ClipboardCheck aria-hidden="true" /><span>생활확인</span></a>}
         </nav>
-        <div className="sidebar-section-title">내 학급</div>
-        <nav className="class-nav">
-          {classes.map((item) => (
-            <button key={item.id} className={selectedClassId === item.id && !showClassForm ? "active" : ""} onClick={() => selectClass(item.id)}>
-              <span>{item.display_name || `${item.grade}학년 ${item.class_number}반`}</span>
-              <small>{item.school_name} · {item.school_year}</small>
-            </button>
-          ))}
-        </nav>
         <button className="sidebar-add" onClick={startClassCreation}><Plus aria-hidden="true" /> 새 학급 만들기</button>
+        <SchoolIllustration className="sidebar-school-illustration" variant="compact" />
         <div className="sidebar-account">
           <ThemeToggle />
           <span>{actor.email}</span>
@@ -345,38 +342,73 @@ export function TeacherPortal() {
             </label>
             <button className="button button-light" type="button" onClick={startClassCreation}><Plus aria-hidden="true" /><span>새 학급</span></button>
           </div>
+          {selectedClassId && (
+            <details className="mobile-service-menu">
+              <summary>우리 반 전체 메뉴</summary>
+              <nav aria-label="모바일 주요 메뉴">
+                <a href="#dashboard"><Home aria-hidden="true" />홈</a>
+                <a href="#students"><UsersRound aria-hidden="true" />학생 관리</a>
+                <a href="#class-schedule"><CalendarDays aria-hidden="true" />달력·시간표</a>
+                <a href={`/teacher/classes/${selectedClassId}/jobs`}><BriefcaseBusiness aria-hidden="true" />직업센터</a>
+                {selectedSummary?.job_status === "completed" && (
+                  <a href={`/teacher/classes/${selectedClassId}/job-assignments`}><Dices aria-hidden="true" />첫 직업 배정</a>
+                )}
+                {monthlyChoiceAccessible && (
+                  <a href={`/teacher/classes/${selectedClassId}/monthly-jobs`}><ListOrdered aria-hidden="true" />다음 달 직업 선정</a>
+                )}
+                <a href={`/finance?classId=${selectedClassId}`}><Landmark aria-hidden="true" />금융센터</a>
+                <a href={`/mart?classId=${selectedClassId}`}><ShoppingBasket aria-hidden="true" />마트센터</a>
+                <a href={`/life-checks?classId=${selectedClassId}`}><ClipboardCheck aria-hidden="true" />생활확인</a>
+              </nav>
+            </details>
+          )}
         </header>
-        <AnnouncementBanner />
-        <Notice message={error} tone="error" />
-        <Notice message={message} tone="success" />
-
         {showClassForm ? (
-          <ClassCreateForm actor={actor} busy={busy} onSubmit={async (input) => {
-            setBusy(true); setError("");
-            try {
-              const data = await postJson<{ class: ClassRoom }>("/api/classes", input);
-              await loadClasses(data.class.id);
-              setShowClassForm(false);
-              setSelectedClassId(data.class.id);
-              setMessage("학급을 만들었어요. 이제 학생 명단을 입력해 주세요.");
-            } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
-          }} />
+          <>
+            <AnnouncementBanner />
+            <Notice message={error} tone="error" />
+            <Notice message={message} tone="success" />
+            <ClassCreateForm actor={actor} busy={busy} onSubmit={async (input) => {
+              setBusy(true); setError("");
+              try {
+                const data = await postJson<{ class: ClassRoom }>("/api/classes", input);
+                await loadClasses(data.class.id);
+                setShowClassForm(false);
+                setSelectedClassId(data.class.id);
+                setMessage("학급을 만들었어요. 이제 학생 명단을 입력해 주세요.");
+              } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
+            }} />
+          </>
         ) : classRoom && selectedSummary && classRoom.id === selectedClassId ? (
           <>
-            <section className="dashboard-heading" id="dashboard">
-              <div><p className="eyebrow">{classRoom.school_year}학년도</p><h1>{classLabel}</h1><p>{classRoom.school_name} · {classRoom.grade}학년 {classRoom.class_number}반</p></div>
-              <button
-                className="button button-light"
-                onClick={() => Promise.all([
-                  loadClass(classRoom.id),
-                  loadClasses(classRoom.id),
-                ]).catch((reason) => setError((reason as Error).message))}
-              >
-                <RefreshCw aria-hidden="true" />새로고침
-              </button>
-            </section>
+            <div id="dashboard">
+              <TeacherDashboardHome
+                actorEmail={actor.email}
+                classes={classes}
+                selectedClassId={classRoom.id}
+                classRoom={classRoom}
+                summary={selectedSummary}
+                studentCount={operationalStudentCount}
+                activeCount={activeCount}
+                pendingCount={pendingCount}
+                attentionCount={attentionCount}
+                monthlyChoiceAccessible={monthlyChoiceAccessible}
+                monthlyChoiceBlockedReason={monthlyChoiceBlockedReason}
+                scheduleRevision={dashboardScheduleRevision}
+                onSelectClass={selectClass}
+                onCreateClass={startClassCreation}
+                onLogout={logout}
+                announcement={<AnnouncementBanner />}
+                status={
+                  <>
+                    <Notice message={error} tone="error" />
+                    <Notice message={message} tone="success" />
+                  </>
+                }
+              />
+            </div>
             <section className="setup-progress setup-progress-five" aria-label="학급 준비 단계">
-              <div className={students.length ? "done" : "current"}><b>1</b><span>학생 명단<small>{students.length ? `${students.length}명` : "입력 중"}</small></span></div>
+              <div className={operationalStudentCount ? "done" : "current"}><b>1</b><span>학생 명단<small>{operationalStudentCount ? `${operationalStudentCount}명` : "입력 중"}</small></span></div>
               <i />
               <div className={selectedSummary.job_status === "completed" ? "done" : students.length ? "current" : ""}><b>2</b><span>직업 만들기<small>{selectedSummary.job_status === "completed" ? `${selectedSummary.job_count}개` : "대기"}</small></span></div>
               <i />
@@ -392,15 +424,16 @@ export function TeacherPortal() {
               classId={classRoom.id}
               readOnly={classRoom.status !== "active"}
               onDirtyChange={setScheduleDirty}
+              onTimetableSaved={() => setDashboardScheduleRevision((current) => current + 1)}
             />
 
-            <div data-dashboard-section="students">
+            <div id="students" data-dashboard-section="students">
               {students.length === 0 ? (
                 <RosterEditor onSaved={(newCards) => { setCards(newCards); setAddingStudents(false); loadClass(classRoom.id); loadClasses(classRoom.id); }} classId={classRoom.id} />
               ) : (
                 <>
                 <section className="stat-grid">
-                  <div><span>전체 학생</span><strong>{students.length}</strong><small>명</small></div>
+                  <div><span>운영 학생</span><strong>{operationalStudentCount}</strong><small>명</small></div>
                   <div><span>등록 완료</span><strong>{activeCount}</strong><small>명</small></div>
                   <div><span>등록 전</span><strong>{pendingCount}</strong><small>명</small></div>
                   <div className={attentionCount ? "attention" : ""}><span>확인 필요</span><strong>{attentionCount}</strong><small>명</small></div>
@@ -408,6 +441,7 @@ export function TeacherPortal() {
                 {addingStudents && (
                   <RosterEditor
                     classId={classRoom.id}
+                    existingStudentNumbers={students.map((student) => student.student_number)}
                     onCancel={() => setAddingStudents(false)}
                     onSaved={(newCards) => {
                       setCards(newCards);
@@ -417,7 +451,7 @@ export function TeacherPortal() {
                     }}
                   />
                 )}
-                <section className="panel roster-panel" id="students">
+                <section className="panel roster-panel">
                   <div className="panel-heading">
                     <div><p className="eyebrow">학생 계정</p><h2>우리 반 명단</h2><p>이름이나 번호를 고쳐도 같은 학생의 기록으로 이어집니다.</p></div>
                     <div className="button-row">
@@ -473,129 +507,6 @@ export function TeacherPortal() {
               )}
             </div>
 
-            <section data-dashboard-section="jobs" className={`job-dashboard-card ${selectedSummary.job_student_count_changed ? "needs-review" : selectedSummary.job_status || "not_started"}`}>
-              <div className="job-dashboard-icon" aria-hidden="true"><BriefcaseBusiness /></div>
-              <div>
-                <p className="eyebrow">우리 반 운영</p>
-                <h2>우리 반 직업</h2>
-                {students.length === 0 ? (
-                  <p><b>학생 명단을 먼저 등록해 주세요.</b> 학생 수를 기준으로 직업과 자리를 구성해요.</p>
-                ) : selectedSummary.job_student_count_changed ? (
-                  <p><b>학생 명단이 달라졌어요.</b> 저장 당시 {selectedSummary.job_student_snapshot}명에서 현재 {selectedSummary.job_student_count}명으로 바뀌었어요.</p>
-                ) : selectedSummary.job_status === "completed" ? (
-                  <p><b>직업 구성이 확정됐어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리를 운영해요.</p>
-                ) : selectedSummary.job_status === "draft" ? (
-                  <p><b>저장한 초안이 있어요.</b> {selectedSummary.job_count}개 직업, {selectedSummary.job_capacity}자리부터 이어서 만들 수 있어요.</p>
-                ) : (
-                  <p><b>아직 직업을 정하지 않았어요.</b> 간단한 질문으로 추천받거나 직접 만들 수 있어요.</p>
-                )}
-              </div>
-              <div className="job-dashboard-actions">
-                {students.length === 0 ? (
-                  <span className="button button-light is-disabled" aria-disabled="true">학생 명단 먼저 등록</span>
-                ) : (
-                  <>
-                    {selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed && (
-                      <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/job-assignments`}>
-                        <Dices aria-hidden="true" />{selectedSummary.assignment_status === "confirmed" ? "첫 배정 확인" : selectedSummary.calendar_saved ? "첫 직업 배정" : "달력 설정"}
-                      </a>
-                    )}
-                    <a className={`button ${selectedSummary.job_status === "completed" && !selectedSummary.job_student_count_changed ? "button-light" : "button-primary"}`} href={`/teacher/classes/${classRoom.id}/jobs`}>
-                      {selectedSummary.job_student_count_changed ? "자리 다시 맞추기" : selectedSummary.job_status === "completed" ? "직업 확인·수정" : selectedSummary.job_status === "draft" ? "초안 이어서" : "직업 설정하기"}
-                    </a>
-                  </>
-                )}
-              </div>
-            </section>
-
-            <section className={`job-dashboard-card ${monthlyChoiceAccessible ? selectedSummary.job_evaluation_status || selectedSummary.monthly_choice_status || "not_started" : "needs-review"}`}>
-              <div className="job-dashboard-icon" aria-hidden="true"><ListOrdered /></div>
-              <div>
-                <p className="eyebrow">월별 운영</p>
-                <h2>다음 달 직업 선정</h2>
-                {!monthlyChoiceAccessible ? (
-                  <p><b>아직 준비가 필요해요.</b> {monthlyChoiceBlockedReason}</p>
-                ) : selectedSummary.monthly_choice_status === "draft" ? (
-                  <p><b>선택 진행 중이에요.</b> 현재 차례부터 바로 이어서 진행할 수 있어요.</p>
-                ) : selectedSummary.monthly_choice_status === "confirmed"
-                  && !selectedSummary.job_evaluation_status
-                  && selectedSummary.monthly_choice_target_year
-                  && selectedSummary.monthly_choice_target_month ? (
-                    <p><b>{selectedSummary.monthly_choice_target_year}년 {selectedSummary.monthly_choice_target_month}월 확정 완료</b> 학생별 직업과 남은 자리를 확인할 수 있어요.</p>
-                  ) : selectedSummary.job_evaluation_status === "open" ? (
-                    <p><b>학생 직업평가가 진행 중이에요.</b> {selectedSummary.job_evaluation_submitted_count ?? 0}/{selectedSummary.job_evaluation_student_count ?? 0}명이 제출했어요.</p>
-                  ) : selectedSummary.job_evaluation_status === "closed" ? (
-                    <p><b>추천등급이 계산됐어요.</b> 결과를 검토하고 직업별 최종등급을 확정해 주세요.</p>
-                  ) : selectedSummary.job_evaluation_status === "finalized" ? (
-                    <p><b>최종등급이 준비됐어요.</b> 월마감 후 같은 등급 학생의 순서를 무작위로 정할 수 있어요.</p>
-                  ) : (
-                    <p><b>학생 직업평가부터 시작해요.</b> 평가 결과로 직업등급과 다음 달 선택 순서를 정합니다.</p>
-                  )}
-              </div>
-              <div className="job-dashboard-actions">
-                {monthlyChoiceAccessible ? (
-                  <a className="button button-primary" href={`/teacher/classes/${classRoom.id}/monthly-jobs`}>
-                    <ListOrdered aria-hidden="true" />
-                    {selectedSummary.monthly_choice_status === "draft"
-                      ? "선택 이어 하기"
-                      : selectedSummary.monthly_choice_status === "confirmed"
-                        && !selectedSummary.job_evaluation_status
-                        ? "확정 결과 보기"
-                        : selectedSummary.job_evaluation_status === "open"
-                          ? "평가 제출 현황 보기"
-                          : selectedSummary.job_evaluation_status === "closed"
-                            ? "추천등급 검토"
-                            : selectedSummary.job_evaluation_status === "finalized"
-                              ? "무작위 순서 만들기"
-                              : "학생 직업평가 열기"}
-                  </a>
-                ) : (
-                  <span className="button button-light is-disabled" aria-disabled="true">{monthlyChoiceBlockedReason}</span>
-                )}
-              </div>
-            </section>
-
-            <section className="job-dashboard-card finance-dashboard-card">
-              <div className="job-dashboard-icon" aria-hidden="true"><Landmark /></div>
-              <div>
-                <p className="eyebrow">우리 반 금융생활</p>
-                <h2>금융센터</h2>
-                <p><b>은행원 학생이 스스로 운영할 공간을 준비하고 있어요.</b> 선생님은 문제가 생기거나 도움이 필요할 때 기록을 확인하고 도울 수 있게 됩니다.</p>
-              </div>
-              <div className="job-dashboard-actions">
-                <a className="button button-primary" href={`/finance?classId=${classRoom.id}`}>
-                  <Landmark aria-hidden="true" />금융센터 들어가기
-                </a>
-              </div>
-            </section>
-
-            <section className="job-dashboard-card">
-              <div className="job-dashboard-icon" aria-hidden="true"><ShoppingBasket /></div>
-              <div>
-                <p className="eyebrow">현물 학급화폐로 운영</p>
-                <h2>마트센터</h2>
-                <p><b>마트 직원이 상품·판매·재고를 직접 기록합니다.</b> 금융센터의 디지털 잔액과는 연결되지 않으며, 선생님은 기록 확인과 비상 정정만 할 수 있어요.</p>
-              </div>
-              <div className="job-dashboard-actions">
-                <a className="button button-primary" href={`/mart?classId=${classRoom.id}`}>
-                  <ShoppingBasket aria-hidden="true" />마트센터 들어가기
-                </a>
-              </div>
-            </section>
-
-            <section className="job-dashboard-card">
-              <div className="job-dashboard-icon" aria-hidden="true"><ClipboardCheck /></div>
-              <div>
-                <p className="eyebrow">담당 학생이 직접 기록</p>
-                <h2>생활확인</h2>
-                <p><b>양치·우유·급식 담당 학생이 학급 달력에 맞춰 확인합니다.</b> 기간별 보상 명단과 변경 기록을 선생님이 한눈에 확인할 수 있어요.</p>
-              </div>
-              <div className="job-dashboard-actions">
-                <a className="button button-primary" href={`/life-checks?classId=${classRoom.id}`}>
-                  <ClipboardCheck aria-hidden="true" />생활확인 들어가기
-                </a>
-              </div>
-            </section>
           </>
         ) : <LoadingScreen label="학급 정보를 불러오고 있어요" />}
       </main>
@@ -937,12 +848,38 @@ function ClassCreateForm({ actor, busy, onSubmit }: { actor: TeacherActor; busy:
   );
 }
 
-function RosterEditor({ classId, onSaved, onCancel }: { classId: string; onSaved: (cards: RegistrationCard[]) => void; onCancel?: () => void }) {
-  const [rows, setRows] = useState<DraftStudent[]>(() => Array.from({ length: 5 }, (_, index) => emptyDraft(String(index + 1))));
+function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] }: {
+  classId: string;
+  onSaved: (cards: RegistrationCard[]) => void;
+  onCancel?: () => void;
+  existingStudentNumbers?: number[];
+}) {
+  const [rows, setRows] = useState<DraftStudent[]>(() => existingStudentNumbers.length
+    ? [emptyDraft("")]
+    : Array.from({ length: 5 }, (_, index) => emptyDraft(String(index + 1))));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const [rangeInput, setRangeInput] = useState("");
+  const [rangeError, setRangeError] = useState("");
+  const [rangeMessage, setRangeMessage] = useState("");
+  const rangeInputRef = useRef<HTMLInputElement>(null);
+  const rangeButtonRef = useRef<HTMLButtonElement>(null);
   const validCount = rows.filter((row) => row.number.trim() && row.name.trim()).length;
   const duplicateNumbers = useMemo(() => rows.filter((row) => row.number.trim()).filter((row, index, source) => source.findIndex((other) => other.number === row.number) !== index).map((row) => row.number), [rows]);
+  const existingNumberSet = useMemo(() => new Set(existingStudentNumbers), [existingStudentNumbers]);
+  const rangePreview = useMemo(() => parseStudentNumberRanges(rangeInput, { maxCount: 60 }), [rangeInput]);
+
+  useEffect(() => {
+    if (!rangeOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const frame = requestAnimationFrame(() => rangeInputRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(frame);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [rangeOpen]);
 
   function update(key: string, field: "number" | "name", value: string) {
     setRows((current) => current.map((row) => row.key === key ? { ...row, [field]: value } : row));
@@ -963,12 +900,83 @@ function RosterEditor({ classId, onSaved, onCancel }: { classId: string; onSaved
     document.querySelector<HTMLInputElement>(`[data-roster-number="${rows[index + 1].key}"]`)?.focus();
   }
 
+  function openRangeDialog() {
+    setRangeError("");
+    setRangeMessage("");
+    setRangeOpen(true);
+  }
+
+  function closeRangeDialog() {
+    setRangeOpen(false);
+    setRangeError("");
+    requestAnimationFrame(() => rangeButtonRef.current?.focus());
+  }
+
+  function handleRangeDialogKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeRangeDialog();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => element.getAttribute("aria-hidden") !== "true");
+    if (!focusable.length) {
+      event.preventDefault();
+      return;
+    }
+
+    const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    if (activeIndex === -1 || (event.shiftKey && activeIndex === 0) || (!event.shiftKey && activeIndex === focusable.length - 1)) {
+      event.preventDefault();
+      (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus();
+    }
+  }
+
+  function applyNumberRanges() {
+    setRangeError("");
+    const parsed = parseStudentNumberRanges(rangeInput, { maxCount: 60 });
+    if (!parsed.ok) {
+      setRangeError(parsed.error.message);
+      return;
+    }
+    const conflicts = parsed.numbers.filter((number) => existingNumberSet.has(number));
+    if (conflicts.length) {
+      setRangeError(`${conflicts.join(", ")}번 학생은 이미 우리 반 명단에 있어요. 해당 번호를 빼고 다시 입력해 주세요.`);
+      return;
+    }
+    const currentNumbers = new Set(rows.flatMap((row) => {
+      const number = Number(row.number);
+      return Number.isInteger(number) && number >= 1 && number <= 99 ? [number] : [];
+    }));
+    const additions = parsed.numbers.flatMap((number) => currentNumbers.has(number)
+      ? []
+      : [emptyDraft(String(number))]);
+
+    // Keep every existing row object and its order so names already being
+    // entered cannot be lost or moved when a range is appended.
+    setRows([...rows, ...additions]);
+    setRangeMessage(additions.length
+      ? `${parsed.numbers.length}개 번호를 확인해 새 학생 행 ${additions.length}개를 추가했어요.`
+      : "입력한 번호의 행이 이미 모두 준비되어 있어요.");
+    setRangeInput("");
+    setRangeOpen(false);
+    requestAnimationFrame(() => rangeButtonRef.current?.focus());
+  }
+
   async function save() {
     setError("");
     const complete = rows.filter((row) => row.number.trim() || row.name.trim());
     if (!complete.length) return setError("학생을 한 명 이상 입력해 주세요.");
     if (complete.some((row) => !row.number.trim() || !row.name.trim())) return setError("번호나 이름이 빈 줄이 있어요.");
     if (duplicateNumbers.length) return setError(`${[...new Set(duplicateNumbers)].join(", ")}번이 두 번 입력되었어요.`);
+    const existingConflicts = complete
+      .map((row) => Number(row.number))
+      .filter((number) => existingNumberSet.has(number));
+    if (existingConflicts.length) return setError(`${existingConflicts.join(", ")}번 학생은 이미 우리 반 명단에 있어요.`);
     setBusy(true);
     try {
       const data = await postJson<{ students: Array<Student & { activation_url: string }> }>(`/api/classes/${classId}/students`, {
@@ -991,11 +999,71 @@ function RosterEditor({ classId, onSaved, onCancel }: { classId: string; onSaved
           </div>
         ))}
       </div>
-      <button className="add-row-button" onClick={() => setRows((current) => [...current, emptyDraft(String((Number(current.at(-1)?.number) || current.length) + 1))])}>+ 학생 행 추가</button>
+      <button ref={rangeButtonRef} className="add-row-button" type="button" onClick={openRangeDialog}>+ 학생 행 한꺼번에 추가</button>
+      <Notice message={rangeMessage} tone="success" />
       <Notice message={error} tone="error" />
       <div className="panel-footer"><p>저장하면 학생마다 학급 운영 중 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
+      {rangeOpen && (
+        <div
+          className="range-dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) closeRangeDialog();
+          }}
+        >
+          <section
+            className="range-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="range-dialog-title"
+            aria-describedby="range-dialog-description"
+            onKeyDown={handleRangeDialogKeyDown}
+          >
+            <div className="range-dialog-heading">
+              <div><p className="eyebrow">학생 행 빠른 추가</p><h2 id="range-dialog-title">번호를 범위로 입력해 주세요</h2></div>
+              <button type="button" onClick={closeRangeDialog} aria-label="학생 행 추가 창 닫기">×</button>
+            </div>
+            <p id="range-dialog-description">띄어쓰기나 쉼표로 여러 범위를 구분할 수 있어요. 이미 입력한 이름과 행은 그대로 유지됩니다.</p>
+            <label className="range-input-label">
+              <span>학생 번호 또는 범위</span>
+              <input
+                ref={rangeInputRef}
+                value={rangeInput}
+                onChange={(event) => { setRangeInput(event.target.value); setRangeError(""); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    applyNumberRanges();
+                  }
+                }}
+                placeholder="예: 1~13 51~63"
+                autoComplete="off"
+                aria-invalid={Boolean(rangeError)}
+              />
+            </label>
+            <div className="range-example-list" aria-label="입력 예시">
+              <button type="button" onClick={() => { setRangeInput("1~26"); setRangeError(""); }}>1~26</button>
+              <button type="button" onClick={() => { setRangeInput("1~13 51~63"); setRangeError(""); }}>1~13 51~63</button>
+              <button type="button" onClick={() => { setRangeInput("1, 3, 5~10"); setRangeError(""); }}>1, 3, 5~10</button>
+            </div>
+            {rangeInput.trim() && rangePreview.ok && (
+              <p className="range-preview" role="status"><CheckCircle2 aria-hidden="true" />{rangePreview.numbers.length}개 번호: {compactNumberList(rangePreview.numbers)}</p>
+            )}
+            <Notice message={rangeError} tone="error" />
+            <div className="range-dialog-actions">
+              <button className="button button-light" type="button" onClick={closeRangeDialog}>취소</button>
+              <button className="button button-primary" type="button" onClick={applyNumberRanges}>학생 행 추가</button>
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
+}
+
+function compactNumberList(numbers: number[]) {
+  if (numbers.length <= 14) return numbers.join(", ");
+  return `${numbers.slice(0, 7).join(", ")} … ${numbers.slice(-5).join(", ")}`;
 }
 
 function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onCards, onReload }: {

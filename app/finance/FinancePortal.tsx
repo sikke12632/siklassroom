@@ -73,7 +73,7 @@ function classifyError(status: number, message?: string): LoadError {
   if (status === 401) {
     return {
       kind: "login",
-      message: "금융센터는 직업교실에 로그인한 뒤 이용할 수 있어요.",
+      message: "금융센터는 우리반운영센터에 로그인한 뒤 이용할 수 있어요.",
     };
   }
   if (status === 400) {
@@ -258,7 +258,7 @@ function FinanceHome({
           <div className="finance-hero-icon" aria-hidden="true"><Landmark /></div>
           <div className="finance-hero-copy">
             <div className="finance-kicker-row">
-              <p className="eyebrow">직업교실 · 금융센터</p>
+              <p className="eyebrow">우리반운영센터 · 금융센터</p>
               <span className={`finance-role-badge role-${context.financeRole}`}>{roleLabel}</span>
               {!classIsActive && <span className="finance-role-badge role-archived">보관된 학급</span>}
             </div>

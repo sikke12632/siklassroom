@@ -129,10 +129,12 @@ export function TeacherScheduleOverview({
   classId,
   readOnly = false,
   onDirtyChange,
+  onTimetableSaved,
 }: {
   classId: string;
   readOnly?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  onTimetableSaved?: () => void;
 }) {
   const [data, setData] = useState<TeachingCalendarResponse | null>(null);
   const [selectedDate, setSelectedDate] = useState("");
@@ -448,6 +450,7 @@ export function TeacherScheduleOverview({
       setConflict(null);
       setStaleNeedsRefresh(false);
       setMessage("기초 시간표를 저장했어요. 오늘 수업에 바로 반영했습니다.");
+      onTimetableSaved?.();
     } catch (reason) {
       if (reason instanceof ClientApiError && reason.code === "TIMETABLE_STALE") {
         await inspectLatestConflict(draft, baseDraft);

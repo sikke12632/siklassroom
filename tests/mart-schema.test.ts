@@ -9,6 +9,7 @@ test("runtime mart schema stays aligned with the D1 migration", async () => {
     "utf8",
   );
   const expected = migration
+    .replace(/\r\n?/g, "\n")
     .split("--> statement-breakpoint")
     .map((statement) => statement.trim())
     .filter(Boolean)
