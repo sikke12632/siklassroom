@@ -298,9 +298,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(studentLogin, /verifyPasswordOrDummy\(password, student\?\.password_hash\)/);
   assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
   assert.match(teacherLogin, /credentialThrottleKey\(request, "teacher-login", email\)/);
-  assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", identifier\)/);
+  assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", credentialIdentifier\)/);
   assert.match(teacherLogin, /subjectThrottleKey\("teacher-login", email\)/);
-  assert.match(studentLogin, /subjectThrottleKey\("student-login", identifier\)/);
+  assert.match(studentLogin, /subjectThrottleKey\("student-login", credentialIdentifier\)/);
   assert.match(studentLogin, /consumeRateLimit\(subjectKey,[\s\S]*maxAttempts: 7/);
   assert.match(studentLogin, /consumeRateLimit\(key,[\s\S]*maxAttempts: 7/);
   assert.ok(
@@ -752,6 +752,8 @@ test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설�
   assert.match(registration, /registrationActivationUrl/);
   assert.match(complete, /registration_operation_guards/);
   assert.match(complete, /prepareSession/);
+  assert.match(complete, /challenge\.status === "reset_required"/);
+  assert.match(complete, /password === STUDENT_TEMPORARY_PASSWORD/);
   assert.match(verify, /export async function POST/);
   assert.match(verify, /registrationResponseHeaders/);
   assert.match(individualIssue, /student\.status === "reset_required" \? "reset" : "activate"/);

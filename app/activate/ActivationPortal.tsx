@@ -115,15 +115,15 @@ export function ActivationPortal() {
                 <h2>{heading}</h2>
                 <p>{isLogin
                   ? "QR은 학생을 찾는 카드예요. 평소 쓰던 비밀번호를 입력하면 안전하게 들어갈 수 있어요."
-                  : "친구에게 알려주지 않을 숫자 6~12자리를 정해 주세요."}</p>
+                  : "친구에게 알려주지 않을 영문 또는 숫자 4~32자를 정해 주세요."}</p>
               </div>
               <label>{isLogin ? "현재 비밀번호" : "새 비밀번호"}
                 <input
                   type="password"
-                  inputMode="numeric"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value.replace(/\D/g, "").slice(0, 12))}
-                  placeholder={isLogin ? "숫자 4자리 이상" : "숫자 6자리 이상"}
+                  onChange={(event) => setPassword(event.target.value.slice(0, 32))}
+                  placeholder="영문 또는 숫자 4자리 이상"
+                  maxLength={32}
                   autoComplete={isLogin ? "current-password" : "new-password"}
                   autoFocus
                   required
@@ -133,10 +133,10 @@ export function ActivationPortal() {
                 <label>한 번 더
                   <input
                     type="password"
-                    inputMode="numeric"
                     value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value.replace(/\D/g, "").slice(0, 12))}
+                    onChange={(event) => setConfirmPassword(event.target.value.slice(0, 32))}
                     placeholder="똑같이 입력"
+                    maxLength={32}
                     autoComplete="new-password"
                     required
                   />

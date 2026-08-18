@@ -1126,6 +1126,16 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
 
+  async function resetStudentPassword(student: Student) {
+    if (!confirm(`${student.student_number}번 ${student.official_name} 학생의 비밀번호를 123456으로 초기화할까요? 현재 로그인은 종료되고, 학생은 새 비밀번호를 만든 뒤에만 서비스를 이용할 수 있습니다.`)) return;
+    onBusy(true); onError("");
+    try {
+      await postJson(`/api/students/${student.id}/password-reset`, {});
+      onMessage("비밀번호를 123456으로 초기화했어요. 학생은 로그인 후 새 비밀번호를 먼저 만들어야 합니다.");
+      onReload();
+    } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+  }
+
   return (
     <div className="student-table-wrap">
       <table className="student-table"><thead><tr><th>번호</th><th>공식 이름</th><th>계정 상태</th><th>관리</th></tr></thead><tbody>
@@ -1138,6 +1148,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
+                {(student.status === "active" || student.status === "reset_required") && <button onClick={() => resetStudentPassword(student)}>비밀번호 초기화</button>}
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => allowExistingCardReset(student)}>QR 재설정 10분 허용</button>}
                 {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "새 QR 발급" : "QR 재발급"}</button>}
                 {student.status === "locked" ? <button onClick={() => updateStudent(student, { status: student.activated_at ? "active" : "pending" })}>잠금 해제</button> : student.status !== "excluded" && <button onClick={() => updateStudent(student, { status: "locked" })}>잠금</button>}

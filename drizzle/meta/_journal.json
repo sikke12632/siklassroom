@@ -288,6 +288,13 @@
       "when": 1786723200000,
       "tag": "0040_operational_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1787026798097,
+      "tag": "0041_student_login_stabilization",
+      "breakpoints": true
     }
   ]
 }

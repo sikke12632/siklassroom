@@ -52,6 +52,13 @@ export const classes = sqliteTable("classes", {
     table.classNumber,
   ),
   index("classes_teacher_idx").on(table.teacherId),
+  index("classes_student_login_idx").on(
+    table.schoolId,
+    table.status,
+    table.grade,
+    table.classNumber,
+    table.schoolYear,
+  ),
 ]);
 
 export const students = sqliteTable("students", {
@@ -185,6 +192,7 @@ export const schools = sqliteTable("schools", {
   id: text("id").primaryKey(),
   officeCode: text("office_code").notNull(),
   schoolCode: text("school_code").notNull(),
+  studentLoginCode: text("student_login_code"),
   officialName: text("official_name").notNull(),
   normalizedName: text("normalized_name").notNull(),
   searchName: text("search_name").notNull(),
@@ -199,6 +207,7 @@ export const schools = sqliteTable("schools", {
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [
   uniqueIndex("schools_office_school_uq").on(table.officeCode, table.schoolCode),
+  uniqueIndex("schools_student_login_code_uq").on(table.studentLoginCode),
   index("schools_normalized_idx").on(table.normalizedName),
   index("schools_search_idx").on(table.searchName),
   index("schools_filters_idx").on(table.provinceName, table.schoolLevel, table.status),

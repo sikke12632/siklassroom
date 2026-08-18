@@ -7,10 +7,13 @@ import { teacherAccountIssue } from "./teacher-access-rules";
 export const SESSION_COOKIE = "job_classroom_session";
 const TEACHER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const STUDENT_SESSION_MS = 4 * 60 * 60 * 1000;
+const STUDENT_PASSWORD_RESET_SESSION_MS = 15 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 
+export type SessionActorType = "teacher" | "student" | "student_password_reset";
+
 export type SessionActor = {
-  actorType: "teacher" | "student";
+  actorType: SessionActorType;
   teacherId: string | null;
   studentId: string | null;
   expiresAt: number;
@@ -37,13 +40,17 @@ export function clearSessionCookie(request?: Request) {
 }
 
 export async function prepareSession(
-  actor: { actorType: "teacher" | "student"; teacherId?: string | null; studentId?: string | null },
+  actor: { actorType: SessionActorType; teacherId?: string | null; studentId?: string | null },
   request?: Request,
 ) {
   const rawToken = randomToken(32);
   const tokenHash = await sha256(rawToken);
   const now = Date.now();
-  const lifetime = actor.actorType === "teacher" ? TEACHER_SESSION_MS : STUDENT_SESSION_MS;
+  const lifetime = actor.actorType === "teacher"
+    ? TEACHER_SESSION_MS
+    : actor.actorType === "student_password_reset"
+      ? STUDENT_PASSWORD_RESET_SESSION_MS
+      : STUDENT_SESSION_MS;
   return {
     id: crypto.randomUUID(),
     tokenHash,
@@ -198,14 +205,23 @@ export async function getSession(request: Request): Promise<SessionActor | null>
     if (row) await database().prepare(`DELETE FROM sessions WHERE token_hash = ?`).bind(tokenHash).run();
     return null;
   }
-  if (row.actor_type !== "teacher" && row.actor_type !== "student") return null;
+  if (
+    row.actor_type !== "teacher"
+    && row.actor_type !== "student"
+    && row.actor_type !== "student_password_reset"
+  ) return null;
   if (row.last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS) {
     await database().prepare(
       `UPDATE sessions SET last_seen_at = ?
        WHERE token_hash = ? AND last_seen_at <= ?`,
     ).bind(now, tokenHash, now - SESSION_TOUCH_INTERVAL_MS).run();
   }
-  return { actorType: row.actor_type, teacherId: row.teacher_id, studentId: row.student_id, expiresAt: row.expires_at };
+  return {
+    actorType: row.actor_type,
+    teacherId: row.teacher_id,
+    studentId: row.student_id,
+    expiresAt: row.expires_at,
+  };
 }
 
 export async function requireTeacher(request: Request): Promise<{ teacherId: string }> {
@@ -295,6 +311,22 @@ export async function requireStudent(request: Request): Promise<{ studentId: str
   ).bind(session.studentId).first<{ student_status: string; class_status: string }>();
   if (!student || student.student_status !== "active" || student.class_status !== "active") {
     throw new ApiError(403, "이 계정은 지금 로그인할 수 없어요.", "ACCOUNT_DISABLED");
+  }
+  return { studentId: session.studentId };
+}
+
+export async function requireStudentPasswordReset(request: Request): Promise<{ studentId: string }> {
+  const session = await getSession(request);
+  if (!session || session.actorType !== "student_password_reset" || !session.studentId) {
+    throw new ApiError(401, "임시 비밀번호로 다시 로그인해 주세요.", "STUDENT_PASSWORD_RESET_REQUIRED");
+  }
+  const student = await database().prepare(
+    `SELECT s.status AS student_status, c.status AS class_status
+     FROM students s JOIN classes c ON c.id = s.class_id
+     WHERE s.id = ?`,
+  ).bind(session.studentId).first<{ student_status: string; class_status: string }>();
+  if (!student || student.student_status !== "reset_required" || student.class_status !== "active") {
+    throw new ApiError(410, "비밀번호 상태가 바뀌었어요. 다시 로그인해 주세요.", "PASSWORD_RESET_STATE_CHANGED");
   }
   return { studentId: session.studentId };
 }

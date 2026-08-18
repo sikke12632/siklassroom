@@ -183,7 +183,7 @@ test("시간표 저장소는 기존 직업 운영 달력을 수정하지 않고 
 
   assert.match(schema, /export const classTimetables = sqliteTable\("class_timetables"/);
   assert.match(schema, /export const classTimetableSlots = sqliteTable\("class_timetable_slots"/);
-  assert.match(database, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0040_operational_indexes\.sql"/);
+  assert.match(database, /LATEST_RUNTIME_SCHEMA_MIGRATION = "0041_student_login_stabilization\.sql"/);
   assert.match(database, /CREATE TABLE IF NOT EXISTS class_timetables/);
   assert.match(database, /CREATE TABLE IF NOT EXISTS class_timetable_slots/);
   assert.match(migration, /CREATE TABLE `class_timetables`/);
