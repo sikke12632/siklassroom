@@ -5,8 +5,11 @@ import { isOpenTeacherRegistration } from "@/lib/open-registration";
 
 export async function GET(request: Request) {
   try {
-    const session = await getSession(request);
+    const session = await getSession(request, { rolling: true });
     if (!session) return json({ actor: null });
+    const renewalHeaders = session.renewalCookie
+      ? { "Set-Cookie": session.renewalCookie }
+      : undefined;
     if (session.actorType === "teacher" && session.teacherId) {
       const teacher = await database().prepare(
         `SELECT t.id, t.email, t.email_verified_at, t.teacher_access_status,
@@ -38,7 +41,7 @@ export async function GET(request: Request) {
           ...teacher,
           registration_mode: isOpenTeacherRegistration() ? "open" : "verified",
         } : null,
-      });
+      }, 200, teacher ? renewalHeaders : undefined);
     }
     if (session.actorType === "student" && session.studentId) {
       await ensureSchema();
@@ -48,7 +51,11 @@ export async function GET(request: Request) {
          FROM students s JOIN classes c ON c.id = s.class_id
          WHERE s.id = ? AND s.status = 'active' AND c.status = 'active'`,
       ).bind(session.studentId).first();
-      return json({ actor: student ? { type: "student", ...student } : null });
+      return json(
+        { actor: student ? { type: "student", ...student } : null },
+        200,
+        student ? renewalHeaders : undefined,
+      );
     }
     if (session.actorType === "student_password_reset" && session.studentId) {
       await ensureSchema();

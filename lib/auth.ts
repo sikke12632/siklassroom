@@ -5,10 +5,11 @@ import { ApiError } from "./responses";
 import { teacherAccountIssue } from "./teacher-access-rules";
 
 export const SESSION_COOKIE = "job_classroom_session";
-const TEACHER_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
-const STUDENT_SESSION_MS = 4 * 60 * 60 * 1000;
+const NORMAL_SESSION_MS = 400 * 24 * 60 * 60 * 1000;
 const STUDENT_PASSWORD_RESET_SESSION_MS = 15 * 60 * 1000;
 const SESSION_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+const SESSION_ROLLING_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const SESSION_EXPIRED_CLEANUP_LIMIT = 25;
 
 export type SessionActorType = "teacher" | "student" | "student_password_reset";
 
@@ -17,6 +18,7 @@ export type SessionActor = {
   teacherId: string | null;
   studentId: string | null;
   expiresAt: number;
+  renewalCookie?: string;
 };
 
 export type TeacherAccess = {
@@ -46,11 +48,9 @@ export async function prepareSession(
   const rawToken = randomToken(32);
   const tokenHash = await sha256(rawToken);
   const now = Date.now();
-  const lifetime = actor.actorType === "teacher"
-    ? TEACHER_SESSION_MS
-    : actor.actorType === "student_password_reset"
-      ? STUDENT_PASSWORD_RESET_SESSION_MS
-      : STUDENT_SESSION_MS;
+  const lifetime = actor.actorType === "student_password_reset"
+    ? STUDENT_PASSWORD_RESET_SESSION_MS
+    : NORMAL_SESSION_MS;
   return {
     id: crypto.randomUUID(),
     tokenHash,
@@ -185,7 +185,10 @@ export async function prepareTeacherSessionRotation(teacherId: string, request: 
   };
 }
 
-export async function getSession(request: Request): Promise<SessionActor | null> {
+export async function getSession(
+  request: Request,
+  options: { rolling?: boolean } = {},
+): Promise<SessionActor | null> {
   await ensureSchema();
   const rawToken = requestCookie(request, SESSION_COOKIE);
   if (!rawToken) return null;
@@ -210,7 +213,33 @@ export async function getSession(request: Request): Promise<SessionActor | null>
     && row.actor_type !== "student"
     && row.actor_type !== "student_password_reset"
   ) return null;
-  if (row.last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS) {
+  const isNormalSession = row.actor_type === "teacher" || row.actor_type === "student";
+  const shouldRenew = Boolean(
+    options.rolling
+    && isNormalSession
+    && row.expires_at <= now + NORMAL_SESSION_MS - SESSION_ROLLING_REFRESH_INTERVAL_MS,
+  );
+  let expiresAt = row.expires_at;
+  let renewalCookie: string | undefined;
+  if (shouldRenew) {
+    expiresAt = now + NORMAL_SESSION_MS;
+    renewalCookie = sessionCookie(rawToken, Math.floor(NORMAL_SESSION_MS / 1000), request);
+    await database().batch([
+      database().prepare(
+        `UPDATE sessions SET expires_at = ?, last_seen_at = ?
+         WHERE token_hash = ? AND actor_type = ? AND expires_at = ? AND expires_at > ?`,
+      ).bind(expiresAt, now, tokenHash, row.actor_type, row.expires_at, now),
+      database().prepare(
+        `DELETE FROM sessions
+         WHERE id IN (
+           SELECT id FROM sessions
+           WHERE expires_at <= ?
+           ORDER BY expires_at, id
+           LIMIT ?
+         )`,
+      ).bind(now, SESSION_EXPIRED_CLEANUP_LIMIT),
+    ]);
+  } else if (row.last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS) {
     await database().prepare(
       `UPDATE sessions SET last_seen_at = ?
        WHERE token_hash = ? AND last_seen_at <= ?`,
@@ -220,7 +249,8 @@ export async function getSession(request: Request): Promise<SessionActor | null>
     actorType: row.actor_type,
     teacherId: row.teacher_id,
     studentId: row.student_id,
-    expiresAt: row.expires_at,
+    expiresAt,
+    renewalCookie,
   };
 }
 

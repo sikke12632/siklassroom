@@ -196,6 +196,26 @@ export function TeacherPortal() {
     setError("");
     try {
       await api("/api/session", { method: "DELETE" });
+      // This route is already /teacher, so replacing it does not necessarily
+      // remount this client component. Clear every authenticated view state
+      // immediately instead of waiting for a router refresh to do it for us.
+      classLoadSequence.current += 1;
+      setScheduleDirty(false);
+      setActor(null);
+      setWrongEntrance(false);
+      setClasses([]);
+      setSelectedClassId(null);
+      setClassRoom(null);
+      setStudents([]);
+      setShowClassForm(false);
+      setAddingStudents(false);
+      setCards([]);
+      setBulkQrResume(null);
+      setInitialVerification(null);
+      setAuthMode("login");
+      setAuthNotice("");
+      setMessage("");
+      setSessionError("");
       router.replace("/teacher");
       router.refresh();
     } catch (reason) {
@@ -865,6 +885,9 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
   const [rangeMessage, setRangeMessage] = useState("");
   const rangeInputRef = useRef<HTMLInputElement>(null);
   const rangeButtonRef = useRef<HTMLButtonElement>(null);
+  const nameInputRefs = useRef(new Map<string, HTMLInputElement>());
+  const focusFrameRef = useRef<number | null>(null);
+  const initialRowsRef = useRef(rows);
   const validCount = rows.filter((row) => row.number.trim() && row.name.trim()).length;
   const duplicateNumbers = useMemo(() => rows.filter((row) => row.number.trim()).filter((row, index, source) => source.findIndex((other) => other.number === row.number) !== index).map((row) => row.number), [rows]);
   const existingNumberSet = useMemo(() => new Set(existingStudentNumbers), [existingStudentNumbers]);
@@ -881,23 +904,73 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
     };
   }, [rangeOpen]);
 
+  useEffect(() => {
+    const initialRows = initialRowsRef.current;
+    const firstBlankName = initialRows.find((row) => row.number.trim() && !row.name.trim());
+    const frame = requestAnimationFrame(() => {
+      if (firstBlankName) {
+        nameInputRefs.current.get(firstBlankName.key)?.focus();
+      } else {
+        document.querySelector<HTMLInputElement>(`[data-roster-number="${initialRows[0]?.key}"]`)?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => () => {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+  }, []);
+
+  function focusName(key: string) {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      nameInputRefs.current.get(key)?.focus();
+    });
+  }
+
   function update(key: string, field: "number" | "name", value: string) {
     setRows((current) => current.map((row) => row.key === key ? { ...row, [field]: value } : row));
   }
-  function handleEnter(event: KeyboardEvent<HTMLInputElement>, index: number, field: "number" | "name") {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
+  function handleRosterKeyDown(event: KeyboardEvent<HTMLInputElement>, index: number, field: "number" | "name") {
+    // Enter and arrow keys can be used inside a Korean IME candidate list.
+    // Do not move focus until that composition has finished.
+    if (event.nativeEvent.isComposing) return;
+
     if (field === "number") {
-      document.querySelector<HTMLInputElement>(`[data-roster-name="${rows[index].key}"]`)?.focus();
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      focusName(rows[index].key);
       return;
     }
-    if (index === rows.length - 1) {
+
+    const movingBackward = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey);
+    const movingForward = event.key === "ArrowDown" || event.key === "Enter" || (event.key === "Tab" && !event.shiftKey);
+    if (!movingBackward && !movingForward) return;
+
+    const targetIndex = index + (movingBackward ? -1 : 1);
+    if (targetIndex >= 0 && targetIndex < rows.length) {
+      event.preventDefault();
+      focusName(rows[targetIndex].key);
+      return;
+    }
+
+    // Keep the established Enter-to-add behavior, but prefill the number and
+    // focus the new name so a teacher can continue typing in Korean.
+    if (movingForward && event.key === "Enter") {
+      event.preventDefault();
       const next = emptyDraft(String((Number(rows.at(-1)?.number) || rows.length) + 1));
       setRows((current) => [...current, next]);
-      requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-roster-number="${next.key}"]`)?.focus());
+      focusName(next.key);
       return;
     }
-    document.querySelector<HTMLInputElement>(`[data-roster-number="${rows[index + 1].key}"]`)?.focus();
+
+    // At the last name, Tab continues to the next roster action rather than
+    // stopping at the per-row delete control.
+    if (movingForward && event.key === "Tab") {
+      event.preventDefault();
+      rangeButtonRef.current?.focus();
+    }
   }
 
   function openRangeDialog() {
@@ -958,13 +1031,16 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
 
     // Keep every existing row object and its order so names already being
     // entered cannot be lost or moved when a range is appended.
-    setRows([...rows, ...additions]);
+    const nextRows = [...rows, ...additions];
+    const firstBlankName = nextRows.find((row) => row.number.trim() && !row.name.trim());
+    setRows(nextRows);
     setRangeMessage(additions.length
       ? `${parsed.numbers.length}개 번호를 확인해 새 학생 행 ${additions.length}개를 추가했어요.`
       : "입력한 번호의 행이 이미 모두 준비되어 있어요.");
     setRangeInput("");
     setRangeOpen(false);
-    requestAnimationFrame(() => rangeButtonRef.current?.focus());
+    if (firstBlankName) focusName(firstBlankName.key);
+    else requestAnimationFrame(() => rangeButtonRef.current?.focus());
   }
 
   async function save() {
@@ -988,14 +1064,31 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
 
   return (
     <section className="panel roster-entry-panel">
-      <div className="panel-heading"><div><p className="eyebrow">2 / 3 · 학생 명단</p><h2>{onCancel ? "추가할 학생을 입력해 주세요" : "번호와 이름을 차례로 입력해 주세요"}</h2><p>Enter 키로 다음 칸으로 이동할 수 있어요. 같은 이름은 괜찮지만 번호는 겹치면 안 돼요.</p></div><div className="button-row"><span className="count-chip">{validCount}명 입력</span>{onCancel && <button className="text-button" onClick={onCancel}>취소</button>}</div></div>
+      <div className="panel-heading"><div><p className="eyebrow">2 / 3 · 학생 명단</p><h2>{onCancel ? "추가할 학생을 입력해 주세요" : "번호와 이름을 차례로 입력해 주세요"}</h2><p>이름칸에서는 Tab·Enter·위아래 방향키로 이름칸만 연속 이동할 수 있어요. 같은 이름은 괜찮지만 번호는 겹치면 안 돼요.</p></div><div className="button-row"><span className="count-chip">{validCount}명 입력</span>{onCancel && <button className="text-button" onClick={onCancel}>취소</button>}</div></div>
       <div className="roster-entry-list">
         <div className="roster-entry-head"><span>번호</span><span>공식 이름</span><span /></div>
         {rows.map((row, index) => (
           <div className="roster-entry-row" key={row.key}>
-            <input data-roster-number={row.key} inputMode="numeric" value={row.number} onChange={(event) => update(row.key, "number", event.target.value.replace(/\D/g, "").slice(0, 2))} onKeyDown={(event) => handleEnter(event, index, "number")} aria-label={`${index + 1}번째 학생 번호`} />
-            <input data-roster-name={row.key} value={row.name} onChange={(event) => update(row.key, "name", event.target.value)} onKeyDown={(event) => handleEnter(event, index, "name")} placeholder="학생 이름" aria-label={`${index + 1}번째 학생 이름`} />
-            <button aria-label="이 행 지우기" disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}>×</button>
+            <input data-roster-number={row.key} inputMode="numeric" value={row.number} onChange={(event) => update(row.key, "number", event.target.value.replace(/\D/g, "").slice(0, 2))} onKeyDown={(event) => handleRosterKeyDown(event, index, "number")} aria-label={`${index + 1}번째 학생 번호`} />
+            <input
+              ref={(element) => {
+                if (element) nameInputRefs.current.set(row.key, element);
+                else nameInputRefs.current.delete(row.key);
+              }}
+              data-roster-name={row.key}
+              value={row.name}
+              onChange={(event) => update(row.key, "name", event.target.value)}
+              onKeyDown={(event) => handleRosterKeyDown(event, index, "name")}
+              placeholder="학생 이름"
+              lang="ko"
+              inputMode="text"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label={`${index + 1}번째 학생 이름`}
+            />
+            <button type="button" aria-label={`${row.number || index + 1}번 학생 행 지우기`} disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}>×</button>
           </div>
         ))}
       </div>

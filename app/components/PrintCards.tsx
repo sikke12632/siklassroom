@@ -106,7 +106,7 @@ export function PrintCards({ cards, classLabel, onClose }: { cards: Registration
             </div>
             <p>{classLabel}</p>
             <ol>
-              <li>휴대전화로 QR을 찍어요.</li>
+              <li>스마트기기로 QR을 찍어요.</li>
               <li>{card.purpose === "reset" ? "새 비밀번호를 만든 뒤 로그인해요." : "처음 등록하거나 평소 비밀번호로 로그인해요."}</li>
               <li>비밀번호를 잊으면 선생님께 10분 재설정 허용을 요청해요.</li>
             </ol>
