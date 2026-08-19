@@ -56,7 +56,7 @@ CREATE TRIGGER `finance_stocks_management_update_guard`
   BEFORE UPDATE ON `finance_stocks`
   WHEN NEW.`last_trade_id` IS OLD.`last_trade_id`
   BEGIN
-    SELECT CASE WHEN NEW.`id` <> OLD.`id` OR NEW.`class_id` <> OLD.`class_id`
+    SELECT (CASE WHEN NEW.`id` <> OLD.`id` OR NEW.`class_id` <> OLD.`class_id`
       OR NEW.`name` <> OLD.`name` OR NEW.`symbol` <> OLD.`symbol`
       OR NEW.`description` <> OLD.`description`
       OR NEW.`initial_price` <> OLD.`initial_price`
@@ -83,17 +83,17 @@ CREATE TRIGGER `finance_stocks_management_update_guard`
       OR NEW.`created_at` <> OLD.`created_at`
       OR NEW.`updated_at` < OLD.`updated_at`
       OR NEW.`revision` <> OLD.`revision` + 1
-      OR NEW.`previous_price` <> CASE
+      OR NEW.`previous_price` <> (CASE
         WHEN NEW.`current_price` <> OLD.`current_price` THEN OLD.`current_price`
-        ELSE OLD.`previous_price` END
-      THEN RAISE(ABORT, 'FINANCE_STOCK_STALE') END;
-    SELECT CASE WHEN NEW.`updated_by_actor_type` = 'teacher' AND NOT EXISTS (
+        ELSE OLD.`previous_price` END)
+      THEN RAISE(ABORT, 'FINANCE_STOCK_STALE') END);
+    SELECT (CASE WHEN NEW.`updated_by_actor_type` = 'teacher' AND NOT EXISTS (
       SELECT 1 FROM `classes` classroom
       WHERE classroom.`id` = NEW.`class_id`
         AND classroom.`teacher_id` = NEW.`updated_by_teacher_id`
         AND classroom.`status` = 'active'
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_DENIED') END;
-    SELECT CASE WHEN NEW.`updated_by_actor_type` = 'system' AND (
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_ACCESS_DENIED') END);
+    SELECT (CASE WHEN NEW.`updated_by_actor_type` = 'system' AND (
       NEW.`updated_by_teacher_id` IS NOT NULL
       OR NEW.`status` <> OLD.`status`
       OR OLD.`status` NOT IN ('active', 'sell_only')
@@ -101,19 +101,19 @@ CREATE TRIGGER `finance_stocks_management_update_guard`
         SELECT 1 FROM `finance_stock_markets` market
         WHERE market.`class_id` = NEW.`class_id` AND market.`is_open` = 1
       )
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_SYSTEM_UPDATE_DENIED') END;
-    SELECT CASE WHEN OLD.`status` = 'archived' AND NEW.`status` <> 'archived'
-      THEN RAISE(ABORT, 'FINANCE_STOCK_IMMUTABLE') END;
-    SELECT CASE WHEN NEW.`status` = 'archived'
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_SYSTEM_UPDATE_DENIED') END);
+    SELECT (CASE WHEN OLD.`status` = 'archived' AND NEW.`status` <> 'archived'
+      THEN RAISE(ABORT, 'FINANCE_STOCK_IMMUTABLE') END);
+    SELECT (CASE WHEN NEW.`status` = 'archived'
       AND NEW.`available_shares` <> NEW.`total_shares`
-      THEN RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_HOLDINGS') END;
-    SELECT CASE WHEN NEW.`current_price` > OLD.`current_price` AND EXISTS (
+      THEN RAISE(ABORT, 'FINANCE_STOCK_ACTIVE_HOLDINGS') END);
+    SELECT (CASE WHEN NEW.`current_price` > OLD.`current_price` AND EXISTS (
       SELECT 1 FROM `finance_stock_holdings` holding
       WHERE holding.`class_id` = NEW.`class_id`
         AND holding.`stock_id` = NEW.`id`
         AND holding.`quantity` > CAST(1000000000 / NEW.`current_price` AS INTEGER)
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT') END;
-    SELECT CASE WHEN NOT EXISTS (
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_POSITION_VALUE_LIMIT') END);
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1
       FROM `finance_stock_markets` market
       JOIN `finance_settings` setting ON setting.`class_id` = market.`class_id`
@@ -132,7 +132,7 @@ CREATE TRIGGER `finance_stocks_management_update_guard`
           SELECT MIN(CAST(value AS INTEGER))
           FROM json_each(setting.`denominations_json`)
         ) = 0
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END;
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_DENOMINATION_MISMATCH') END);
   END;--> statement-breakpoint
 
 CREATE TRIGGER IF NOT EXISTS `finance_stock_events_supply_idempotency_guard`
@@ -146,12 +146,12 @@ CREATE TRIGGER IF NOT EXISTS `finance_stock_events_supply_idempotency_guard`
 CREATE TRIGGER IF NOT EXISTS `finance_stock_supply_events_insert_guard`
   BEFORE INSERT ON `finance_stock_supply_events`
   BEGIN
-    SELECT CASE WHEN EXISTS (
+    SELECT (CASE WHEN EXISTS (
       SELECT 1 FROM `finance_stock_events` stock_event
       WHERE stock_event.`class_id` = NEW.`class_id`
         AND stock_event.`idempotency_key` = NEW.`idempotency_key`
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_IDEMPOTENCY_CONFLICT') END;
-    SELECT CASE WHEN NOT EXISTS (
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_IDEMPOTENCY_CONFLICT') END);
+    SELECT (CASE WHEN NOT EXISTS (
       SELECT 1
       FROM `finance_stocks` stock
       JOIN `classes` classroom ON classroom.`id` = stock.`class_id`
@@ -166,7 +166,7 @@ CREATE TRIGGER IF NOT EXISTS `finance_stock_supply_events_insert_guard`
         AND stock.`updated_by_actor_type` = 'teacher'
         AND stock.`updated_by_teacher_id` = NEW.`actor_teacher_id`
         AND stock.`updated_at` = NEW.`created_at`
-    ) THEN RAISE(ABORT, 'FINANCE_STOCK_SUPPLY_EVENT_INVALID') END;
+    ) THEN RAISE(ABORT, 'FINANCE_STOCK_SUPPLY_EVENT_INVALID') END);
   END;--> statement-breakpoint
 CREATE TRIGGER IF NOT EXISTS `finance_stock_supply_events_update_guard`
   BEFORE UPDATE ON `finance_stock_supply_events`

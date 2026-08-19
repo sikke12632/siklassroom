@@ -200,7 +200,7 @@ DROP TRIGGER `finance_request_resolutions_insert_guard`;--> statement-breakpoint
 CREATE TRIGGER `finance_request_resolutions_insert_guard`
 BEFORE INSERT ON `finance_request_resolutions`
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1
       FROM finance_cash_requests request_row
@@ -215,8 +215,8 @@ BEGIN
         )
     )
     THEN RAISE(ABORT, 'FINANCE_REQUEST_STALE')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.decision = 'cancelled'
       AND NOT (
         NEW.actor_type = 'student'
@@ -232,13 +232,13 @@ BEGIN
         )
       )
     THEN RAISE(ABORT, 'FINANCE_REQUEST_CANCEL_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.decision IN ('approved', 'rejected')
       AND NEW.actor_type = 'student'
     THEN RAISE(ABORT, 'FINANCE_REQUEST_DECISION_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'teacher'
       AND NOT EXISTS (
         SELECT 1 FROM classes classroom
@@ -247,8 +247,8 @@ BEGIN
           AND classroom.status = 'active'
       )
     THEN RAISE(ABORT, 'FINANCE_CLASS_ACCESS_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'banker'
       AND EXISTS (
         SELECT 1 FROM finance_cash_requests request_row
@@ -256,8 +256,8 @@ BEGIN
           AND request_row.requester_student_id = NEW.actor_student_id
       )
     THEN RAISE(ABORT, 'FINANCE_REQUEST_SELF_APPROVAL_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'banker'
       AND NOT EXISTS (
         SELECT 1
@@ -268,8 +268,8 @@ BEGIN
           AND permission.permission_key = 'finance_banker'
       )
     THEN RAISE(ABORT, 'FINANCE_BANKER_ACCESS_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.decision = 'approved'
       AND NOT EXISTS (
         SELECT 1
@@ -287,20 +287,20 @@ BEGIN
           AND request_row.class_id = NEW.class_id
       )
     THEN RAISE(ABORT, 'FINANCE_ACCOUNT_NOT_ACTIVE')
-  END;
+  END);
 END;--> statement-breakpoint
 DROP TRIGGER `finance_transactions_actor_guard`;--> statement-breakpoint
 CREATE TRIGGER `finance_transactions_actor_guard`
 BEFORE INSERT ON `finance_transactions`
 BEGIN
-  SELECT CASE
+  SELECT (CASE
     WHEN NOT EXISTS (
       SELECT 1 FROM classes
       WHERE classes.id = NEW.class_id AND classes.status = 'active'
     )
     THEN RAISE(ABORT, 'FINANCE_CLASS_NOT_ACTIVE')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'teacher'
       AND NOT EXISTS (
         SELECT 1 FROM classes
@@ -309,8 +309,8 @@ BEGIN
           AND classes.status = 'active'
       )
     THEN RAISE(ABORT, 'FINANCE_CLASS_ACCESS_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'banker'
       AND NOT EXISTS (
         SELECT 1
@@ -321,12 +321,12 @@ BEGIN
           AND permission.permission_key = 'finance_banker'
       )
     THEN RAISE(ABORT, 'FINANCE_BANKER_ACCESS_DENIED')
-  END;
-  SELECT CASE
+  END);
+  SELECT (CASE
     WHEN NEW.actor_type = 'banker'
       AND COALESCE(NEW.source_type, '') <> 'cash_request'
     THEN RAISE(ABORT, 'FINANCE_BANKER_WRITES_NOT_ENABLED')
-  END;
+  END);
 END;--> statement-breakpoint
 DROP TRIGGER `life_check_records_insert_guard`;--> statement-breakpoint
 CREATE TRIGGER `life_check_records_insert_guard`
@@ -347,11 +347,11 @@ WHEN NOT EXISTS (
         FROM student_effective_permissions permission
         WHERE permission.student_id = NEW.last_actor_student_id
           AND permission.class_id = NEW.class_id
-          AND permission.permission_key = CASE NEW.check_type
+          AND permission.permission_key = (CASE NEW.check_type
             WHEN 'tooth' THEN 'life_check_tooth'
             WHEN 'milk' THEN 'life_check_milk'
             WHEN 'lunch' THEN 'life_check_lunch'
-          END
+          END)
       ))
     )
 )
@@ -383,11 +383,11 @@ WHEN NEW.id <> OLD.id
           FROM student_effective_permissions permission
           WHERE permission.student_id = NEW.last_actor_student_id
             AND permission.class_id = NEW.class_id
-            AND permission.permission_key = CASE NEW.check_type
+            AND permission.permission_key = (CASE NEW.check_type
               WHEN 'tooth' THEN 'life_check_tooth'
               WHEN 'milk' THEN 'life_check_milk'
               WHEN 'lunch' THEN 'life_check_lunch'
-            END
+            END)
         ))
       )
   )
@@ -432,11 +432,11 @@ WHEN json_array_length(NEW.items_json) <> NEW.recipient_count
           FROM student_effective_permissions permission
           WHERE permission.student_id = NEW.created_by_student_id
             AND permission.class_id = NEW.class_id
-            AND permission.permission_key = CASE NEW.check_type
+            AND permission.permission_key = (CASE NEW.check_type
               WHEN 'tooth' THEN 'life_check_tooth'
               WHEN 'milk' THEN 'life_check_milk'
               WHEN 'lunch' THEN 'life_check_lunch'
-            END
+            END)
         ))
       )
   )
@@ -478,11 +478,11 @@ WHEN NEW.id <> OLD.id
           FROM student_effective_permissions permission
           WHERE permission.student_id = NEW.last_actor_student_id
             AND permission.class_id = NEW.class_id
-            AND permission.permission_key = CASE NEW.check_type
+            AND permission.permission_key = (CASE NEW.check_type
               WHEN 'tooth' THEN 'life_check_tooth'
               WHEN 'milk' THEN 'life_check_milk'
               WHEN 'lunch' THEN 'life_check_lunch'
-            END
+            END)
         ))
       )
   )
@@ -567,11 +567,11 @@ WHEN NOT EXISTS (
         FROM student_effective_permissions permission
         WHERE permission.student_id = NEW.actor_student_id
           AND permission.class_id = NEW.class_id
-          AND permission.permission_key = CASE payout.check_type
+          AND permission.permission_key = (CASE payout.check_type
             WHEN 'tooth' THEN 'life_check_tooth'
             WHEN 'milk' THEN 'life_check_milk'
             WHEN 'lunch' THEN 'life_check_lunch'
-          END
+          END)
       ))
     )
 )
