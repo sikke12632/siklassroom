@@ -1,6 +1,7 @@
 import { sha256 } from "./crypto";
 import { database, ensureSchema } from "./database";
 import { BANKER_JOB_TEMPLATE_ID } from "./finance-access-rules";
+import { hasEffectiveStudentPermission } from "./student-permissions";
 import { currentStudentJob } from "./finance-access";
 import {
   FinanceRuleError,
@@ -262,10 +263,19 @@ async function verifyPostingActor(
     );
   }
   const activeJob = await currentStudentJob(classId, actor.studentId);
+  const hasManualPermission = await hasEffectiveStudentPermission(
+    classId,
+    actor.studentId,
+    "finance_banker",
+    actor.bankerPeriodId,
+  );
   if (
-    !activeJob
-    || activeJob.templateId !== BANKER_JOB_TEMPLATE_ID
-    || activeJob.periodId !== actor.bankerPeriodId
+    !hasManualPermission
+    && (
+      !activeJob
+      || activeJob.templateId !== BANKER_JOB_TEMPLATE_ID
+      || activeJob.periodId !== actor.bankerPeriodId
+    )
   ) {
     throw new ApiError(
       403,

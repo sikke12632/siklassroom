@@ -1210,6 +1210,77 @@ test("stock trades keep inventory, holdings, and the financial ledger safe in D1
       available_shares: 20,
     }]);
 
+    executeSql(
+      persistPath,
+      `
+        UPDATE finance_stocks
+        SET total_shares = total_shares + 5,
+            available_shares = available_shares + 5,
+            revision = revision + 1,
+            inventory_revision = inventory_revision + 1,
+            updated_by_actor_type = 'teacher',
+            updated_by_teacher_id = 'teacher-stocks', updated_at = 520
+        WHERE id = 'stock-class' AND class_id = 'class-stocks'
+          AND revision = 3 AND inventory_revision = 3;
+        INSERT INTO finance_stock_supply_events (
+          id, class_id, stock_id,
+          stock_revision_before, stock_revision_after,
+          inventory_revision_before, inventory_revision_after,
+          quantity, total_shares_before, total_shares_after,
+          available_shares_before, available_shares_after,
+          reason, idempotency_key, payload_hash,
+          actor_teacher_id, created_at
+        ) VALUES (
+          'finance:stock-supply:stock-class:4', 'class-stocks', 'stock-class',
+          3, 4, 3, 4, 5, 20, 25, 20, 25,
+          'Expand the classroom activity', 'stock:supply:test:1',
+          'hash:stock:supply:test:1', 'teacher-stocks', 520
+        );
+      `,
+    );
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.total_shares, stock.available_shares,
+              stock.revision, stock.inventory_revision,
+              holding.quantity, holding.cost_basis,
+              supply.quantity AS issued_quantity,
+              supply.total_shares_before, supply.total_shares_after
+       FROM finance_stocks stock
+       JOIN finance_stock_holdings holding
+         ON holding.stock_id = stock.id
+        AND holding.student_id = 'student-trader'
+       JOIN finance_stock_supply_events supply
+         ON supply.stock_id = stock.id
+       WHERE stock.id = 'stock-class';`,
+    )), [{
+      total_shares: 25,
+      available_shares: 25,
+      revision: 4,
+      inventory_revision: 4,
+      quantity: 0,
+      cost_basis: 0,
+      issued_quantity: 5,
+      total_shares_before: 20,
+      total_shares_after: 25,
+    }]);
+    const unbalancedSupply = executeSql(
+      persistPath,
+      `UPDATE finance_stocks
+       SET total_shares = total_shares + 1, revision = revision + 1,
+           updated_by_actor_type = 'teacher',
+           updated_by_teacher_id = 'teacher-stocks', updated_at = 521
+       WHERE id = 'stock-class';`,
+      { expectSuccess: false },
+    );
+    assert.match(unbalancedSupply.output, /FINANCE_STOCK_STALE/);
+    const supplyMutation = executeSql(
+      persistPath,
+      `UPDATE finance_stock_supply_events SET quantity = 6
+       WHERE id = 'finance:stock-supply:stock-class:4';`,
+      { expectSuccess: false },
+    );
+    assert.match(supplyMutation.output, /FINANCE_STOCK_SUPPLY_EVENT_IMMUTABLE/);
+
     const reconciliation = lastResults(executeSql(
       persistPath,
       `SELECT account.id
@@ -1560,6 +1631,276 @@ test("teacher liquidation keeps the confirmed quote and retries only once in the
       ))[0].count,
       0,
     );
+  } finally {
+    await worker?.stop();
+    await rm(persistPath, { recursive: true, force: true });
+  }
+});
+
+test("additional stock issuance is idempotent and preserves existing positions", {
+  timeout: 120_000,
+}, async () => {
+  const persistPath = await mkdtemp(
+    path.join(tmpdir(), "siklassroom-stock-supply-service-d1-"),
+  );
+  let worker;
+  try {
+    runWrangler([
+      "d1",
+      "migrations",
+      "apply",
+      "DB",
+      "--local",
+      `--persist-to=${persistPath}`,
+    ]);
+    const rawTeacherToken = "teacher-stock-supply-session";
+    const teacherTokenHash = createHash("sha256")
+      .update(rawTeacherToken)
+      .digest("base64url");
+    executeSql(persistPath, `
+      INSERT INTO teachers (
+        id, email, password_hash, status, email_verified_at,
+        teacher_access_status, teacher_access_verified_at, school_id,
+        created_at, updated_at
+      ) VALUES (
+        'teacher-stocks', 'teacher-supply@test.local', 'hash',
+        'active', 1, 'invite_verified', 1, 'school-test', 1, 1
+      );
+      INSERT INTO classes (
+        id, teacher_id, school_name, school_normalized, school_id,
+        school_year, grade, class_number, status, created_at, updated_at
+      ) VALUES (
+        'class-stocks', 'teacher-stocks', 'Test School', 'test school',
+        'school-test', 2099, 6, 9, 'active', 1, 1
+      );
+      INSERT INTO students (
+        id, class_id, student_number, official_name, status,
+        created_at, updated_at
+      ) VALUES (
+        'student-trader', 'class-stocks', 1, 'Supply Student', 'active', 1, 1
+      );
+      INSERT INTO sessions (
+        id, token_hash, actor_type, teacher_id, student_id,
+        expires_at, created_at, last_seen_at
+      ) VALUES (
+        'session-stock-supply-teacher', '${teacherTokenHash}', 'teacher',
+        'teacher-stocks', NULL, 4102444800000, 1, 1
+      );
+      INSERT INTO finance_stocks (
+        id, class_id, name, symbol, description,
+        initial_price, current_price, previous_price,
+        total_shares, available_shares, max_shares_per_student,
+        status, revision, inventory_revision, last_trade_id,
+        created_by_teacher_id, updated_by_actor_type,
+        updated_by_teacher_id, created_at, updated_at
+      ) VALUES (
+        'stock-class', 'class-stocks', 'Supply Company', 'CLASS', '',
+        1000, 1000, 1000, 20, 20, 10,
+        'active', 0, 0, NULL, 'teacher-stocks', 'teacher',
+        'teacher-stocks', 10, 10
+      );
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, stock_snapshot_json,
+        actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-event-supply-issued', 'class-stocks', 'stock-class', 0,
+        'issued', 'Initial issue', 'stock:event:supply:issued',
+        'hash:stock:event:supply:issued',
+        '{"currentPrice":1000,"revision":0}',
+        'teacher', 'teacher-stocks', 10
+      );
+      UPDATE finance_stock_markets
+      SET is_open = 1, buy_fee_bps = 0, sell_fee_bps = 0,
+          buy_spread = 0, sell_spread = 0, next_tick_at = 1000, revision = 1,
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 20
+      WHERE class_id = 'class-stocks';
+    `);
+    fundWallet(persistPath, {
+      transactionId: "fund-stock-supply",
+      studentId: "student-trader",
+      amount: 10_000,
+      createdAt: 30,
+    });
+    const buy = {
+      id: "trade-stock-supply-buy",
+      idempotencyKey: "stock-supply-buy-1",
+      studentId: "student-trader",
+      side: "buy",
+      quantity: 2,
+      spread: 0,
+      feeBps: 0,
+      inventoryRevisionBefore: 0,
+      walletRevisionBefore: 1,
+      unitPrice: 1000,
+      grossAmount: 2000,
+      feeAmount: 0,
+      walletDelta: -2000,
+      availableBefore: 20,
+      availableAfter: 18,
+      holdingQuantityBefore: 0,
+      holdingQuantityAfter: 2,
+      holdingCostBefore: 0,
+      holdingCostAfter: 2000,
+      holdingRevisionBefore: 0,
+      createdAt: 40,
+    };
+    insertPendingTrade(persistPath, buy);
+    projectAndPostTrade(persistPath, buy);
+
+    worker = await (await import("wrangler")).unstable_dev(
+      stockPositionLimitWorkerPath,
+      {
+        config: stockPositionLimitConfigPath,
+        moduleRoot: projectRoot,
+        persistTo: persistPath,
+        logLevel: "none",
+        experimental: {
+          disableDevRegistry: true,
+          disableExperimentalWarning: true,
+          watch: false,
+        },
+      },
+    );
+    closeWorkerConnectionAfterEachFetch(worker);
+    const cookie = `job_classroom_session=${rawTeacherToken}`;
+    const requestBody = {
+      action: "issue",
+      quantity: 5,
+      expectedRevision: 0,
+      expectedInventoryRevision: 1,
+      reason: "Expand the investment activity",
+      idempotencyKey: "stock:supply:service:1",
+    };
+    const firstResponse = await worker.fetch(
+      "http://test.local/issue?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    assert.equal(firstResponse.status, 201);
+    const first = await firstResponse.json();
+    assert.equal(first.deduplicated, false);
+    assert.equal(first.stock.totalSupply, 25);
+    assert.equal(first.stock.availableSupply, 23);
+
+    const retryResponse = await worker.fetch(
+      "http://test.local/issue?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify(requestBody),
+      },
+    );
+    assert.equal(retryResponse.status, 201);
+    const retry = await retryResponse.json();
+    assert.equal(retry.deduplicated, true);
+    assert.equal(retry.stock.totalSupply, 25);
+    assert.equal(retry.stock.availableSupply, 23);
+
+    const conflictResponse = await worker.fetch(
+      "http://test.local/issue?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ ...requestBody, quantity: 6 }),
+      },
+    );
+    assert.equal(conflictResponse.status, 409);
+    assert.equal(
+      (await conflictResponse.json()).code,
+      "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
+    );
+    const staleResponse = await worker.fetch(
+      "http://test.local/issue?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...requestBody,
+          idempotencyKey: "stock:supply:service:stale",
+        }),
+      },
+    );
+    assert.equal(staleResponse.status, 409);
+    assert.equal((await staleResponse.json()).code, "FINANCE_STOCK_STALE");
+    assert.deepEqual(lastResults(executeSql(
+      persistPath,
+      `SELECT stock.total_shares, stock.available_shares,
+              stock.revision, stock.inventory_revision,
+              holding.quantity, holding.cost_basis, holding.revision AS holding_revision,
+              (SELECT COUNT(*) FROM finance_stock_supply_events) AS event_count
+       FROM finance_stocks stock
+       JOIN finance_stock_holdings holding ON holding.stock_id = stock.id
+       WHERE stock.id = 'stock-class' AND holding.student_id = 'student-trader';`,
+    )), [{
+      total_shares: 25,
+      available_shares: 23,
+      revision: 1,
+      inventory_revision: 2,
+      quantity: 2,
+      cost_basis: 2000,
+      holding_revision: 1,
+      event_count: 1,
+    }]);
+
+    const sell = {
+      ...buy,
+      id: "trade-stock-supply-sell",
+      idempotencyKey: "stock-supply-sell-1",
+      side: "sell",
+      stockRevision: 1,
+      inventoryRevisionBefore: 2,
+      walletRevisionBefore: 2,
+      walletDelta: 2000,
+      availableBefore: 23,
+      availableAfter: 25,
+      holdingQuantityBefore: 2,
+      holdingQuantityAfter: 0,
+      holdingCostBefore: 2000,
+      holdingCostAfter: 0,
+      holdingRevisionBefore: 1,
+      costBasisRemoved: 2000,
+      realizedGain: 0,
+      createdAt: 60,
+    };
+    insertPendingTrade(persistPath, sell);
+    projectAndPostTrade(persistPath, sell);
+    executeSql(persistPath, `
+      UPDATE finance_stocks
+      SET status = 'archived', revision = revision + 1,
+          updated_by_actor_type = 'teacher',
+          updated_by_teacher_id = 'teacher-stocks', updated_at = 70
+      WHERE id = 'stock-class' AND revision = 1;
+      INSERT INTO finance_stock_events (
+        id, class_id, stock_id, revision, action, reason,
+        idempotency_key, payload_hash, previous_snapshot_json,
+        stock_snapshot_json, actor_type, actor_teacher_id, created_at
+      ) VALUES (
+        'stock-event-supply-archived', 'class-stocks', 'stock-class', 2,
+        'status_changed', 'Archive supply test stock',
+        'stock:event:supply:archived', 'hash:stock:event:supply:archived',
+        '{"status":"active"}', '{"status":"archived"}',
+        'teacher', 'teacher-stocks', 70
+      );
+    `);
+    const archivedResponse = await worker.fetch(
+      "http://test.local/issue?classId=class-stocks",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          ...requestBody,
+          expectedRevision: 2,
+          expectedInventoryRevision: 3,
+          idempotencyKey: "stock:supply:archived:1",
+        }),
+      },
+    );
+    assert.equal(archivedResponse.status, 409);
+    assert.equal((await archivedResponse.json()).code, "FINANCE_STOCK_IMMUTABLE");
   } finally {
     await worker?.stop();
     await rm(persistPath, { recursive: true, force: true });

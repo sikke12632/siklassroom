@@ -3,18 +3,33 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { LIFE_CHECK_SCHEMA_STATEMENTS } from "../lib/life-check-schema";
 
-test("runtime life-check schema stays aligned with the D1 migration", async () => {
+test("runtime life-check schema keeps the base migration and overlays effective permissions", async () => {
   const migration = await readFile(
     new URL("../drizzle/0036_life_checks.sql", import.meta.url),
     "utf8",
   );
-  const expected = migration
-    .replace(/\r\n?/g, "\n")
-    .split("--> statement-breakpoint")
-    .map((statement) => statement.trim())
-    .filter(Boolean)
-    .map((statement) => statement.replace(/;$/, ""));
-  assert.deepEqual([...LIFE_CHECK_SCHEMA_STATEMENTS], expected);
+  const runtime = [...LIFE_CHECK_SCHEMA_STATEMENTS].join("\n");
+  for (const name of [
+    "life_check_series",
+    "life_check_records",
+    "life_check_events",
+    "life_check_payouts",
+    "life_check_payout_events",
+  ]) {
+    assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${name}`));
+    assert.match(runtime, new RegExp(`CREATE TABLE IF NOT EXISTS ${name}`));
+  }
+  for (const trigger of [
+    "life_check_records_insert_guard",
+    "life_check_records_update_guard",
+    "life_check_payouts_insert_guard",
+    "life_check_payouts_update_guard",
+    "life_check_payout_events_insert_guard",
+  ]) {
+    assert.match(runtime, new RegExp(`DROP TRIGGER IF EXISTS ${trigger}`));
+    assert.match(runtime, new RegExp(`CREATE TRIGGER IF NOT EXISTS ${trigger}`));
+  }
+  assert.match(runtime, /student_effective_permissions/);
 });
 
 test("record trigger races return a recoverable stale response instead of an internal error", async () => {

@@ -80,6 +80,22 @@ export type FinanceStockDefinitionValues = {
   denominationStep: number;
 };
 
+export type FinanceStockAdditionalIssuanceInput = {
+  quantity?: unknown;
+  expectedRevision?: unknown;
+  expectedInventoryRevision?: unknown;
+  idempotencyKey?: unknown;
+  reason?: unknown;
+};
+
+export type FinanceStockAdditionalIssuanceValues = {
+  quantity: number;
+  expectedRevision: number;
+  expectedInventoryRevision: number;
+  idempotencyKey: string;
+  reason: string;
+};
+
 export type FinanceStockMarketSettingsInput = {
   isOpen?: unknown;
   feeBps?: unknown;
@@ -455,6 +471,28 @@ function totalSupply(value: unknown) {
   return Number(value);
 }
 
+/**
+ * Validates an additional issue without changing any existing holding.
+ * The service uses both revisions so a simultaneous trade or stock setting
+ * change cannot be overwritten by the issue.
+ */
+export function normalizeFinanceStockAdditionalIssuance(
+  input: FinanceStockAdditionalIssuanceInput,
+): FinanceStockAdditionalIssuanceValues {
+  const quantity = totalSupply(input.quantity);
+  return {
+    quantity,
+    expectedRevision: revision(input.expectedRevision, "주식"),
+    expectedInventoryRevision: revision(
+      input.expectedInventoryRevision,
+      "시장 재고",
+    ),
+    idempotencyKey: idempotencyKey(input.idempotencyKey),
+    reason: optionalText(input.reason, "추가 발행 이유", 300)
+      ?? "학급 운영을 위해 주식을 추가 발행했습니다.",
+  };
+}
+
 function maxSharesPerStudent(value: unknown) {
   if (
     !Number.isSafeInteger(value)
@@ -759,7 +797,7 @@ export function normalizeFinanceStockDefinition(
   const denominationStep = normalizeFinanceStockDenominationStep(
     input.denominationStep,
   );
-  const symbol = requiredText(input.symbol, "종목 코드", 12).toUpperCase();
+  const symbol = requiredText(input.symbol ?? "CLASS", "종목 코드", 12).toUpperCase();
   if (!/^[A-Z0-9][A-Z0-9_-]{0,11}$/.test(symbol)) {
     throw new FinanceStockRuleError(
       "종목 코드는 영문 대문자, 숫자, 밑줄, 붙임표로 입력해 주세요.",

@@ -161,13 +161,6 @@ function preflightState(input: {
   if (input.jobs.some((job) => Number(job.memberCapacity) < 1)) {
     errors.push({ code: "INVALID_JOB_CAPACITY", message: "모든 직업의 정원은 한 자리 이상이어야 해요.", action: "jobs" });
   }
-  if (input.studentCount > 0 && seatCount !== input.studentCount) {
-    errors.push({
-      code: "JOB_CAPACITY_MISMATCH",
-      message: `배정할 학생은 ${input.studentCount}명인데 직업 정원은 ${seatCount}자리입니다. 직업 설정에서 ${Math.abs(input.studentCount - seatCount)}자리를 ${seatCount < input.studentCount ? "늘려" : "줄여"} 주세요.`,
-      action: "jobs",
-    });
-  }
   if (!input.calendarReady) {
     errors.push({ code: "CALENDAR_REQUIRED", message: "달력과 첫 직업 운영 기간을 먼저 저장해 주세요.", action: "calendar" });
   }
@@ -241,9 +234,6 @@ export async function loadInitialAssignmentBoard(
       availableCount: studentResult.results.length - assignments.length,
       remainingSeats,
       canComplete: preflight.errors.length === 0
-        && studentResult.results.length > 0
-        && assignments.length === studentResult.results.length
-        && remainingSeats === 0
         && period?.status === "draft",
     },
     jobs: jobs.map((job) => {
@@ -1034,7 +1024,7 @@ type SubmittedAssignment = {
 };
 
 function parseSubmittedAssignmentPayload(value: unknown) {
-  if (!Array.isArray(value) || value.length < 1 || value.length > 60) {
+  if (!Array.isArray(value) || value.length > 60) {
     throw new ApiError(400, "전체 배정표를 다시 확인해 주세요.", "INVALID_ASSIGNMENTS");
   }
   const seenStudents = new Set<string>();
@@ -1066,22 +1056,50 @@ function submittedAssignments(
     }
     jobCounts.set(assignment.classJobId, (jobCounts.get(assignment.classJobId) ?? 0) + 1);
   }
-  if (assignments.length !== board.students.length) {
-    throw new ApiError(422, "활성 학생 모두에게 직업을 하나씩 배정해 주세요.", "ASSIGNMENT_INCOMPLETE");
-  }
-  if (board.jobs.some((job) => (jobCounts.get(job.id) ?? 0) !== Number(job.memberCapacity))) {
-    throw new ApiError(422, "직업별 배정 인원이 설정한 정원과 맞지 않아요.", "JOB_CAPACITY_MISMATCH");
+  if (board.jobs.some((job) => (jobCounts.get(job.id) ?? 0) > Number(job.memberCapacity))) {
+    throw new ApiError(422, "직업별 배정 인원이 설정한 정원을 초과했어요.", "JOB_CAPACITY_EXCEEDED");
   }
   return assignments.sort(
     (left, right) => (studentOrder.get(left.studentId) ?? 0) - (studentOrder.get(right.studentId) ?? 0),
   );
 }
 
-function isExactSubmittedCompletion(input: {
+async function storedInitialConfirmationRequestId(classId: string, periodId: string) {
+  const result = await database().prepare(
+    `SELECT detail FROM audit_logs
+     WHERE class_id = ? AND action = 'initial_job_assignments_confirmed'
+     ORDER BY created_at DESC, id DESC`,
+  ).bind(classId).all<{ detail: string }>();
+  for (const row of result.results) {
+    try {
+      const detail = JSON.parse(row.detail) as Record<string, unknown>;
+      if (detail.periodId === periodId && typeof detail.requestId === "string") {
+        return detail.requestId;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function isExactSubmittedCompletion(input: {
+  classId: string;
+  periodId: string;
   stored: AssignmentRow[];
   submitted: SubmittedAssignment[];
   requestId: string;
 }) {
+  if (input.stored.length === 0) {
+    const storedRequestId = await storedInitialConfirmationRequestId(
+      input.classId,
+      input.periodId,
+    );
+    if (storedRequestId === input.requestId) {
+      return { exact: input.submitted.length === 0, reused: true };
+    }
+    if (input.submitted.length === 0) {
+      return { exact: false, reused: false };
+    }
+  }
   const prefix = `${input.requestId}:`;
   const requestRows = input.stored.filter((row) => row.request_id?.startsWith(prefix));
   if (requestRows.length !== input.submitted.length) {
@@ -1121,7 +1139,9 @@ async function completeSubmittedAssignments(input: {
   const currentBoard = await loadInitialAssignmentBoard(input.classId);
   const currentPeriod = currentBoard.assignmentPeriodRecord;
   if (currentPeriod?.status === "confirmed") {
-    const requestState = isExactSubmittedCompletion({
+    const requestState = await isExactSubmittedCompletion({
+      classId: input.classId,
+      periodId: currentPeriod.id,
       stored: currentBoard.assignments,
       submitted: submittedPayload,
       requestId: idempotencyKey,
@@ -1189,10 +1209,7 @@ async function completeSubmittedAssignments(input: {
            SELECT 1 FROM class_job_setup
            WHERE class_id = ? AND status = 'completed'
          )
-         AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded') = ?
-         AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
-              WHERE class_id = ? AND is_active = 1) = ?
-       THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
+        THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
     ).bind(
       period.id,
       input.classId,
@@ -1202,10 +1219,6 @@ async function completeSubmittedAssignments(input: {
       board.calendar.firstJobStartDate,
       board.calendar.firstJobEndDate,
       input.classId,
-      input.classId,
-      assignments.length,
-      input.classId,
-      assignments.length,
       reservationGuardId,
       now,
     ),
@@ -1263,8 +1276,8 @@ async function completeSubmittedAssignments(input: {
            LEFT JOIN students student ON student.id = assignment.student_id
            LEFT JOIN class_jobs job ON job.id = assignment.class_job_id
            WHERE assignment.period_id = ?
-             AND (student.class_id <> ? OR student.status = 'excluded'
-               OR job.class_id <> ? OR job.is_active <> 1)
+              AND (student.id IS NULL OR student.class_id <> ? OR student.status = 'excluded'
+                OR job.id IS NULL OR job.class_id <> ? OR job.is_active <> 1)
          )
          AND NOT EXISTS (
            SELECT 1 FROM class_jobs job
@@ -1272,7 +1285,7 @@ async function completeSubmittedAssignments(input: {
              AND (
                SELECT COUNT(*) FROM student_job_assignments assignment
                WHERE assignment.period_id = ? AND assignment.class_job_id = job.id
-             ) <> job.member_capacity
+              ) > job.member_capacity
          )
        THEN ? ELSE NULL END, 'initial_job_assignments_complete', ?`,
     ).bind(
@@ -1330,6 +1343,7 @@ async function completeSubmittedAssignments(input: {
         periodId: period.id,
         confirmedAt: now,
         assignmentCount: assignments.length,
+        requestId: idempotencyKey,
         source: "local_draft",
         idempotent: false,
       }),
@@ -1387,8 +1401,8 @@ export async function completeInitialAssignments(input: {
   if (!board.summary.canComplete) {
     throw new ApiError(
       422,
-      `아직 ${board.summary.availableCount}명의 학생과 ${board.summary.remainingSeats}개의 자리가 남았어요. 모두 배정한 뒤 확정해 주세요.`,
-      "ASSIGNMENT_INCOMPLETE",
+      "현재 배정표를 확정할 수 없어요. 학생·직업·달력 정보를 다시 확인해 주세요.",
+      "ASSIGNMENT_NOT_READY",
     );
   }
   const now = Date.now();
@@ -1401,15 +1415,26 @@ export async function completeInitialAssignments(input: {
          SET status = 'confirmed', confirmed_at = ?, confirmed_by_teacher_id = ?,
              revision = revision + 1, updated_at = ?
          WHERE id = ? AND class_id = ? AND status = 'draft'
-           AND (SELECT COUNT(*) FROM students WHERE class_id = ? AND status <> 'excluded')
-               = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
-           AND (SELECT COALESCE(SUM(member_capacity), 0) FROM class_jobs
-                WHERE class_id = ? AND is_active = 1)
-               = (SELECT COUNT(*) FROM student_job_assignments WHERE period_id = ?)
-           AND EXISTS (SELECT 1 FROM class_calendars WHERE class_id = ?)`,
+            AND EXISTS (SELECT 1 FROM class_calendars WHERE class_id = ?)
+            AND NOT EXISTS (
+              SELECT 1 FROM student_job_assignments assignment
+              LEFT JOIN students student ON student.id = assignment.student_id
+              LEFT JOIN class_jobs job ON job.id = assignment.class_job_id
+              WHERE assignment.period_id = ?
+                AND (student.id IS NULL OR student.class_id <> ? OR student.status = 'excluded'
+                  OR job.id IS NULL OR job.class_id <> ? OR job.is_active <> 1)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM class_jobs job
+              WHERE job.class_id = ? AND job.is_active = 1
+                AND (
+                  SELECT COUNT(*) FROM student_job_assignments assignment
+                  WHERE assignment.period_id = ? AND assignment.class_job_id = job.id
+                ) > job.member_capacity
+            )`,
       ).bind(
         now, input.teacherId, now, period.id, input.classId,
-        input.classId, period.id, input.classId, period.id, input.classId,
+        input.classId, period.id, input.classId, input.classId, input.classId, period.id,
       ),
       db.prepare(
         `INSERT INTO registration_operation_guards (id, operation, created_at)

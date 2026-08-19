@@ -1,5 +1,6 @@
 import {
   financeStocksForRequest,
+  issueAdditionalFinanceStock,
   tickFinanceStockForRequest,
   tradeFinanceStock,
   updateFinanceStock,
@@ -22,6 +23,12 @@ const stockPositionLimitWorker = {
         return Response.json(
           await updateFinanceStock(request, "stock-class", input),
           { status: 200 },
+        );
+      }
+      if (action === "issue") {
+        return Response.json(
+          await issueAdditionalFinanceStock(request, "stock-class", input),
+          { status: 201 },
         );
       }
       if (action === "trade") {

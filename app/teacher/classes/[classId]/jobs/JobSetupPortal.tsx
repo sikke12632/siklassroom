@@ -108,7 +108,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
     setMode(next.setup.setupMode);
     setSurvey(next.setup.surveyAnswers || emptySurvey);
     setJobs(next.setup.draftJobs || []);
-    setStep(next.setup.status === "not_started" ? 1 : Math.max(1, next.setup.lastStep));
+    setStep(next.setup.status === "not_started" ? 1 : Math.min(3, Math.max(1, next.setup.lastStep)));
   }, []);
 
   const load = useCallback(async () => {
@@ -332,10 +332,6 @@ export function JobSetupPortal({ classId }: { classId: string }) {
 
   async function complete() {
     if (!data || !mode) return;
-    if (capacity !== data.studentCount) {
-      setError(`자리 ${capacity}개를 학생 ${data.studentCount}명과 맞춘 뒤 확정해 주세요.`);
-      return;
-    }
     if (data.assignmentStatus === "confirmed") {
       setError("첫 직업 배정이 이미 확정되어 초기 설정에서 직업과 정원을 바꿀 수 없어요.");
       return;
@@ -354,7 +350,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
         jobs,
         acknowledgeAssignmentImpact,
       });
-      router.replace("/teacher");
+      router.replace(`/teacher/classes/${classId}/job-assignments`);
       router.refresh();
     } catch (reason) {
       setError((reason as Error).message);
@@ -391,7 +387,7 @@ export function JobSetupPortal({ classId }: { classId: string }) {
 
       <main className="job-main">
         <section className="job-progress" aria-label="직업 설정 진행 단계">
-          {["방식 선택", "우리 반 질문", "직업 다듬기", "최종 확인"].map((label, index) => {
+          {["방식 선택", "우리 반 질문", "직업 설정·저장"].map((label, index) => {
             const number = index + 1;
             return (
               <div key={label} className={number < step ? "done" : number === step ? "current" : ""}>
@@ -404,9 +400,9 @@ export function JobSetupPortal({ classId }: { classId: string }) {
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
         {data.studentCountChanged && (
-          <div className="job-warning" role="alert">
+          <div className="job-warning" role="status">
             <b>학생 명단이 달라졌어요.</b>
-            <span>저장 당시 {data.setup.studentCountSnapshot}명, 현재 {data.studentCount}명이에요. 자동 맞춤 후 다시 확정해 주세요.</span>
+            <span>저장 당시 {data.setup.studentCountSnapshot}명, 현재 {data.studentCount}명이에요. 공석이나 역할 없는 학생을 두어도 되므로 원하는 자리 수 그대로 저장할 수 있어요.</span>
           </div>
         )}
 
@@ -433,8 +429,8 @@ export function JobSetupPortal({ classId }: { classId: string }) {
                 setMode(data.setup.setupMode);
                 setSurvey(data.setup.surveyAnswers);
                 setJobs(data.setup.draftJobs);
-                setStep(data.setup.lastStep);
-              }}>저장한 {data.setup.status === "completed" ? "확정본" : "초안"} 이어서 보기</button>
+                setStep(Math.min(3, data.setup.lastStep));
+              }}>저장한 {data.setup.status === "completed" ? "설정" : "초안"} 이어서 보기</button>
             )}
           </section>
         )}
@@ -572,7 +568,11 @@ export function JobSetupPortal({ classId }: { classId: string }) {
               <div className={`capacity-summary ${capacityGap === 0 ? "matched" : ""}`}>
                 <span>학생 {data.studentCount}명</span>
                 <strong>{capacity}자리</strong>
-                <small>{capacityGap === 0 ? "딱 맞아요" : capacityGap > 0 ? `${capacityGap}자리 부족` : `${Math.abs(capacityGap)}자리 초과`}</small>
+                <small>{capacityGap === 0
+                  ? "학생 수와 같아요"
+                  : capacityGap > 0
+                    ? `역할 없는 학생 ${capacityGap}명 가능`
+                    : `공석 ${Math.abs(capacityGap)}자리 가능`}</small>
               </div>
               {data.studentCount > 0 && capacityGap !== 0 && (
                 <button className="button button-primary toolbox-full" disabled={busy} onClick={requestAdjustment}>자동 맞춤 미리보기</button>
@@ -636,39 +636,9 @@ export function JobSetupPortal({ classId }: { classId: string }) {
 
             <div className="editor-footer">
               <button className="button button-light" onClick={() => mode === "recommended" ? setStep(2) : setStep(1)}>이전</button>
-              <span>{jobs.length}개 직업 · {capacity}자리</span>
-              <button className="button button-primary" disabled={!jobs.length || capacity !== data.studentCount} onClick={async () => {
-                const saved = await saveDraft(4);
-                if (saved) setStep(4);
-              }}>최종 확인</button>
-            </div>
-          </section>
-        )}
-
-        {step === 4 && (
-          <section className="job-stage confirm-stage">
-            <p className="eyebrow">4단계 · 최종 확인</p>
-            <h1>{data.setup.status === "completed" ? "확정한 우리 반 직업이에요" : "이대로 우리 반 직업을 확정할까요?"}</h1>
-            <div className="confirm-summary">
-              <div><span>참여 학생</span><strong>{data.studentCount}명</strong></div>
-              <div><span>직업 종류</span><strong>{jobs.length}개</strong></div>
-              <div className={capacity === data.studentCount ? "ok" : "bad"}><span>전체 자리</span><strong>{capacity}자리</strong></div>
-            </div>
-            {capacity !== data.studentCount && <Notice message={`학생 수와 자리가 ${Math.abs(data.studentCount - capacity)}개 달라요. 자동 맞춤 후 확정해 주세요.`} tone="error" />}
-            <div className="confirm-job-grid">
-              {jobs.map((job) => (
-                <article key={job.id}>
-                  <span>{data.categories[job.category]}</span>
-                  <h2>{job.name}</h2>
-                  <p>{job.description}</p>
-                  <b>{job.memberCapacity}명</b>
-                </article>
-              ))}
-            </div>
-            <div className="stage-actions">
-              <button className="button button-light" onClick={() => setStep(3)}>다시 편집</button>
-              <button className="button button-primary button-large" disabled={busy || capacity !== data.studentCount || !jobs.length} onClick={complete}>
-                {busy ? "확정 중…" : data.setup.status === "completed" ? "수정 내용 다시 확정" : "우리 반 직업 확정"}
+              <span>{jobs.length}개 직업 · {capacity}자리 · 공석과 미배정 허용</span>
+              <button className="button button-primary" disabled={busy || !jobs.length} onClick={complete}>
+                {busy ? "저장 중…" : "저장하고 직업 배정으로"}
               </button>
             </div>
           </section>

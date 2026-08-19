@@ -48,8 +48,29 @@ type ClassRoom = {
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
   qr_generation: number; qr_active?: number; activated_at: number | null;
+  automatic_permissions?: StudentPermissionKey[];
+  manual_permissions?: Array<{
+    permission_key: StudentPermissionKey;
+    is_active: number;
+    revision: number;
+  }>;
 };
 type DraftStudent = { key: string; number: string; name: string };
+
+type StudentPermissionKey = "finance_banker" | "mart_operator"
+  | "life_check_tooth" | "life_check_milk" | "life_check_lunch";
+
+const STUDENT_PERMISSION_OPTIONS: Array<{
+  key: StudentPermissionKey;
+  label: string;
+  description: string;
+}> = [
+  { key: "finance_banker", label: "은행 운영", description: "입출금 신청 확인과 처리" },
+  { key: "mart_operator", label: "마트 운영", description: "상품·재고·판매 기록 관리" },
+  { key: "life_check_tooth", label: "양치 확인 기록", description: "우리 반 양치 결과 기록" },
+  { key: "life_check_milk", label: "우유 확인 기록", description: "우리 반 우유 결과 기록" },
+  { key: "life_check_lunch", label: "급식 확인 기록", description: "우리 반 급식 결과 기록" },
+];
 
 const currentYear = new Date().getFullYear();
 const emptyDraft = (number = ""): DraftStudent => ({ key: crypto.randomUUID(), number, name: "" });
@@ -285,7 +306,6 @@ export function TeacherPortal() {
     selectedSummary
       && Number(selectedSummary.job_student_count ?? 0) > 0
       && selectedSummary.job_status === "completed"
-      && !selectedSummary.job_student_count_changed
       && selectedSummary.assignment_status === "confirmed",
   );
   const monthlyChoiceAccessible = Boolean(
@@ -297,11 +317,9 @@ export function TeacherPortal() {
     ? "학생 명단을 먼저 등록해 주세요."
     : selectedSummary?.job_status !== "completed"
       ? "우리 반 직업을 먼저 확정해 주세요."
-      : selectedSummary.job_student_count_changed
-        ? "달라진 학생 수에 맞춰 직업 정원을 먼저 조정해 주세요."
-        : selectedSummary?.assignment_status !== "confirmed"
-          ? "첫 직업 배정을 먼저 확정해 주세요."
-          : "";
+      : selectedSummary?.assignment_status !== "confirmed"
+        ? "첫 직업 배정을 먼저 확정해 주세요."
+        : "";
 
   return (
     <div className="teacher-shell">
@@ -1167,6 +1185,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNumber, setEditNumber] = useState("");
   const [editName, setEditName] = useState("");
+  const [permissionStudentId, setPermissionStudentId] = useState<string | null>(null);
   const [financeBlock, setFinanceBlock] = useState<{
     studentId: string;
     kind: "request" | "deposit" | "stock";
@@ -1239,6 +1258,30 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
 
+  async function updatePermission(
+    student: Student,
+    permissionKey: StudentPermissionKey,
+    enabled: boolean,
+    expectedRevision: number,
+  ) {
+    onBusy(true); onError("");
+    try {
+      await patchJson(`/api/students/${student.id}/permissions`, {
+        permissionKey,
+        enabled,
+        expectedRevision,
+      });
+      onMessage(enabled
+        ? `${student.official_name} 학생에게 직접 운영 권한을 추가했어요.`
+        : `${student.official_name} 학생의 직접 운영 권한을 해제했어요. 직업에서 받은 자동 권한은 그대로 유지됩니다.`);
+      onReload();
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      onBusy(false);
+    }
+  }
+
   return (
     <div className="student-table-wrap">
       <table className="student-table"><thead><tr><th>번호</th><th>공식 이름</th><th>계정 상태</th><th>관리</th></tr></thead><tbody>
@@ -1251,6 +1294,11 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
+                {student.status !== "excluded" && <button
+                  type="button"
+                  aria-expanded={permissionStudentId === student.id}
+                  onClick={() => setPermissionStudentId((current) => current === student.id ? null : student.id)}
+                >운영 권한</button>}
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => resetStudentPassword(student)}>비밀번호 초기화</button>}
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => allowExistingCardReset(student)}>QR 재설정 10분 허용</button>}
                 {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.qr_active ? "새 QR 발급" : "QR 발급"}</button>}
@@ -1260,6 +1308,57 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
               </>}
             </div></td>
           </tr>
+          {permissionStudentId === student.id && student.status !== "excluded" && (
+            <tr className="student-permission-row">
+              <td colSpan={4}>
+                <section className="student-permission-panel" aria-label={`${student.official_name} 학생 운영 권한`}>
+                  <div className="student-permission-heading">
+                    <div>
+                      <b>{student.student_number}번 {student.official_name} 운영 권한</b>
+                      <p>직업에서 생긴 권한은 자동으로 유지됩니다. 아래 스위치는 교사가 별도로 추가하는 권한입니다.</p>
+                    </div>
+                    <button className="button button-light" type="button" onClick={() => setPermissionStudentId(null)}>닫기</button>
+                  </div>
+                  <div className="student-permission-grid">
+                    {STUDENT_PERMISSION_OPTIONS.map((option) => {
+                      const manual = student.manual_permissions?.find((item) => item.permission_key === option.key);
+                      const manualActive = Boolean(manual?.is_active);
+                      const automatic = student.automatic_permissions?.includes(option.key) ?? false;
+                      return (
+                        <label className={`student-permission-option ${automatic ? "automatic" : ""}`} key={option.key}>
+                          <input
+                            type="checkbox"
+                            checked={manualActive}
+                            disabled={busy || (!manualActive && student.status !== "active")}
+                            onChange={(event) => void updatePermission(
+                              student,
+                              option.key,
+                              event.target.checked,
+                              Number(manual?.revision ?? 0),
+                            )}
+                          />
+                          <span>
+                            <b>{option.label}</b>
+                            <small>{option.description}</small>
+                          </span>
+                          <em>{automatic && manualActive
+                            ? "직업 자동 + 교사 직접 권한"
+                            : automatic
+                              ? "직업 자동 권한 있음"
+                              : manualActive
+                                ? "교사 직접 권한"
+                                : "직접 권한 없음"}</em>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {student.status !== "active" && (
+                    <p className="privacy-note">잠김·등록 전 상태에서는 새 권한을 추가할 수 없지만, 이미 준 직접 권한은 여기서 해제할 수 있습니다.</p>
+                  )}
+                </section>
+              </td>
+            </tr>
+          )}
           {financeBlock?.studentId === student.id && (
             <tr className="student-finance-guidance-row">
               <td colSpan={4}>

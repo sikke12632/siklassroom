@@ -22,8 +22,54 @@ export async function GET(request: Request, context: { params: Promise<{ classId
                   AND rt.revoked_at IS NULL
               ) AS qr_active
        FROM students s WHERE s.class_id = ? ORDER BY s.student_number ASC`,
-    ).bind(classId).all();
-    return json({ class: classRoom, students: result.results });
+    ).bind(classId).all<Record<string, unknown>>();
+    const [manualPermissions, automaticPermissions] = await Promise.all([
+      database().prepare(
+        `SELECT student_id, permission_key, is_active, revision
+         FROM student_manual_permissions
+         WHERE class_id = ?
+         ORDER BY student_id, permission_key`,
+      ).bind(classId).all<{
+        student_id: string;
+        permission_key: string;
+        is_active: number;
+        revision: number;
+      }>(),
+      database().prepare(
+        `SELECT DISTINCT student_id, permission_key
+         FROM student_effective_permissions
+         WHERE class_id = ? AND permission_source = 'automatic'
+         ORDER BY student_id, permission_key`,
+      ).bind(classId).all<{ student_id: string; permission_key: string }>(),
+    ]);
+    const manualByStudent = new Map<string, Array<{
+      permission_key: string;
+      is_active: number;
+      revision: number;
+    }>>();
+    for (const row of manualPermissions.results) {
+      const entries = manualByStudent.get(row.student_id) ?? [];
+      entries.push({
+        permission_key: row.permission_key,
+        is_active: Number(row.is_active),
+        revision: Number(row.revision),
+      });
+      manualByStudent.set(row.student_id, entries);
+    }
+    const automaticByStudent = new Map<string, string[]>();
+    for (const row of automaticPermissions.results) {
+      const entries = automaticByStudent.get(row.student_id) ?? [];
+      entries.push(row.permission_key);
+      automaticByStudent.set(row.student_id, entries);
+    }
+    return json({
+      class: classRoom,
+      students: result.results.map((student) => ({
+        ...student,
+        automatic_permissions: automaticByStudent.get(String(student.id)) ?? [],
+        manual_permissions: manualByStudent.get(String(student.id)) ?? [],
+      })),
+    });
   } catch (error) {
     return apiFailure(error);
   }

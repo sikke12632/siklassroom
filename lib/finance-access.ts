@@ -11,6 +11,13 @@ import {
 } from "./finance-access-rules";
 import { ApiError } from "./responses";
 import { seoulServerTime } from "./seoul-time";
+import {
+  activeManualPermissionKeys,
+  effectiveStudentPermissionPeriodIds,
+  permissionSource,
+  type StudentPermissionKey,
+  type StudentPermissionSource,
+} from "./student-permissions";
 
 export type FinanceContext = {
   actor: {
@@ -29,6 +36,10 @@ export type FinanceContext = {
   };
   financeRole: FinanceRole;
   permissions: FinancePermissions;
+  manualPermissionKeys: StudentPermissionKey[];
+  permissionPeriodIds: Partial<Record<StudentPermissionKey, string>>;
+  authorizationPeriodId: string | null;
+  operatorPermissionSource: StudentPermissionSource;
   activeJob: null | {
     id: string;
     name: string;
@@ -74,6 +85,10 @@ type BankerAssignmentRow = {
   student_number: number;
   student_name: string;
   job_name: string;
+  automatic_permission: number;
+  manual_permission: number;
+  assignment_year: number;
+  assignment_month: number;
 };
 
 function classroomDisplayName(input: {
@@ -167,30 +182,40 @@ export async function currentStudentJob(classId: string, studentId: string) {
 }
 
 export async function currentBankersForClass(classId: string) {
-  const period = await effectiveFinancePeriod(classId);
-  if (!period) return [];
   const rows = await database().prepare(
     `SELECT student.id AS student_id,
             student.student_number,
             student.official_name AS student_name,
-            job.name AS job_name
-     FROM student_job_assignments assignment
-     JOIN class_jobs job
+            COALESCE(MAX(CASE WHEN permission.permission_source = 'automatic'
+              THEN job.name END), '교사 지정 은행 운영') AS job_name,
+            MAX(permission.permission_source = 'automatic') AS automatic_permission,
+            MAX(permission.permission_source = 'manual') AS manual_permission,
+            MAX(period.assignment_year) AS assignment_year,
+            MAX(period.assignment_month) AS assignment_month
+     FROM student_effective_permissions permission
+     JOIN class_job_assignment_periods period
+       ON period.id = permission.period_id
+      AND period.class_id = permission.class_id
+     JOIN students student
+       ON student.id = permission.student_id
+      AND student.class_id = permission.class_id
+     LEFT JOIN student_job_assignments assignment
+       ON assignment.period_id = permission.period_id
+      AND assignment.class_id = permission.class_id
+      AND assignment.student_id = permission.student_id
+     LEFT JOIN class_jobs job
        ON job.id = assignment.class_job_id
       AND job.class_id = assignment.class_id
-     JOIN students student
-       ON student.id = assignment.student_id
-      AND student.class_id = assignment.class_id
-     WHERE assignment.period_id = ?
-       AND assignment.class_id = ?
-       AND job.template_id = ?
-       AND job.is_active = 1
+      AND job.template_id = ?
+     WHERE permission.class_id = ?
+       AND permission.permission_key = 'finance_banker'
+       AND permission.period_id IS NOT NULL
        AND student.status = 'active'
+     GROUP BY student.id, student.student_number, student.official_name
      ORDER BY student.student_number, student.id`,
   ).bind(
-    period.id,
-    classId,
     BANKER_JOB_TEMPLATE_ID,
+    classId,
   ).all<BankerAssignmentRow>();
 
   return rows.results.map((row) => ({
@@ -198,8 +223,12 @@ export async function currentBankersForClass(classId: string) {
     studentNumber: Number(row.student_number),
     studentName: row.student_name,
     jobName: row.job_name,
-    assignmentYear: period.assignmentYear,
-    assignmentMonth: period.assignmentMonth,
+    assignmentYear: Number(row.assignment_year),
+    assignmentMonth: Number(row.assignment_month),
+    permissionSource: permissionSource({
+      automatic: Boolean(row.automatic_permission),
+      manual: Boolean(row.manual_permission),
+    }),
   }));
 }
 
@@ -220,6 +249,10 @@ export async function teacherFinanceContext(
     classroom: serializeClassroom(classroom),
     financeRole,
     permissions: permissionsForFinanceRole(financeRole, classIsActive),
+    manualPermissionKeys: [],
+    permissionPeriodIds: {},
+    authorizationPeriodId: null,
+    operatorPermissionSource: null,
     activeJob: null,
     phase: "foundation",
   };
@@ -250,10 +283,16 @@ export async function studentFinanceContext(
     );
   }
 
-  const activeJob = await currentStudentJob(student.class_id, studentId);
+  const [activeJob, manualPermissions, permissionPeriodIds] = await Promise.all([
+    currentStudentJob(student.class_id, studentId),
+    activeManualPermissionKeys(student.class_id, studentId),
+    effectiveStudentPermissionPeriodIds(student.class_id, studentId),
+  ]);
+  const automaticBanker = activeJob?.templateId === BANKER_JOB_TEMPLATE_ID;
+  const manualBanker = manualPermissions.has("finance_banker");
   const financeRole = resolveFinanceRole(
     "student",
-    activeJob?.templateId === BANKER_JOB_TEMPLATE_ID,
+    automaticBanker || manualBanker,
   );
   return {
     actor: {
@@ -276,6 +315,13 @@ export async function studentFinanceContext(
     },
     financeRole,
     permissions: permissionsForFinanceRole(financeRole),
+    manualPermissionKeys: [...manualPermissions],
+    permissionPeriodIds,
+    authorizationPeriodId: permissionPeriodIds.finance_banker ?? null,
+    operatorPermissionSource: permissionSource({
+      automatic: automaticBanker,
+      manual: manualBanker,
+    }),
     activeJob,
     phase: "foundation",
   };

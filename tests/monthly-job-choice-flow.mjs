@@ -104,17 +104,19 @@ const totalCapacity = board.jobs.reduce((sum, job) => {
   assert.ok(Number.isInteger(job.capacity) && job.capacity > 0);
   return sum + job.capacity;
 }, 0);
-assert.equal(totalCapacity, board.session.order.length, "직업 정원 합은 선택 학생 수와 같아야 합니다.");
+assert.ok(totalCapacity > 0, "선택 가능한 직업 자리가 필요합니다.");
 
 let studentIndex = 0;
-const assignments = board.jobs.flatMap((job) => (
+const fullAssignments = board.jobs.flatMap((job) => (
   Array.from({ length: job.capacity }, () => {
     const student = board.session.order[studentIndex++];
-    assert.ok(student, `${job.id} 직업 정원에 배정할 학생이 부족합니다.`);
+    if (!student) return null;
     return { studentId: student.studentId, classJobId: job.id };
   })
-));
-assert.equal(assignments.length, board.session.order.length);
+)).filter(Boolean);
+const assignments = fullAssignments.slice(0, Math.max(0, fullAssignments.length - 1));
+assert.equal(assignments.length, Math.max(0, fullAssignments.length - 1));
+assert.ok(assignments.length < board.session.order.length, "역할 없는 학생을 남긴 채 확정해야 합니다.");
 assert.equal(new Set(assignments.map((assignment) => assignment.studentId)).size, assignments.length);
 
 const staleCompleteBody = {
@@ -157,8 +159,8 @@ assert.equal(
 );
 assert.deepEqual(
   new Set(board.confirmedAssignments.map((assignment) => assignment.studentId)),
-  new Set(board.session.order.map((student) => student.studentId)),
-  "선택 순서의 모든 학생이 정확히 한 번 확정되어야 합니다.",
+  new Set(assignments.map((assignment) => assignment.studentId)),
+  "교사가 선택한 학생만 정확히 한 번 확정되어야 합니다.",
 );
 
-console.log("월별 직업 선정 통합 검증 완료: 마감·순서 시작·stale 충돌·정원 배정·원자 확정·중복 방지");
+console.log("월별 직업 선정 통합 검증 완료: 마감·순서 시작·stale 충돌·공석·미배정·원자 확정·중복 방지");

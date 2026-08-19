@@ -42,6 +42,7 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS life_check_records_scope_idx
     ON life_check_records(class_id, check_type, check_date, student_id)`,
+  `DROP TRIGGER IF EXISTS life_check_records_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS life_check_records_insert_guard
     BEFORE INSERT ON life_check_records
     WHEN NOT EXISTS (
@@ -57,45 +58,19 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
             AND classroom.teacher_id = NEW.last_actor_teacher_id)
           OR (NEW.last_actor_type = 'checker' AND EXISTS (
             SELECT 1
-            FROM students actor
-            JOIN student_job_assignments assignment
-              ON assignment.student_id = actor.id
-             AND assignment.class_id = actor.class_id
-            JOIN class_job_assignment_periods period
-              ON period.id = assignment.period_id
-             AND period.class_id = assignment.class_id
-            JOIN class_jobs job
-              ON job.id = assignment.class_job_id
-             AND job.class_id = assignment.class_id
-            WHERE actor.id = NEW.last_actor_student_id
-              AND actor.class_id = NEW.class_id
-              AND actor.status = 'active'
-              AND job.is_active = 1
-              AND job.template_id = CASE NEW.check_type
-                WHEN 'tooth' THEN 'routine-checker'
-                WHEN 'milk' THEN 'milk-manager'
-                WHEN 'lunch' THEN 'meal-checker'
+            FROM student_effective_permissions permission
+            WHERE permission.student_id = NEW.last_actor_student_id
+              AND permission.class_id = NEW.class_id
+              AND permission.permission_key = CASE NEW.check_type
+                WHEN 'tooth' THEN 'life_check_tooth'
+                WHEN 'milk' THEN 'life_check_milk'
+                WHEN 'lunch' THEN 'life_check_lunch'
               END
-              AND period.id = (
-                SELECT candidate.id
-                FROM class_job_assignment_periods candidate
-                WHERE candidate.class_id = NEW.class_id
-                  AND candidate.status = 'confirmed'
-                  AND candidate.assignment_type IN ('initial', 'monthly')
-                  AND (
-                    candidate.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                    OR (candidate.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      AND candidate.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER))
-                  )
-                ORDER BY candidate.assignment_year DESC, candidate.assignment_month DESC,
-                  COALESCE(candidate.confirmed_at, 0) DESC, candidate.updated_at DESC,
-                  candidate.id DESC
-                LIMIT 1
-              )
           ))
         )
     )
     BEGIN SELECT RAISE(ABORT, 'LIFE_CHECK_RECORD_SCOPE_DENIED'); END`,
+  `DROP TRIGGER IF EXISTS life_check_records_update_guard`,
   `CREATE TRIGGER IF NOT EXISTS life_check_records_update_guard
     BEFORE UPDATE ON life_check_records
     WHEN NEW.id <> OLD.id
@@ -119,41 +94,14 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
               AND classroom.teacher_id = NEW.last_actor_teacher_id)
             OR (NEW.last_actor_type = 'checker' AND EXISTS (
               SELECT 1
-              FROM students actor
-              JOIN student_job_assignments assignment
-                ON assignment.student_id = actor.id
-               AND assignment.class_id = actor.class_id
-              JOIN class_job_assignment_periods period
-                ON period.id = assignment.period_id
-               AND period.class_id = assignment.class_id
-              JOIN class_jobs job
-                ON job.id = assignment.class_job_id
-               AND job.class_id = assignment.class_id
-              WHERE actor.id = NEW.last_actor_student_id
-                AND actor.class_id = NEW.class_id
-                AND actor.status = 'active'
-                AND job.is_active = 1
-                AND job.template_id = CASE NEW.check_type
-                  WHEN 'tooth' THEN 'routine-checker'
-                  WHEN 'milk' THEN 'milk-manager'
-                  WHEN 'lunch' THEN 'meal-checker'
+              FROM student_effective_permissions permission
+              WHERE permission.student_id = NEW.last_actor_student_id
+                AND permission.class_id = NEW.class_id
+                AND permission.permission_key = CASE NEW.check_type
+                  WHEN 'tooth' THEN 'life_check_tooth'
+                  WHEN 'milk' THEN 'life_check_milk'
+                  WHEN 'lunch' THEN 'life_check_lunch'
                 END
-                AND period.id = (
-                  SELECT candidate.id
-                  FROM class_job_assignment_periods candidate
-                  WHERE candidate.class_id = NEW.class_id
-                    AND candidate.status = 'confirmed'
-                    AND candidate.assignment_type IN ('initial', 'monthly')
-                    AND (
-                      candidate.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      OR (candidate.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                        AND candidate.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER))
-                    )
-                  ORDER BY candidate.assignment_year DESC, candidate.assignment_month DESC,
-                    COALESCE(candidate.confirmed_at, 0) DESC, candidate.updated_at DESC,
-                    candidate.id DESC
-                  LIMIT 1
-                )
             ))
           )
       )
@@ -284,6 +232,7 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
     ON life_check_payouts(id, class_id)`,
   `CREATE INDEX IF NOT EXISTS life_check_payouts_scope_idx
     ON life_check_payouts(class_id, payout_year DESC, payout_month DESC, payout_period)`,
+  `DROP TRIGGER IF EXISTS life_check_payouts_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS life_check_payouts_insert_guard
     BEFORE INSERT ON life_check_payouts
     WHEN json_array_length(NEW.items_json) <> NEW.recipient_count
@@ -320,41 +269,14 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
               AND classroom.teacher_id = NEW.created_by_teacher_id)
             OR (NEW.created_by_actor_type = 'checker' AND EXISTS (
               SELECT 1
-              FROM students actor
-              JOIN student_job_assignments assignment
-                ON assignment.student_id = actor.id
-               AND assignment.class_id = actor.class_id
-              JOIN class_job_assignment_periods period
-                ON period.id = assignment.period_id
-               AND period.class_id = assignment.class_id
-              JOIN class_jobs job
-                ON job.id = assignment.class_job_id
-               AND job.class_id = assignment.class_id
-              WHERE actor.id = NEW.created_by_student_id
-                AND actor.class_id = NEW.class_id
-                AND actor.status = 'active'
-                AND job.is_active = 1
-                AND job.template_id = CASE NEW.check_type
-                  WHEN 'tooth' THEN 'routine-checker'
-                  WHEN 'milk' THEN 'milk-manager'
-                  WHEN 'lunch' THEN 'meal-checker'
+              FROM student_effective_permissions permission
+              WHERE permission.student_id = NEW.created_by_student_id
+                AND permission.class_id = NEW.class_id
+                AND permission.permission_key = CASE NEW.check_type
+                  WHEN 'tooth' THEN 'life_check_tooth'
+                  WHEN 'milk' THEN 'life_check_milk'
+                  WHEN 'lunch' THEN 'life_check_lunch'
                 END
-                AND period.id = (
-                  SELECT candidate.id
-                  FROM class_job_assignment_periods candidate
-                  WHERE candidate.class_id = NEW.class_id
-                    AND candidate.status = 'confirmed'
-                    AND candidate.assignment_type IN ('initial', 'monthly')
-                    AND (
-                      candidate.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      OR (candidate.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                        AND candidate.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER))
-                    )
-                  ORDER BY candidate.assignment_year DESC, candidate.assignment_month DESC,
-                    COALESCE(candidate.confirmed_at, 0) DESC, candidate.updated_at DESC,
-                    candidate.id DESC
-                  LIMIT 1
-                )
             ))
           )
       )
@@ -362,6 +284,7 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
       OR NEW.last_actor_teacher_id IS NOT NEW.created_by_teacher_id
       OR NEW.last_actor_student_id IS NOT NEW.created_by_student_id
     BEGIN SELECT RAISE(ABORT, 'LIFE_CHECK_PAYOUT_STATE_INVALID'); END`,
+  `DROP TRIGGER IF EXISTS life_check_payouts_update_guard`,
   `CREATE TRIGGER IF NOT EXISTS life_check_payouts_update_guard
     BEFORE UPDATE ON life_check_payouts
     WHEN NEW.id <> OLD.id
@@ -392,41 +315,14 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
               AND classroom.teacher_id = NEW.last_actor_teacher_id)
             OR (NEW.last_actor_type = 'checker' AND EXISTS (
               SELECT 1
-              FROM students actor
-              JOIN student_job_assignments assignment
-                ON assignment.student_id = actor.id
-               AND assignment.class_id = actor.class_id
-              JOIN class_job_assignment_periods period
-                ON period.id = assignment.period_id
-               AND period.class_id = assignment.class_id
-              JOIN class_jobs job
-                ON job.id = assignment.class_job_id
-               AND job.class_id = assignment.class_id
-              WHERE actor.id = NEW.last_actor_student_id
-                AND actor.class_id = NEW.class_id
-                AND actor.status = 'active'
-                AND job.is_active = 1
-                AND job.template_id = CASE NEW.check_type
-                  WHEN 'tooth' THEN 'routine-checker'
-                  WHEN 'milk' THEN 'milk-manager'
-                  WHEN 'lunch' THEN 'meal-checker'
+              FROM student_effective_permissions permission
+              WHERE permission.student_id = NEW.last_actor_student_id
+                AND permission.class_id = NEW.class_id
+                AND permission.permission_key = CASE NEW.check_type
+                  WHEN 'tooth' THEN 'life_check_tooth'
+                  WHEN 'milk' THEN 'life_check_milk'
+                  WHEN 'lunch' THEN 'life_check_lunch'
                 END
-                AND period.id = (
-                  SELECT candidate.id
-                  FROM class_job_assignment_periods candidate
-                  WHERE candidate.class_id = NEW.class_id
-                    AND candidate.status = 'confirmed'
-                    AND candidate.assignment_type IN ('initial', 'monthly')
-                    AND (
-                      candidate.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      OR (candidate.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                        AND candidate.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER))
-                    )
-                  ORDER BY candidate.assignment_year DESC, candidate.assignment_month DESC,
-                    COALESCE(candidate.confirmed_at, 0) DESC, candidate.updated_at DESC,
-                    candidate.id DESC
-                  LIMIT 1
-                )
             ))
           )
       )
@@ -509,6 +405,7 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS life_check_payout_events_scope_idx
     ON life_check_payout_events(class_id, created_at DESC)`,
+  `DROP TRIGGER IF EXISTS life_check_payout_events_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS life_check_payout_events_insert_guard
     BEFORE INSERT ON life_check_payout_events
     WHEN NOT EXISTS (
@@ -534,41 +431,14 @@ export const LIFE_CHECK_SCHEMA_STATEMENTS = [
           (NEW.actor_type = 'teacher' AND classroom.teacher_id = NEW.actor_teacher_id)
           OR (NEW.actor_type = 'checker' AND EXISTS (
             SELECT 1
-            FROM students actor
-            JOIN student_job_assignments assignment
-              ON assignment.student_id = actor.id
-             AND assignment.class_id = actor.class_id
-            JOIN class_job_assignment_periods period
-              ON period.id = assignment.period_id
-             AND period.class_id = assignment.class_id
-            JOIN class_jobs job
-              ON job.id = assignment.class_job_id
-             AND job.class_id = assignment.class_id
-            WHERE actor.id = NEW.actor_student_id
-              AND actor.class_id = NEW.class_id
-              AND actor.status = 'active'
-              AND job.is_active = 1
-              AND job.template_id = CASE payout.check_type
-                WHEN 'tooth' THEN 'routine-checker'
-                WHEN 'milk' THEN 'milk-manager'
-                WHEN 'lunch' THEN 'meal-checker'
+            FROM student_effective_permissions permission
+            WHERE permission.student_id = NEW.actor_student_id
+              AND permission.class_id = NEW.class_id
+              AND permission.permission_key = CASE payout.check_type
+                WHEN 'tooth' THEN 'life_check_tooth'
+                WHEN 'milk' THEN 'life_check_milk'
+                WHEN 'lunch' THEN 'life_check_lunch'
               END
-              AND period.id = (
-                SELECT candidate.id
-                FROM class_job_assignment_periods candidate
-                WHERE candidate.class_id = NEW.class_id
-                  AND candidate.status = 'confirmed'
-                  AND candidate.assignment_type IN ('initial', 'monthly')
-                  AND (
-                    candidate.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                    OR (candidate.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      AND candidate.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER))
-                  )
-                ORDER BY candidate.assignment_year DESC, candidate.assignment_month DESC,
-                  COALESCE(candidate.confirmed_at, 0) DESC, candidate.updated_at DESC,
-                  candidate.id DESC
-                LIMIT 1
-              )
           ))
         )
     )

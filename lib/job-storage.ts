@@ -371,13 +371,6 @@ export async function completeJobSetup(input: {
   const jobs = validateJobDrafts(input.jobs);
   await assertClassJobDraftIds(input.classId, jobs);
   const capacity = sumJobCapacity(jobs);
-  if (capacity !== input.studentCount) {
-    throw new ApiError(
-      422,
-      `직업 자리 ${capacity}개를 학생 ${input.studentCount}명과 정확히 맞춰 주세요.`,
-      "JOB_CAPACITY_MISMATCH",
-    );
-  }
   if (!["recommended", "manual"].includes(input.setupMode)) {
     throw new ApiError(400, "설정 방식을 다시 선택해 주세요.", "INVALID_SETUP");
   }
@@ -502,7 +495,14 @@ export async function completeJobSetup(input: {
         crypto.randomUUID(),
         input.teacherId,
         input.classId,
-        JSON.stringify({ revision: nextRevision, jobCount: jobs.length, capacity }),
+        JSON.stringify({
+          revision: nextRevision,
+          jobCount: jobs.length,
+          capacity,
+          studentCount: input.studentCount,
+          unfilledSeatCount: Math.max(0, capacity - input.studentCount),
+          potentiallyUnassignedStudentCount: Math.max(0, input.studentCount - capacity),
+        }),
         now,
       ),
       db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),

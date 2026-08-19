@@ -9,6 +9,11 @@ import {
 } from "./life-check-rules";
 import { LIFE_CHECK_SCHEMA_STATEMENTS } from "./life-check-schema";
 import { ApiError } from "./responses";
+import {
+  activeManualPermissionKeys,
+  permissionSource,
+  type StudentPermissionSource,
+} from "./student-permissions";
 
 export type LifeCheckRole = "teacher" | "checker" | "student";
 
@@ -29,6 +34,7 @@ export type LifeCheckContext = {
   };
   role: LifeCheckRole;
   allowedWriteTypes: LifeCheckType[];
+  permissionSources: Partial<Record<LifeCheckType, StudentPermissionSource>>;
   permissions: {
     canViewClass: boolean;
     canRecord: boolean;
@@ -104,6 +110,7 @@ export async function lifeCheckContextForRequest(request: Request): Promise<Life
       },
       role: "teacher",
       allowedWriteTypes: [...LIFE_CHECK_TYPES],
+      permissionSources: {},
       permissions: {
         canViewClass: true,
         canRecord: active,
@@ -136,8 +143,26 @@ export async function lifeCheckContextForRequest(request: Request): Promise<Life
   if (requestedClassId && requestedClassId !== student.class_id) {
     throw new ApiError(403, "다른 학급의 생활확인 기록은 볼 수 없어요.", "LIFE_CHECK_CLASS_ACCESS_DENIED");
   }
-  const activeJob = await currentStudentJob(student.class_id, studentId);
-  const allowedWriteTypes = allowedTypeForJob(activeJob?.templateId);
+  const [activeJob, manualPermissions] = await Promise.all([
+    currentStudentJob(student.class_id, studentId),
+    activeManualPermissionKeys(student.class_id, studentId),
+  ]);
+  const automaticTypes = allowedTypeForJob(activeJob?.templateId);
+  const manualKeyForType: Record<LifeCheckType, "life_check_tooth" | "life_check_milk" | "life_check_lunch"> = {
+    tooth: "life_check_tooth",
+    milk: "life_check_milk",
+    lunch: "life_check_lunch",
+  };
+  const allowedWriteTypes = LIFE_CHECK_TYPES.filter((type) => (
+    automaticTypes.includes(type) || manualPermissions.has(manualKeyForType[type])
+  ));
+  const permissionSources = Object.fromEntries(allowedWriteTypes.map((type) => [
+    type,
+    permissionSource({
+      automatic: automaticTypes.includes(type),
+      manual: manualPermissions.has(manualKeyForType[type]),
+    }),
+  ])) as Partial<Record<LifeCheckType, StudentPermissionSource>>;
   const role: LifeCheckRole = allowedWriteTypes.length ? "checker" : "student";
   return {
     actor: { type: "student", id: student.id, name: student.official_name },
@@ -152,6 +177,7 @@ export async function lifeCheckContextForRequest(request: Request): Promise<Life
     },
     role,
     allowedWriteTypes,
+    permissionSources,
     permissions: {
       canViewClass: role === "checker",
       canRecord: role === "checker",

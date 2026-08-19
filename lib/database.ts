@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { FINANCE_SCHEMA_STATEMENTS } from "./finance-schema";
 import { MART_SCHEMA_STATEMENTS } from "./mart-schema";
+import { STUDENT_PERMISSION_SCHEMA_STATEMENTS } from "./student-permission-schema";
 
 export type RuntimeEnv = {
   DB?: D1Database;
@@ -20,7 +21,7 @@ let schemaProvidedByMigrations = false;
 // Bump this filename whenever a migration adds or changes runtime schema.
 // A database with this migration already applied does not need hundreds of
 // defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
-const LATEST_RUNTIME_SCHEMA_MIGRATION = "0041_student_login_stabilization.sql";
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0043_stock_additional_issuance.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -407,6 +408,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS system_migrations (
     key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL
   )`,
+  ...STUDENT_PERMISSION_SCHEMA_STATEMENTS,
   ...FINANCE_SCHEMA_STATEMENTS,
   ...MART_SCHEMA_STATEMENTS,
   `CREATE TRIGGER IF NOT EXISTS teacher_email_verified_after_token_use

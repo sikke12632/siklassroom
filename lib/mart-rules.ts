@@ -246,9 +246,10 @@ export function normalizeMartCancellation(input: {
 export function resolveMartRole(
   actorType: "teacher" | "student",
   activeJobTemplateId: string | null | undefined,
+  hasManualPermission = false,
 ): MartRole {
   if (actorType === "teacher") return "teacher";
-  return activeJobTemplateId === MARKET_CLERK_JOB_TEMPLATE_ID
+  return activeJobTemplateId === MARKET_CLERK_JOB_TEMPLATE_ID || hasManualPermission
     ? "market_clerk"
     : "student";
 }

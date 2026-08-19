@@ -480,10 +480,7 @@ function blockingReason(context: MonthlyContext) {
   }
   if (
     !context.closure
-    && (
-      Number(context.sourcePeriod.assignment_count) < 1
-      || context.sourceAssignments.length !== Number(context.sourcePeriod.assignment_count)
-    )
+    && context.sourceAssignments.length !== Number(context.sourcePeriod.assignment_count)
   ) {
     return {
       code: "SOURCE_ASSIGNMENTS_INCOMPLETE",
@@ -494,13 +491,6 @@ function blockingReason(context: MonthlyContext) {
     return {
       code: "JOB_SETUP_REQUIRED",
       message: "현재 사용할 우리 반 직업을 먼저 확정해 주세요.",
-    };
-  }
-  const capacity = context.jobs.reduce((sum, job) => sum + Number(job.member_capacity), 0);
-  if (capacity !== context.students.length) {
-    return {
-      code: "JOB_CAPACITY_MISMATCH",
-      message: `활성 학생은 ${context.students.length}명인데 현재 직업 정원은 ${capacity}자리예요.`,
     };
   }
   return null;
@@ -663,31 +653,32 @@ export async function closeMonthlyJobSource(input: {
   if (blocked?.code === "SOURCE_ASSIGNMENTS_INCOMPLETE" || blocked?.code === "NO_ACTIVE_STUDENTS") {
     throw new ApiError(409, blocked.message, blocked.code);
   }
-  const finalizedEvaluation = await finalizedEvaluationGrades(
-    input.classId,
-    expectedSourcePeriodId,
-  );
-  const grades = finalizedEvaluation.grades;
   const assignments = context.sourceAssignments;
-  if (
-    assignments.length < 1
-    || assignments.length !== Number(context.sourcePeriod.assignment_count)
-  ) {
+  const emptySource = assignments.length === 0
+    && Number(context.sourcePeriod.assignment_count) === 0;
+  if (assignments.length !== Number(context.sourcePeriod.assignment_count)) {
     throw new ApiError(
       409,
       "지난달 확정 배정 기록을 온전히 불러오지 못했어요.",
       "SOURCE_ASSIGNMENTS_INCOMPLETE",
     );
   }
+  const finalizedEvaluation = emptySource
+    ? null
+    : await finalizedEvaluationGrades(input.classId, expectedSourcePeriodId);
+  const grades = finalizedEvaluation?.grades ?? {};
   const sourceJobIds = new Set(assignments.map((assignment) => assignment.class_job_id));
   const gradeJobIds = Object.keys(grades);
   if (
-    gradeJobIds.length !== sourceJobIds.size
-    || gradeJobIds.some((jobId) => !sourceJobIds.has(jobId))
-    || [...sourceJobIds].some((jobId) => (
-      !Object.prototype.hasOwnProperty.call(grades, jobId)
-      || !["A", "B", "C"].includes(grades[jobId])
-    ))
+    !emptySource
+    && (
+      gradeJobIds.length !== sourceJobIds.size
+      || gradeJobIds.some((jobId) => !sourceJobIds.has(jobId))
+      || [...sourceJobIds].some((jobId) => (
+        !Object.prototype.hasOwnProperty.call(grades, jobId)
+        || !["A", "B", "C"].includes(grades[jobId])
+      ))
+    )
   ) {
     throw new ApiError(
       409,
@@ -725,16 +716,21 @@ export async function closeMonthlyJobSource(input: {
            LIMIT 1
          )
          AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = p.id) = ?
-         AND EXISTS (
-           SELECT 1 FROM class_job_evaluation_sessions evaluation
-           WHERE evaluation.id = ? AND evaluation.class_id = p.class_id
-             AND evaluation.source_period_id = p.id
-             AND evaluation.status = 'finalized' AND evaluation.revision = ?
-         )`,
+          AND (
+            (? = 1 AND NOT EXISTS (
+              SELECT 1 FROM student_job_assignments assignment WHERE assignment.period_id = p.id
+            ))
+            OR EXISTS (
+              SELECT 1 FROM class_job_evaluation_sessions evaluation
+              WHERE evaluation.id = ? AND evaluation.class_id = p.class_id
+                AND evaluation.source_period_id = p.id
+                AND evaluation.status = 'finalized' AND evaluation.revision = ?
+            )
+          )`,
     ).bind(
       closureId,
-      finalizedEvaluation.sessionId,
-      finalizedEvaluation.revision,
+      finalizedEvaluation?.sessionId ?? null,
+      finalizedEvaluation?.revision ?? null,
       input.teacherId,
       now,
       now,
@@ -745,8 +741,9 @@ export async function closeMonthlyJobSource(input: {
       current.year,
       current.month,
       assignments.length,
-      finalizedEvaluation.sessionId,
-      finalizedEvaluation.revision,
+      emptySource ? 1 : 0,
+      finalizedEvaluation?.sessionId ?? null,
+      finalizedEvaluation?.revision ?? null,
     ),
     ...assignments.map((assignment) => db.prepare(
       `INSERT INTO class_job_month_results (
@@ -1163,35 +1160,37 @@ function parseSubmittedAssignments(
     }
     counts.set(assignment.classJobId, (counts.get(assignment.classJobId) ?? 0) + 1);
   }
-  if (parsed.length !== students.length) {
-    throw new ApiError(
-      422,
-      "활성 학생 모두가 직업을 하나씩 선택해야 해요.",
-      "MONTHLY_ASSIGNMENT_INCOMPLETE",
-    );
-  }
-  const totalCapacity = jobs.reduce((sum, job) => sum + Number(job.member_capacity), 0);
-  if (totalCapacity !== students.length) {
-    throw new ApiError(
-      422,
-      `학생 ${students.length}명과 직업 정원 ${totalCapacity}자리를 정확히 맞춰 주세요.`,
-      "JOB_CAPACITY_MISMATCH",
-    );
-  }
   const mismatched = jobs.find(
-    (job) => (counts.get(job.id) ?? 0) !== Number(job.member_capacity),
+    (job) => (counts.get(job.id) ?? 0) > Number(job.member_capacity),
   );
   if (mismatched) {
     throw new ApiError(
       422,
-      `${mismatched.name}의 선택 인원이 정원 ${mismatched.member_capacity}명과 맞지 않아요.`,
-      "JOB_CAPACITY_MISMATCH",
+      `${mismatched.name}의 선택 인원이 정원 ${mismatched.member_capacity}명을 초과했어요.`,
+      "JOB_CAPACITY_EXCEEDED",
     );
   }
   return parsed;
 }
 
-function confirmedMonthlyRequestState(input: {
+async function storedMonthlyConfirmationRequestId(classId: string, sessionId: string) {
+  const result = await database().prepare(
+    `SELECT detail FROM audit_logs
+     WHERE class_id = ? AND action = 'monthly_job_choice_confirmed'
+     ORDER BY created_at DESC, id DESC`,
+  ).bind(classId).all<{ detail: string }>();
+  for (const row of result.results) {
+    try {
+      const detail = JSON.parse(row.detail) as Record<string, unknown>;
+      if (detail.sessionId === sessionId && typeof detail.requestId === "string") {
+        return detail.requestId;
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function confirmedMonthlyRequestState(input: {
   context: MonthlyContext;
   assignments: SubmittedAssignment[];
   requestId: string;
@@ -1200,6 +1199,21 @@ function confirmedMonthlyRequestState(input: {
 }) {
   const session = input.context.latestConfirmedSession;
   if (!session?.confirmed_period_id) return { exact: false, reused: false, session: null };
+  if (input.context.confirmedAssignments.length === 0) {
+    const storedRequestId = await storedMonthlyConfirmationRequestId(
+      input.context.classroom.id,
+      session.id,
+    );
+    if (storedRequestId === input.requestId) {
+      const exact = input.assignments.length === 0
+        && Number(session.revision) === input.expectedRevision + 1
+        && Number(session.job_setup_revision) === input.expectedJobSetupRevision;
+      return { exact, reused: true, session };
+    }
+    if (input.assignments.length === 0) {
+      return { exact: false, reused: false, session };
+    }
+  }
   const prefix = `${input.requestId}:`;
   const requestRows = input.context.confirmedAssignments.filter(
     (row) => row.request_id?.startsWith(prefix),
@@ -1254,7 +1268,7 @@ export async function completeMonthlyJobChoice(input: {
   }
   const context = await loadContext(input.classId);
   const submittedPayload = parseSubmittedAssignmentPayload(input.assignments);
-  const confirmedRequest = confirmedMonthlyRequestState({
+  const confirmedRequest = await confirmedMonthlyRequestState({
     context,
     assignments: submittedPayload,
     requestId,
@@ -1421,27 +1435,15 @@ export async function completeMonthlyJobChoice(input: {
            SELECT 1 FROM class_job_setup setup
            WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
          )
-         AND (SELECT COUNT(*) FROM students s
-              WHERE s.class_id = ? AND s.status <> 'excluded') = ?
-         AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = ?) = ?
-         AND (SELECT COALESCE(SUM(j.member_capacity), 0) FROM class_jobs j
-              WHERE j.class_id = ? AND j.is_active = 1) = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM students s
-           WHERE s.class_id = ? AND s.status <> 'excluded'
-             AND NOT EXISTS (
-               SELECT 1 FROM student_job_assignments a
-               WHERE a.period_id = ? AND a.student_id = s.id
-             )
-         )
-         AND NOT EXISTS (
+          AND (SELECT COUNT(*) FROM student_job_assignments a WHERE a.period_id = ?) = ?
+          AND NOT EXISTS (
            SELECT 1 FROM student_job_assignments a
            LEFT JOIN students s ON s.id = a.student_id
            LEFT JOIN class_jobs j ON j.id = a.class_job_id
            WHERE a.period_id = ?
              AND (
-               s.class_id <> ? OR s.status = 'excluded'
-               OR j.class_id <> ? OR j.is_active <> 1
+                s.id IS NULL OR s.class_id <> ? OR s.status = 'excluded'
+                OR j.id IS NULL OR j.class_id <> ? OR j.is_active <> 1
              )
          )
          AND NOT EXISTS (
@@ -1450,7 +1452,7 @@ export async function completeMonthlyJobChoice(input: {
              AND (
                SELECT COUNT(*) FROM student_job_assignments a
                WHERE a.period_id = ? AND a.class_job_id = j.id
-             ) <> j.member_capacity
+              ) > j.member_capacity
          )
        THEN 'confirmed' ELSE NULL END,
        confirmed_at = ?, confirmed_by_teacher_id = ?,
@@ -1471,14 +1473,8 @@ export async function completeMonthlyJobChoice(input: {
       current.month,
       input.classId,
       expectedJobSetupRevision,
-      input.classId,
-      assignments.length,
       periodId,
       assignments.length,
-      input.classId,
-      assignments.length,
-      input.classId,
-      periodId,
       periodId,
       input.classId,
       input.classId,
@@ -1538,7 +1534,7 @@ export async function completeMonthlyJobChoice(input: {
     await db.batch(statements);
   } catch (error) {
     const latestContext = await loadContext(input.classId);
-    const latestRequest = confirmedMonthlyRequestState({
+    const latestRequest = await confirmedMonthlyRequestState({
       context: latestContext,
       assignments,
       requestId,

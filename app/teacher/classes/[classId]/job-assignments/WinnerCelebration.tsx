@@ -36,18 +36,25 @@ export function WinnerCelebration({
   winner,
   job,
   candidateNames,
+  soundEnabled,
+  onSoundEnabledChange,
+  canDrawAgain,
+  onDrawAgain,
   onClose,
 }: {
   winner: Winner | null;
   job: string;
   candidateNames: string[];
+  soundEnabled: boolean;
+  onSoundEnabledChange: (enabled: boolean) => void;
+  canDrawAgain: boolean;
+  onDrawAgain: () => void;
   onClose: () => void;
 }) {
   const reduceMotion = typeof window !== "undefined"
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const [revealed, setRevealed] = useState(false);
   const [skipRequested, setSkipRequested] = useState(false);
-  const [sound, setSound] = useState(false);
   const [shuffleIndex, setShuffleIndex] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstControlRef = useRef<HTMLButtonElement>(null);
@@ -118,8 +125,8 @@ export function WinnerCelebration({
   }, [reduceMotion, revealed, skipRequested, winner]);
 
   useEffect(() => {
-    if (revealed && sound) playVictoryTone();
-  }, [revealed, sound]);
+    if (revealed && soundEnabled) playVictoryTone();
+  }, [revealed, soundEnabled]);
 
   return (
     <div
@@ -141,9 +148,9 @@ export function WinnerCelebration({
         />
       ))}
       <div className="winner-tools">
-        <button ref={firstControlRef} onClick={() => setSound((value) => !value)}>
-          {sound ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
-          소리 {sound ? "켜짐" : "꺼짐"}
+        <button ref={firstControlRef} onClick={() => onSoundEnabledChange(!soundEnabled)}>
+          {soundEnabled ? <Volume2 aria-hidden="true" /> : <VolumeX aria-hidden="true" />}
+          소리 {soundEnabled ? "켜짐" : "꺼짐"}
         </button>
         {!revealed && (
           <button
@@ -170,7 +177,16 @@ export function WinnerCelebration({
             <p>{winner.job}</p>
             <strong>{winner.number}번 {winner.name}</strong>
             <h2>{winner.name} 당첨!</h2>
-            <button className="button button-primary button-large" autoFocus onClick={onClose}>확인하고 다음 추첨</button>
+            <div className="button-row">
+              {canDrawAgain && (
+                <button className="button button-primary button-large" autoFocus onClick={onDrawAgain}>
+                  같은 직업에서 다음 친구 뽑기
+                </button>
+              )}
+              <button className={canDrawAgain ? "button button-light" : "button button-primary button-large"} autoFocus={!canDrawAgain} onClick={onClose}>
+                {canDrawAgain ? "추첨 그만하기" : "결과 확인"}
+              </button>
+            </div>
           </>
         )}
       </div>

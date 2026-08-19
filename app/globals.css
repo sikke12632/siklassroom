@@ -451,6 +451,17 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .status-pending, .status-reset_required { color: var(--color-warning); border-color: var(--color-warning); background: var(--color-warning-soft); }
 .status-locked, .status-excluded { color: var(--color-danger); border-color: var(--color-danger); background: var(--color-danger-soft); }
 .student-status-stack { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; }
+.student-permission-row td { padding: 0 12px 14px; background: color-mix(in srgb, var(--color-surface) 94%, var(--color-primary) 6%); }
+.student-permission-panel { border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-surface); padding: 16px; }
+.student-permission-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.student-permission-heading p { margin: 5px 0 0; color: var(--color-text-muted); font-size: .9rem; }
+.student-permission-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 9px; }
+.student-permission-option { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; align-items: center; border: 1px solid var(--color-border); border-radius: 12px; padding: 11px 12px; cursor: pointer; }
+.student-permission-option.automatic { border-color: color-mix(in srgb, var(--color-primary) 45%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface)); }
+.student-permission-option input { width: 18px; height: 18px; grid-row: 1 / span 2; accent-color: var(--color-primary); }
+.student-permission-option span { display: flex; flex-direction: column; min-width: 0; }
+.student-permission-option small { color: var(--color-text-muted); margin-top: 2px; }
+.student-permission-option em { grid-column: 2; color: var(--color-primary); font-size: .78rem; font-style: normal; font-weight: 700; }
 .qr-status-badge { color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 600; }
 .qr-status-badge.active { color: var(--color-success); }
 .qr-status-badge.inactive { color: var(--color-danger); }
