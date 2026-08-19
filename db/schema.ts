@@ -348,6 +348,36 @@ export const classJobs = sqliteTable("class_jobs", {
   index("class_jobs_template_idx").on(table.templateId),
 ]);
 
+export const classJobChangePlans = sqliteTable("class_job_change_plans", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  targetYear: integer("target_year").notNull(),
+  targetMonth: integer("target_month").notNull(),
+  jobsJson: text("jobs_json").notNull(),
+  previousJobsJson: text("previous_jobs_json"),
+  appliedJobsJson: text("applied_jobs_json"),
+  status: text("status").notNull().default("draft"),
+  baseSetupRevision: integer("base_setup_revision").notNull(),
+  revision: integer("revision").notNull().default(1),
+  createdByTeacherId: text("created_by_teacher_id").notNull().references(() => teachers.id),
+  appliedByTeacherId: text("applied_by_teacher_id").references(() => teachers.id),
+  appliedAt: integer("applied_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_change_plans_target_uq").on(
+    table.classId,
+    table.targetYear,
+    table.targetMonth,
+  ),
+  index("class_job_change_plans_class_status_idx").on(table.classId, table.status, table.updatedAt),
+  check("class_job_change_plans_year_ck", sql`${table.targetYear} BETWEEN 2020 AND 2100`),
+  check("class_job_change_plans_month_ck", sql`${table.targetMonth} BETWEEN 1 AND 12`),
+  check("class_job_change_plans_status_ck", sql`${table.status} IN ('draft', 'applied')`),
+  check("class_job_change_plans_base_revision_ck", sql`${table.baseSetupRevision} >= 0`),
+  check("class_job_change_plans_revision_ck", sql`${table.revision} >= 1`),
+]);
+
 export const classJobAssignmentPeriods = sqliteTable("class_job_assignment_periods", {
   id: text("id").primaryKey(),
   classId: text("class_id").notNull().references(() => classes.id),

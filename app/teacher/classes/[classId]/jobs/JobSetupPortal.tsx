@@ -2,11 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BriefcaseBusiness, PencilLine, Sparkles } from "lucide-react";
+import {
+  ArrowLeft,
+  BriefcaseBusiness,
+  CalendarDays,
+  CheckCircle2,
+  PencilLine,
+  Sparkles,
+  UsersRound,
+} from "lucide-react";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { api, postJson } from "@/lib/client-api";
+import { api, ClientApiError, postJson } from "@/lib/client-api";
 import type {
   ClassJobDraft,
   JobCategory,
@@ -47,6 +55,64 @@ type SetupResponse = {
   assignmentCount: number;
 };
 
+type OverviewStudent = {
+  id: string;
+  studentNumber: number;
+  name: string;
+};
+
+type OverviewJob = ClassJobDraft & {
+  isActive: boolean;
+  retired: boolean;
+  assignedStudents: OverviewStudent[];
+  assignedCount: number;
+  vacancies: number;
+  overCapacity: boolean;
+  overCapacityCount: number;
+};
+
+type JobOverview = {
+  period: null | {
+    id: string;
+    year: number;
+    month: number;
+    assignmentType: "initial" | "monthly" | string;
+    confirmedAt: number | null;
+    isScheduled: boolean;
+  };
+  jobs: OverviewJob[];
+  unassignedStudents: OverviewStudent[];
+  studentCount: number;
+  setupRevision: number;
+  configurationJobs: ClassJobDraft[];
+  futureConfirmedPeriod: null | {
+    id: string;
+    year: number;
+    month: number;
+    assignmentType: "initial" | "monthly" | string;
+  };
+  nextTarget: null | { year: number; month: number };
+  nextPlan: null | {
+    revision: number;
+    jobs: ClassJobDraft[];
+    updatedAt: number;
+    targetYear: number;
+    targetMonth: number;
+    status: "draft" | "applied";
+    baseSetupRevision: number;
+    appliedAt: number | null;
+  };
+  nextSession: null | {
+    id: string;
+    status: string;
+    targetYear: number;
+    targetMonth: number;
+  };
+};
+
+type OverviewView = "students" | "jobs";
+type EditTarget = "current" | "next";
+
 const emptySurvey: SurveyAnswers = {
   areas: [],
   economy: "later",
@@ -82,9 +148,42 @@ function classLabel(classRoom: SetupResponse["class"] | null) {
   return classRoom.display_name || `${classRoom.school_name} ${classRoom.grade}학년 ${classRoom.class_number}반`;
 }
 
+function monthLabel(period: { year: number; month: number } | null) {
+  return period ? `${period.year}년 ${period.month}월` : "다음 달";
+}
+
+function savedTimeLabel(epochMs: number) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(epochMs));
+}
+
+function overviewNextTarget(overview: JobOverview) {
+  return overview.nextPlan
+    ? { year: overview.nextPlan.targetYear, month: overview.nextPlan.targetMonth }
+    : overview.nextTarget;
+}
+
+function hasMatchingNextSession(overview: JobOverview) {
+  const target = overviewNextTarget(overview);
+  return Boolean(
+    target
+    && overview.nextSession
+    && overview.nextSession.targetYear === target.year
+    && overview.nextSession.targetMonth === target.month,
+  );
+}
+
 export function JobSetupPortal({ classId }: { classId: string }) {
   const router = useRouter();
   const [data, setData] = useState<SetupResponse | null>(null);
+  const [overview, setOverview] = useState<JobOverview | null>(null);
+  const [overviewView, setOverviewView] = useState<OverviewView>("students");
+  const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [mode, setMode] = useState<SetupMode | null>(null);
   const [step, setStep] = useState(1);
   const [surveyPage, setSurveyPage] = useState(0);
@@ -115,7 +214,16 @@ export function JobSetupPortal({ classId }: { classId: string }) {
     setBusy(true);
     setError("");
     try {
-      hydrate(await api<SetupResponse>(`/api/classes/${classId}/job-setup`));
+      const next = await api<SetupResponse>(`/api/classes/${classId}/job-setup`);
+      hydrate(next);
+      if (next.setup.status === "completed") {
+        setOverview(null);
+        const currentOverview = await api<JobOverview>(`/api/classes/${classId}/jobs/overview`);
+        setOverview(currentOverview);
+      } else {
+        setOverview(null);
+        setEditTarget(null);
+      }
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -172,6 +280,10 @@ export function JobSetupPortal({ classId }: { classId: string }) {
 
   const capacity = useMemo(() => sumCapacity(jobs), [jobs]);
   const capacityGap = data ? data.studentCount - capacity : 0;
+  const nextPlanEditingLocked = Boolean(
+    overview
+    && (overview.nextPlan?.status === "applied" || hasMatchingNextSession(overview)),
+  );
   const filteredTemplates = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return (data?.templates ?? []).filter((template) => {
@@ -330,6 +442,117 @@ export function JobSetupPortal({ classId }: { classId: string }) {
     setMessage("자동 맞춤 전 상태로 되돌렸어요.");
   }
 
+  function beginCompletedEdit(target: EditTarget) {
+    if (!data || !overview) return;
+    const sourceJobs = target === "next" && overview.nextPlan
+      ? overview.nextPlan.jobs
+      : overview.configurationJobs;
+    setJobs(cloneJobs(sourceJobs));
+    setMode(data.setup.setupMode ?? "manual");
+    setEditTarget(target);
+    setUndoJobs(null);
+    setPreview(null);
+    setCustomOpen(false);
+    setError("");
+    setMessage("");
+  }
+
+  function cancelCompletedEdit() {
+    setEditTarget(null);
+    setUndoJobs(null);
+    setPreview(null);
+    setCustomOpen(false);
+    setError("");
+    setMessage("");
+  }
+
+  function needsAssignmentImpactConfirmation(reason: unknown) {
+    return reason instanceof ClientApiError
+      && reason.status === 409
+      && reason.code === "JOB_CONFIG_IMPACT_CONFIRMATION_REQUIRED";
+  }
+
+  async function applyCurrentConfiguration() {
+    if (!overview || !jobs.length) return;
+    const requestId = crypto.randomUUID();
+    const submit = (acknowledgeImpact: boolean) => postJson(
+      `/api/classes/${classId}/jobs/apply-current`,
+      {
+        expectedSetupRevision: overview.setupRevision,
+        requestId,
+        jobs,
+        acknowledgeImpact,
+      },
+    );
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      try {
+        await submit(false);
+      } catch (reason) {
+        if (!needsAssignmentImpactConfirmation(reason)) throw reason;
+        const confirmed = window.confirm(
+          `${(reason as Error).message}\n\n현재 배정과 권한은 유지됩니다. 구성에서 뺀 직업은 이번 배정이 끝날 때까지 ‘현재 배정 유지’로 표시되고, 줄인 정원보다 현재 인원이 많을 수도 있습니다. 이대로 지금 반영할까요?`,
+        );
+        if (!confirmed) {
+          setMessage("현재 구성은 바꾸지 않았어요. 수정 내용은 화면에 그대로 남아 있습니다.");
+          return;
+        }
+        await submit(true);
+      }
+      setEditTarget(null);
+      await load();
+      setMessage("수정한 직업 구성을 지금 운영에 반영했어요.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "현재 구성을 반영하지 못했어요. 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveNextConfiguration() {
+    if (!overview || !jobs.length) return;
+    const target = overviewNextTarget(overview);
+    if (!target) {
+      setError("다음 달을 정할 수 없어요. 첫 직업 배정을 확정한 뒤 다시 준비해 주세요.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/api/classes/${classId}/jobs/plan`, {
+        method: "PUT",
+        body: JSON.stringify({
+          expectedRevision: overview.nextPlan?.revision ?? 0,
+          expectedSetupRevision: overview.setupRevision,
+          expectedTargetYear: target.year,
+          expectedTargetMonth: target.month,
+          requestId: crypto.randomUUID(),
+          jobs,
+        }),
+      });
+      setEditTarget(null);
+      await load();
+      setMessage("다음 달 직업 구성을 저장했어요. 현재 직업과 배정은 바뀌지 않았습니다.");
+    } catch (reason) {
+      const stalePlan = reason instanceof ClientApiError
+        && (reason.code === "JOB_PLAN_BASE_STALE" || reason.code === "JOB_PLAN_STALE");
+      const workflowStarted = reason instanceof ClientApiError
+        && reason.code === "JOB_PLAN_WORKFLOW_STARTED";
+      setError(workflowStarted
+        ? `${reason.message} 이미 시작한 다음 달 직업 선정 화면에서 이어서 진행해 주세요.`
+        : stalePlan
+          ? `${reason.message} 현황으로 돌아간 뒤 브라우저의 새로고침을 눌러 최신 내용을 확인하고 다시 수정해 주세요.`
+        : reason instanceof Error
+          ? reason.message
+          : "다음 달 구성을 저장하지 못했어요. 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function complete() {
     if (!data || !mode) return;
     if (data.assignmentStatus === "confirmed") {
@@ -374,19 +597,40 @@ export function JobSetupPortal({ classId }: { classId: string }) {
     );
   }
 
+  if (data.setup.status === "completed" && !overview) {
+    return (
+      <main className="job-page job-loading" aria-busy={busy || undefined}>
+        <Logo />
+        <Notice message={error} tone="error" />
+        {error ? (
+          <div className="button-row">
+            <button className="button button-primary" type="button" disabled={busy} onClick={load}>다시 시도</button>
+            <a className="button button-light" href="/teacher">교사 대시보드로</a>
+          </div>
+        ) : <p role="status">현재 직업 현황을 불러오고 있어요…</p>}
+      </main>
+    );
+  }
+
   return (
     <div className="job-page">
       <header className="job-topbar">
         <Logo compact />
         <div>
           <strong>{classLabel(data.class)}</strong>
-          <span>우리 반 직업 설정</span>
+          <span>{data.setup.status === "completed"
+            ? editTarget === "current"
+              ? "현재 직업 구성 수정"
+              : editTarget === "next"
+                ? "다음 달 직업 구성"
+                : "우리 반 직업 현황"
+            : "우리 반 직업 설정"}</span>
         </div>
         <div className="job-topbar-actions"><ThemeToggle compact /><a className="button button-light" href="/teacher">나가기</a></div>
       </header>
 
       <main className="job-main">
-        <section className="job-progress" aria-label="직업 설정 진행 단계">
+        {data.setup.status !== "completed" && <section className="job-progress" aria-label="직업 설정 진행 단계">
           {["방식 선택", "우리 반 질문", "직업 설정·저장"].map((label, index) => {
             const number = index + 1;
             return (
@@ -395,18 +639,29 @@ export function JobSetupPortal({ classId }: { classId: string }) {
               </div>
             );
           })}
-        </section>
+        </section>}
 
         <Notice message={error} tone="error" />
         <Notice message={message} tone="success" />
-        {data.studentCountChanged && (
+        {data.studentCountChanged && (data.setup.status !== "completed" || Boolean(editTarget)) && (
           <div className="job-warning" role="status">
             <b>학생 명단이 달라졌어요.</b>
             <span>저장 당시 {data.setup.studentCountSnapshot}명, 현재 {data.studentCount}명이에요. 공석이나 역할 없는 학생을 두어도 되므로 원하는 자리 수 그대로 저장할 수 있어요.</span>
           </div>
         )}
 
-        {step === 1 && (
+        {data.setup.status === "completed" && !editTarget && overview && (
+          <CompletedJobOverview
+            classId={classId}
+            overview={overview}
+            view={overviewView}
+            onViewChange={setOverviewView}
+            onEditCurrent={() => beginCompletedEdit("current")}
+            onEditNext={() => beginCompletedEdit("next")}
+          />
+        )}
+
+        {data.setup.status !== "completed" && step === 1 && (
           <section className="job-stage job-intro">
             <p className="eyebrow">1단계 · 시작하기</p>
             <h1>우리 반에 꼭 맞는 일을 준비해 볼까요?</h1>
@@ -430,12 +685,12 @@ export function JobSetupPortal({ classId }: { classId: string }) {
                 setSurvey(data.setup.surveyAnswers);
                 setJobs(data.setup.draftJobs);
                 setStep(Math.min(3, data.setup.lastStep));
-              }}>저장한 {data.setup.status === "completed" ? "설정" : "초안"} 이어서 보기</button>
+              }}>저장한 초안 이어서 보기</button>
             )}
           </section>
         )}
 
-        {step === 2 && (
+        {data.setup.status !== "completed" && step === 2 && (
           <section className="job-stage survey-stage">
             <div className="stage-heading">
               <div><p className="eyebrow">2단계 · 질문 {surveyPage + 1}/3</p><h1>우리 반 운영 방식을 알려 주세요</h1></div>
@@ -532,13 +787,54 @@ export function JobSetupPortal({ classId }: { classId: string }) {
           </section>
         )}
 
-        {step === 3 && (
+        {(editTarget || (data.setup.status !== "completed" && step === 3)) && (
           <section className="job-editor-layout">
             <div className="job-editor-main">
               <div className="stage-heading">
-                <div><p className="eyebrow">3단계 · 직업 다듬기</p><h1>{mode === "recommended" ? "추천 결과를 우리 반답게 다듬어요" : "우리 반 직업을 직접 만들어요"}</h1></div>
-                <button className="button button-light" disabled={busy || !mode} onClick={() => saveDraft(3)}>{busy ? "저장 중…" : "초안 저장"}</button>
+                <div>
+                  <p className="eyebrow">{editTarget ? "직업 구성 수정" : "3단계 · 직업 다듬기"}</p>
+                  <h1>{editTarget
+                    ? "직업 구성을 우리 반 상황에 맞게 바꿔요"
+                    : mode === "recommended"
+                      ? "추천 결과를 우리 반답게 다듬어요"
+                      : "우리 반 직업을 직접 만들어요"}</h1>
+                </div>
+                {editTarget ? (
+                  <button className="button button-light" disabled={busy} onClick={cancelCompletedEdit}>
+                    <ArrowLeft aria-hidden="true" />현황으로 돌아가기
+                  </button>
+                ) : (
+                  <button className="button button-light" disabled={busy || !mode} onClick={() => saveDraft(3)}>{busy ? "저장 중…" : "초안 저장"}</button>
+                )}
               </div>
+              {editTarget && (
+                <fieldset className="job-apply-timing">
+                  <legend>수정한 내용을 언제부터 사용할까요?</legend>
+                  <label className={editTarget === "current" ? "selected" : ""}>
+                    <input
+                      type="radio"
+                      name="job-apply-timing"
+                      value="current"
+                      checked={editTarget === "current"}
+                      onChange={() => setEditTarget("current")}
+                    />
+                    <span><b>지금 바로 반영</b><small>현재 직업과 학생 화면에 바로 적용해요. 배정에 영향이 있으면 저장 전에 한 번 더 확인합니다.</small></span>
+                  </label>
+                  <label className={`${editTarget === "next" ? "selected" : ""} ${nextPlanEditingLocked ? "disabled" : ""}`.trim()}>
+                    <input
+                      type="radio"
+                      name="job-apply-timing"
+                      value="next"
+                      checked={editTarget === "next"}
+                      disabled={nextPlanEditingLocked}
+                      onChange={() => setEditTarget("next")}
+                    />
+                    <span><b>다음 달부터 반영</b><small>{nextPlanEditingLocked
+                      ? "이미 다음 달 직업 선정을 시작한 구성이라 이곳에서는 다시 수정할 수 없어요."
+                      : "현재 직업과 배정은 그대로 두고, 다음 달 준비 내용으로 안전하게 저장해요."}</small></span>
+                  </label>
+                </fieldset>
+              )}
               {reasons.length > 0 && <div className="recommend-reasons">{reasons.map((reason) => <p key={reason}>✓ {reason}</p>)}</div>}
               {jobs.length === 0 ? (
                 <div className="empty-jobs"><span className="mode-icon" aria-hidden="true"><BriefcaseBusiness /></span><h2>아직 담은 직업이 없어요</h2><p>오른쪽 목록에서 기본 직업을 담거나 새 직업을 만들어 주세요.</p></div>
@@ -589,7 +885,9 @@ export function JobSetupPortal({ classId }: { classId: string }) {
               </select>
               <div className="template-picker">
                 {filteredTemplates.map((template) => {
-                  const added = jobs.some((job) => job.id === `${classId}:${template.id}`);
+                  const added = jobs.some((job) => (
+                    job.id === `${classId}:${template.id}` || job.templateId === template.id
+                  ));
                   return (
                     <button key={template.id} disabled={added} onClick={() => addTemplate(template)}>
                       <span><b>{template.name}</b><small>{data.categories[template.category]} · 권장 {template.recommendedMinMembers}~{template.recommendedMaxMembers}명</small></span>
@@ -635,15 +933,273 @@ export function JobSetupPortal({ classId }: { classId: string }) {
             )}
 
             <div className="editor-footer">
-              <button className="button button-light" onClick={() => mode === "recommended" ? setStep(2) : setStep(1)}>이전</button>
+              <button className="button button-light" onClick={() => editTarget ? cancelCompletedEdit() : mode === "recommended" ? setStep(2) : setStep(1)}>
+                {editTarget ? "수정 취소" : "이전"}
+              </button>
               <span>{jobs.length}개 직업 · {capacity}자리 · 공석과 미배정 허용</span>
-              <button className="button button-primary" disabled={busy || !jobs.length} onClick={complete}>
-                {busy ? "저장 중…" : "저장하고 직업 배정으로"}
+              <button
+                className="button button-primary"
+                disabled={busy || !jobs.length}
+                onClick={editTarget === "current"
+                  ? applyCurrentConfiguration
+                  : editTarget === "next"
+                    ? saveNextConfiguration
+                    : complete}
+              >
+                {busy
+                  ? "저장 중…"
+                  : editTarget === "current"
+                    ? "지금 바로 반영"
+                    : editTarget === "next"
+                      ? "다음 달부터 반영"
+                      : "저장하고 직업 배정으로"}
               </button>
             </div>
           </section>
         )}
       </main>
     </div>
+  );
+}
+
+function CompletedJobOverview({
+  classId,
+  overview,
+  view,
+  onViewChange,
+  onEditCurrent,
+  onEditNext,
+}: {
+  classId: string;
+  overview: JobOverview;
+  view: OverviewView;
+  onViewChange: (view: OverviewView) => void;
+  onEditCurrent: () => void;
+  onEditNext: () => void;
+}) {
+  const sortedJobs = [...overview.jobs].sort((left, right) => left.sortOrder - right.sortOrder);
+  const assignedStudents = sortedJobs.flatMap((job) => job.assignedStudents.map((student) => ({
+    ...student,
+    jobId: job.id,
+    jobName: job.name,
+    retiredJob: job.retired,
+  }))).sort((left, right) => left.studentNumber - right.studentNumber);
+  const nextMonth = overviewNextTarget(overview);
+  const nextWorkflowStarted = hasMatchingNextSession(overview);
+  const scheduledOnly = Boolean(overview.period?.isScheduled);
+  const futurePeriodPending = Boolean(overview.futureConfirmedPeriod);
+  const nextPlanNeedsReview = Boolean(
+    overview.nextPlan?.status === "draft"
+    && overview.nextPlan.baseSetupRevision !== overview.setupRevision,
+  );
+  const currentEditLocked = overview.nextPlan?.status === "applied"
+    || nextWorkflowStarted
+    || futurePeriodPending;
+  const futurePeriodHref = overview.futureConfirmedPeriod?.assignmentType === "monthly"
+    ? `/teacher/classes/${classId}/monthly-jobs`
+    : `/teacher/classes/${classId}/job-assignments`;
+  const totalVacancies = sortedJobs.reduce(
+    (sum, job) => sum + (job.isActive && !job.retired ? Math.max(0, Number(job.vacancies)) : 0),
+    0,
+  );
+  const totalOverCapacity = sortedJobs.reduce(
+    (sum, job) => sum + (job.overCapacity ? Math.max(0, Number(job.overCapacityCount)) : 0),
+    0,
+  );
+  const currentJobCount = sortedJobs.filter((job) => !job.retired).length;
+  const retiredJobCount = sortedJobs.filter((job) => job.retired).length;
+  const nextCapacity = overview.nextPlan?.jobs.reduce((sum, job) => sum + job.memberCapacity, 0) ?? 0;
+
+  return (
+    <section className="job-overview" aria-labelledby="job-overview-title">
+      <div className="job-overview-hero">
+        <div>
+          <p className="eyebrow">현재 우리 반</p>
+          <h1 id="job-overview-title">우리 반 직업 현황</h1>
+          <p>{overview.period
+            ? overview.period.isScheduled
+              ? `${overview.period.year}년 ${overview.period.month}월부터 시작할 확정 배정표예요. 학생 화면에는 시작 월이 되면 표시됩니다.`
+              : `${overview.period.year}년 ${overview.period.month}월에 확정한 배정을 보여 드려요.`
+            : "직업 구성은 저장되어 있어요. 학생 배정을 마치면 이곳에서 전체 현황을 바로 볼 수 있습니다."}</p>
+        </div>
+        <div className="job-overview-actions">
+          <button
+            className="button button-light"
+            type="button"
+            disabled={currentEditLocked}
+            aria-describedby={currentEditLocked ? "current-job-edit-lock" : undefined}
+            onClick={onEditCurrent}
+          >
+            <PencilLine aria-hidden="true" />현재 구성 수정
+          </button>
+          {scheduledOnly ? (
+            <a className="button button-primary" href={futurePeriodHref}>
+              <CalendarDays aria-hidden="true" />배정 예정표 보기
+            </a>
+          ) : overview.period ? (
+            nextWorkflowStarted || overview.nextPlan?.status === "applied" ? (
+              <a className="button button-primary" href={`/teacher/classes/${classId}/monthly-jobs`}>
+                <CalendarDays aria-hidden="true" />다음 달 선정 이어가기
+              </a>
+            ) : futurePeriodPending ? (
+              <a className="button button-primary" href={futurePeriodHref}>
+                <CalendarDays aria-hidden="true" />예정 배정 보기
+              </a>
+            ) : (
+              <button className="button button-primary" type="button" onClick={onEditNext}>
+                <CalendarDays aria-hidden="true" />{nextPlanNeedsReview
+                  ? "다음 달 구성 다시 검토"
+                  : overview.nextPlan ? "다음 달 구성 이어 수정" : "다음 달 구성 준비"}
+              </button>
+            )
+          ) : (
+            <a className="button button-primary" href={`/teacher/classes/${classId}/job-assignments`}>
+              <UsersRound aria-hidden="true" />첫 직업 배정하기
+            </a>
+          )}
+          {currentEditLocked && (
+            <small className="job-current-edit-lock" id="current-job-edit-lock" role="status">
+              {futurePeriodPending
+                ? "앞으로 시작할 배정이 이미 확정되어 있어요. 예정 월이 시작된 뒤 다음 달 구성으로 수정할 수 있습니다."
+                : "다음 달 선정이 진행 중이라 현재 구성 수정은 다음 운영 월부터 가능합니다."}
+            </small>
+          )}
+        </div>
+      </div>
+
+      <div className="job-overview-summary" aria-label="현재 직업 배정 요약">
+        <div><CalendarDays aria-hidden="true" /><span>{scheduledOnly ? "예정 월" : "적용 월"}<strong>{overview.period ? `${overview.period.year}년 ${overview.period.month}월` : "첫 배정 전"}</strong></span></div>
+        <div><UsersRound aria-hidden="true" /><span>배정 학생<strong>{assignedStudents.length}/{overview.studentCount}명</strong></span></div>
+        <div><BriefcaseBusiness aria-hidden="true" /><span>운영 직업<strong>{currentJobCount}개</strong></span></div>
+        <div className={overview.unassignedStudents.length ? "needs-attention" : "complete"}>
+          <CheckCircle2 aria-hidden="true" /><span>직업이 없는 학생<strong>{overview.unassignedStudents.length}명</strong></span>
+        </div>
+      </div>
+
+      <div className="job-overview-notices">
+        {totalVacancies > 0 && <p><b>공석 {totalVacancies}자리</b><span>빈자리는 그대로 두어도 괜찮아요.</span></p>}
+        {totalOverCapacity > 0 && <p className="warning"><b>정원보다 {totalOverCapacity}명 많음</b><span>현재 배정은 유지되며, 다음 수정 때 정원을 확인해 주세요.</span></p>}
+        {retiredJobCount > 0 && <p className="retired"><b>이전 구성의 직업 {retiredJobCount}개</b><span>퇴역했지만 현재 배정은 유지 중입니다.</span></p>}
+      </div>
+
+      {overview.period && !scheduledOnly && !futurePeriodPending && <section className="job-next-plan-card" aria-labelledby="job-next-plan-title">
+        <div>
+          <p className="eyebrow">생각날 때마다 준비</p>
+          <h2 id="job-next-plan-title">{monthLabel(nextMonth)} 직업 구성</h2>
+          {nextWorkflowStarted ? (
+            <p><b>다음 달 직업 선정을 시작했어요.</b><span>선정 화면에서 학생 배정을 이어서 진행해 주세요.</span></p>
+          ) : nextPlanNeedsReview ? (
+            <p className="warning">
+              <b>현재 구성이 바뀌어 다시 확인이 필요해요.</b>
+              <span>저장해 둔 다음 달 구성을 열어 한 번 확인하고 다시 저장해 주세요.</span>
+            </p>
+          ) : overview.nextPlan ? (
+            <p>
+              <b>{overview.nextPlan.jobs.length}개 직업 · {nextCapacity}자리</b>
+              <span>{overview.nextPlan.status === "applied"
+                ? "다음 달 직업 선정에 반영했어요. 선정 화면에서 학생 배정을 이어가 주세요."
+                : `${savedTimeLabel(overview.nextPlan.updatedAt)} 저장 · 현재 배정에는 아직 반영되지 않았어요.`}</span>
+            </p>
+          ) : (
+            <p><b>아직 저장한 다음 달 구성이 없어요.</b><span>직업을 늘리거나 줄일 생각이 날 때마다 열어 수정할 수 있어요.</span></p>
+          )}
+        </div>
+        {nextWorkflowStarted || overview.nextPlan?.status === "applied" ? (
+          <a className="button button-light" href={`/teacher/classes/${classId}/monthly-jobs`}>다음 달 선정 화면으로</a>
+        ) : (
+          <button className="button button-light" type="button" onClick={onEditNext}>
+            {nextPlanNeedsReview
+              ? "구성 다시 검토"
+              : overview.nextPlan ? "저장한 구성 이어 수정" : "다음 달 구성 만들기"}
+          </button>
+        )}
+      </section>}
+
+      <div className="job-overview-heading">
+        <div>
+          <p className="eyebrow">{scheduledOnly ? "시작을 기다리는 배정표" : "확정된 배정표"}</p>
+          <h2>{scheduledOnly ? "친구들의 예정 직업" : "친구들의 현재 직업"}</h2>
+        </div>
+        <div className="job-overview-view-toggle" role="group" aria-label="직업 현황 보기 방식">
+          <button type="button" aria-pressed={view === "students"} onClick={() => onViewChange("students")}>학생별 보기</button>
+          <button type="button" aria-pressed={view === "jobs"} onClick={() => onViewChange("jobs")}>직업별 보기</button>
+        </div>
+      </div>
+
+      <div className="job-overview-results" role="region" aria-live="polite" aria-label={view === "students" ? "학생별 직업 현황" : "직업별 학생 현황"}>
+        {view === "students" ? (
+          <div className="job-overview-students">
+            {assignedStudents.map((student) => (
+              <article key={`${student.jobId}:${student.id}`}>
+                <span className="job-overview-student-number">{student.studentNumber}</span>
+                <div><b>{student.name}</b><small>{student.jobName}</small></div>
+                {student.retiredJob && <em>현재 배정 유지</em>}
+              </article>
+            ))}
+            {overview.unassignedStudents
+              .slice()
+              .sort((left, right) => left.studentNumber - right.studentNumber)
+              .map((student) => (
+                <article className="unassigned" key={student.id}>
+                  <span className="job-overview-student-number">{student.studentNumber}</span>
+                  <div><b>{student.name}</b><small>직업이 없는 학생</small></div>
+                  <em>미배정</em>
+                </article>
+              ))}
+            {!assignedStudents.length && !overview.unassignedStudents.length && (
+              <div className="job-overview-empty"><UsersRound aria-hidden="true" /><b>표시할 학생이 없어요.</b><span>학생 명단을 확인해 주세요.</span></div>
+            )}
+          </div>
+        ) : (
+          <div className="job-overview-jobs">
+            {sortedJobs.map((job) => (
+              <article className={job.retired ? "retired" : job.overCapacity ? "over-capacity" : ""} key={job.id}>
+                <header>
+                  <span><BriefcaseBusiness aria-hidden="true" /></span>
+                  <div><h3>{job.name}</h3><p>{job.description}</p></div>
+                  <strong>{job.assignedCount}/{job.memberCapacity}명</strong>
+                </header>
+                <div className="job-overview-job-status">
+                  {job.retired && <em>퇴역 · 현재 배정은 유지 중</em>}
+                  {job.overCapacity && <em className="warning">정원보다 {job.overCapacityCount}명 많음</em>}
+                  {!job.retired && !job.overCapacity && job.vacancies > 0 && <em>공석 {job.vacancies}자리</em>}
+                  {!job.retired && !job.overCapacity && job.vacancies === 0 && <em className="complete">정원 확인 완료</em>}
+                </div>
+                {job.assignedStudents.length ? (
+                  <ul>{job.assignedStudents
+                    .slice()
+                    .sort((left, right) => left.studentNumber - right.studentNumber)
+                    .map((student) => <li key={student.id}><b>{student.studentNumber}번</b> {student.name}</li>)}</ul>
+                ) : <p className="job-overview-job-empty">배정된 학생이 없어요. 공석으로 두어도 괜찮습니다.</p>}
+              </article>
+            ))}
+            {!sortedJobs.length && (
+              <div className="job-overview-empty"><BriefcaseBusiness aria-hidden="true" /><b>표시할 직업이 없어요.</b><span>현재 구성을 수정해 직업을 추가해 주세요.</span></div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="job-overview-footer">
+        <span>{scheduledOnly
+          ? "예정 월이 되면 학생 화면에도 자신의 직업이 자동으로 표시됩니다."
+          : overview.period
+          ? "현재 결과를 확인한 뒤, 다음 달 직업 평가와 선정을 이어갈 수 있어요."
+          : "첫 직업을 배정하면 학생 화면에도 자신의 직업이 표시됩니다."}</span>
+        <a className="button button-primary" href={scheduledOnly
+          ? futurePeriodHref
+          : overview.period
+          ? futurePeriodPending
+            ? futurePeriodHref
+            : `/teacher/classes/${classId}/monthly-jobs`
+          : `/teacher/classes/${classId}/job-assignments`}>
+          {scheduledOnly
+            ? "배정 예정표 보기"
+            : overview.period
+            ? futurePeriodPending ? "예정 배정 보기" : "다음 달 직업 선정으로"
+            : "첫 직업 배정하기"}
+        </a>
+      </div>
+    </section>
   );
 }

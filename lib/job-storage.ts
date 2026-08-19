@@ -256,7 +256,20 @@ export async function saveJobDraft(input: {
   lastStep: unknown;
   studentCount: number;
 }) {
-  await ensureSetupRow(input.classId);
+  const currentSetup = await ensureSetupRow(input.classId);
+  const confirmedAssignment = await database().prepare(
+    `SELECT 1 AS confirmed
+     FROM class_job_assignment_periods
+     WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+     LIMIT 1`,
+  ).bind(input.classId).first<{ confirmed: number }>();
+  if (currentSetup.status === "completed" || confirmedAssignment?.confirmed) {
+    throw new ApiError(
+      409,
+      "이미 운영 중인 직업 구성은 현황 화면의 구성 수정에서 변경해 주세요.",
+      "JOB_SETUP_COMPLETED",
+    );
+  }
   const revision = requireExpectedRevision(input.expectedRevision);
   const jobs = validateJobDrafts(input.jobs, { allowEmpty: true });
   await assertClassJobDraftIds(input.classId, jobs);
@@ -275,15 +288,21 @@ export async function saveJobDraft(input: {
       db.prepare(
         `INSERT INTO registration_operation_guards (id, operation, created_at)
          SELECT CASE WHEN EXISTS (
-           SELECT 1 FROM class_job_setup WHERE class_id = ? AND revision = ?
+           SELECT 1 FROM class_job_setup
+           WHERE class_id = ? AND revision = ? AND status IN ('not_started', 'draft')
+             AND NOT EXISTS (
+               SELECT 1 FROM class_job_assignment_periods
+               WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+             )
          ) THEN ? ELSE NULL END, 'job_setup_draft_save', ?`,
-      ).bind(input.classId, revision, guardId, now),
+      ).bind(input.classId, revision, input.classId, guardId, now),
       db.prepare(
         `UPDATE class_job_setup SET
            status = 'draft', setup_mode = ?, survey_answers = ?, draft_jobs = ?,
            student_count_snapshot = ?, selected_job_count = ?, selected_capacity = ?,
            last_step = ?, revision = ?, completed_at = NULL, updated_at = ?
-         WHERE class_id = ? AND revision = ?`,
+         WHERE class_id = ? AND revision = ? AND status IN ('not_started', 'draft')
+           AND EXISTS (SELECT 1 FROM registration_operation_guards WHERE id = ?)`,
       ).bind(
         input.setupMode,
         JSON.stringify(surveyAnswers),
@@ -296,6 +315,7 @@ export async function saveJobDraft(input: {
         now,
         input.classId,
         revision,
+        guardId,
       ),
       db.prepare(
         `INSERT INTO audit_logs (
@@ -312,6 +332,20 @@ export async function saveJobDraft(input: {
     ]);
   } catch (error) {
     if (isOperationGuardFailure(error)) {
+      const latestSetup = await setupRow(input.classId);
+      const latestConfirmedAssignment = await database().prepare(
+        `SELECT 1 AS confirmed
+         FROM class_job_assignment_periods
+         WHERE class_id = ? AND assignment_type = 'initial' AND status = 'confirmed'
+         LIMIT 1`,
+      ).bind(input.classId).first<{ confirmed: number }>();
+      if (latestSetup?.status === "completed" || latestConfirmedAssignment?.confirmed) {
+        throw new ApiError(
+          409,
+          "이미 운영 중인 직업 구성은 현황 화면의 구성 수정에서 변경해 주세요.",
+          "JOB_SETUP_COMPLETED",
+        );
+      }
       throw new ApiError(
         409,
         "다른 화면에서 먼저 저장했어요. 현재 입력은 유지되니 새로 불러온 뒤 다시 저장해 주세요.",

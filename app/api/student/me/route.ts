@@ -35,7 +35,7 @@ export async function GET(request: Request) {
        JOIN student_job_assignments a
          ON a.period_id = p.id AND a.class_id = p.class_id AND a.student_id = ?
        JOIN class_jobs j
-         ON j.id = a.class_job_id AND j.class_id = p.class_id AND j.is_active = 1`,
+         ON j.id = a.class_job_id AND j.class_id = p.class_id`,
     ).bind(
       studentId,
       current.year,

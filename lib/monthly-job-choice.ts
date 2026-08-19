@@ -16,6 +16,7 @@ import {
 import { ApiError } from "./responses";
 import { seoulServerTime } from "./seoul-time";
 import { autoPayFinancePayrollForClosure } from "./finance-payroll";
+import { applyDraftJobPlanForTarget } from "./job-configurations";
 
 async function automaticPayrollAfterClosure(classId: string, closureId: string) {
   try {
@@ -868,7 +869,7 @@ export async function startMonthlyJobChoice(input: {
   classId: string;
   teacherId: string;
 }) {
-  const context = await loadContext(input.classId);
+  let context = await loadContext(input.classId);
   if (!context.sourcePeriod || !context.closure) {
     throw new ApiError(409, "지난달 결과를 먼저 마감해 주세요.", "MONTHLY_CLOSURE_REQUIRED");
   }
@@ -899,6 +900,39 @@ export async function startMonthlyJobChoice(input: {
       "MONTHLY_CHOICE_TARGET_CONFLICT",
     );
   }
+  await applyDraftJobPlanForTarget({
+    classId: input.classId,
+    teacherId: input.teacherId,
+    targetYear: target.year,
+    targetMonth: target.month,
+    expectedSourcePeriodId: context.sourcePeriod.id,
+    expectedClosureId: context.closure.id,
+  });
+  context = await loadContext(input.classId);
+  if (context.session) {
+    return {
+      idempotent: true,
+      sessionId: context.session.id,
+      board: serializeBoard(context),
+    };
+  }
+  const refreshedBlocked = blockingReason(context);
+  if (refreshedBlocked) {
+    throw new ApiError(409, refreshedBlocked.message, refreshedBlocked.code);
+  }
+  if (!context.setup || context.setup.status !== "completed") {
+    throw new ApiError(409, "현재 직업 설정을 먼저 확정해 주세요.", "JOB_SETUP_REQUIRED");
+  }
+  if (!context.sourcePeriod || !context.closure) {
+    throw new ApiError(409, "지난달 결과가 변경됐어요. 최신 화면을 확인해 주세요.", "MONTHLY_CHOICE_STALE");
+  }
+  const refreshedTarget = nextJobMonth(
+    Number(context.sourcePeriod.assignment_year),
+    Number(context.sourcePeriod.assignment_month),
+  );
+  if (refreshedTarget.year !== target.year || refreshedTarget.month !== target.month) {
+    throw new ApiError(409, "다음 직업 운영 월이 변경됐어요. 최신 화면을 확인해 주세요.", "MONTHLY_CHOICE_STALE");
+  }
   const order = shuffleChoiceOrderWithinGrades(sessionOrder(context), secureRandomIndex);
   const sessionId = crypto.randomUUID();
   const now = Date.now();
@@ -920,7 +954,18 @@ export async function startMonthlyJobChoice(input: {
            SELECT 1 FROM class_job_setup setup
            WHERE setup.class_id = ? AND setup.status = 'completed' AND setup.revision = ?
          )
-         AND (SELECT COUNT(*) FROM students s
+          AND NOT EXISTS (
+            SELECT 1 FROM class_job_change_plans plan
+           WHERE plan.class_id = ? AND plan.target_year = ? AND plan.target_month = ?
+              AND plan.status = 'draft'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM class_job_assignment_periods period
+            WHERE period.class_id = ? AND period.assignment_year = ?
+              AND period.assignment_month = ? AND period.status = 'confirmed'
+              AND period.assignment_type IN ('initial', 'monthly')
+          )
+          AND (SELECT COUNT(*) FROM students s
               WHERE s.class_id = ? AND s.status <> 'excluded') = ?`,
     ).bind(
       sessionId,
@@ -938,6 +983,12 @@ export async function startMonthlyJobChoice(input: {
       context.sourcePeriod.id,
       input.classId,
       Number(context.setup.revision),
+      input.classId,
+      target.year,
+      target.month,
+      input.classId,
+      target.year,
+      target.month,
       input.classId,
       order.length,
     ),

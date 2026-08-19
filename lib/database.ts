@@ -21,7 +21,7 @@ let schemaProvidedByMigrations = false;
 // Bump this filename whenever a migration adds or changes runtime schema.
 // A database with this migration already applied does not need hundreds of
 // defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
-const LATEST_RUNTIME_SCHEMA_MIGRATION = "0043_stock_additional_issuance.sql";
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0044_job_configuration_plans.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -170,6 +170,35 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS class_jobs_class_idx ON class_jobs(class_id)`,
   `CREATE INDEX IF NOT EXISTS class_jobs_template_idx ON class_jobs(template_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_change_plans (
+    id TEXT PRIMARY KEY NOT NULL,
+    class_id TEXT NOT NULL,
+    target_year INTEGER NOT NULL,
+    target_month INTEGER NOT NULL,
+    jobs_json TEXT NOT NULL,
+    previous_jobs_json TEXT,
+    applied_jobs_json TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    base_setup_revision INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by_teacher_id TEXT NOT NULL,
+    applied_by_teacher_id TEXT,
+    applied_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (created_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (applied_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT class_job_change_plans_year_ck CHECK (target_year BETWEEN 2020 AND 2100),
+    CONSTRAINT class_job_change_plans_month_ck CHECK (target_month BETWEEN 1 AND 12),
+    CONSTRAINT class_job_change_plans_status_ck CHECK (status IN ('draft', 'applied')),
+    CONSTRAINT class_job_change_plans_base_revision_ck CHECK (base_setup_revision >= 0),
+    CONSTRAINT class_job_change_plans_revision_ck CHECK (revision >= 1)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_change_plans_target_uq
+    ON class_job_change_plans(class_id, target_year, target_month)`,
+  `CREATE INDEX IF NOT EXISTS class_job_change_plans_class_status_idx
+    ON class_job_change_plans(class_id, status, updated_at)`,
   `CREATE TABLE IF NOT EXISTS class_calendars (
     class_id TEXT PRIMARY KEY, school_year INTEGER NOT NULL,
     time_zone TEXT NOT NULL DEFAULT 'Asia/Seoul',
@@ -472,6 +501,7 @@ export async function ensureSchema(): Promise<void> {
         schemaStatements
           .filter((sql) => (
           sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
+          || sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_change_plans")
           || sql.startsWith("CREATE TABLE IF NOT EXISTS students")
           || sql.startsWith("CREATE TABLE IF NOT EXISTS schools")
           || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
@@ -503,6 +533,8 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "student_job_assignments", "assignment_sequence", "INTEGER NOT NULL DEFAULT 0");
       await ensureColumn(db, "class_job_month_closures", "evaluation_session_id", "TEXT");
       await ensureColumn(db, "class_job_month_closures", "evaluation_revision", "INTEGER");
+      await ensureColumn(db, "class_job_change_plans", "previous_jobs_json", "TEXT");
+      await ensureColumn(db, "class_job_change_plans", "applied_jobs_json", "TEXT");
       const statements = schemaStatements.map((sql) => db.prepare(sql));
       await db.batch(statements);
       await bootstrapExistingTeachers(db);
@@ -525,7 +557,7 @@ export function isOperationGuardFailure(error: unknown) {
 async function ensureColumn(
   db: D1Database,
   table: "teachers" | "classes" | "students" | "schools" | "class_job_assignment_periods" | "student_job_assignments"
-    | "class_job_month_closures",
+    | "class_job_month_closures" | "class_job_change_plans",
   column: string,
   definition: string,
 ) {

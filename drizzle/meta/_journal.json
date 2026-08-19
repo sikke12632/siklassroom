@@ -309,6 +309,13 @@
       "when": 1787101000000,
       "tag": "0043_stock_additional_issuance",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1787102000000,
+      "tag": "0044_job_configuration_plans",
+      "breakpoints": true
     }
   ]
 }

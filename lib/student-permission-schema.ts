@@ -138,7 +138,6 @@ export const STUDENT_PERMISSION_SCHEMA_STATEMENTS = [
     JOIN classes classroom ON classroom.id = assignment.class_id
     WHERE period.status = 'confirmed'
       AND period.assignment_type IN ('initial', 'monthly')
-      AND job.is_active = 1
       AND job.template_id IN (
         'banker', 'market-clerk', 'routine-checker', 'milk-manager', 'meal-checker'
       )

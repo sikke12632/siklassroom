@@ -166,7 +166,6 @@ export async function currentStudentJob(classId: string, studentId: string) {
        AND assignment.class_id = ?
        AND assignment.student_id = ?
        AND student.status = 'active'
-       AND j.is_active = 1
      LIMIT 1`,
   ).bind(period.id, classId, studentId).first<AssignmentRow>();
   if (!job) return null;
