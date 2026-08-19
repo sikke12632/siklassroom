@@ -337,6 +337,58 @@ await request("/api/registration/complete", {
   body: { password: "975310" },
 });
 
+const persistentPasswordLogin = await request("/api/student/login", {
+  method: "POST",
+  body: {
+    schoolCode: "01",
+    grade: classCreated.data.class.grade,
+    classNumber: classCreated.data.class.class_number,
+    studentNumber: student.student_number,
+    password: "975310",
+  },
+});
+const persistentPasswordCookie = responseCookie(persistentPasswordLogin.response);
+await request(`/api/students/${student.id}/qr-reset-grant`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const challengeBeforeRevocation = await verifyQr(replacementToken, "reset");
+const revocation = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "DELETE",
+});
+assert.equal(revocation.data.qrRevoked, true);
+await request("/api/student/me", { cookie: persistentPasswordCookie });
+await request("/api/registration/complete", {
+  cookie: challengeBeforeRevocation.cookie,
+  method: "POST",
+  body: { password: "135790" },
+  expected: 410,
+});
+await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: replacementToken },
+  expected: 410,
+});
+const rosterAfterRevocation = await request(`/api/classes/${classId}/students`, {
+  cookie: teacherCookie,
+});
+assert.equal(rosterAfterRevocation.data.students.find((row) => row.id === student.id).qr_active, 0);
+const repeatedRevocation = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "DELETE",
+});
+assert.equal(repeatedRevocation.data.qrRevoked, false);
+const afterRevocationReplacement = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const afterRevocationToken = activationTokenFrom(afterRevocationReplacement.data.card.activation_url);
+await request("/api/student/me", { cookie: persistentPasswordCookie });
+await verifyQr(afterRevocationToken, "login");
+
 const limitedStudent = roster.data.students[1];
 const limitedToken = activationTokenFrom(limitedStudent.activation_url);
 const limitedActivation = await verifyQr(limitedToken, "activate");

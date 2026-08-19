@@ -222,13 +222,12 @@ export async function getSession(
   let expiresAt = row.expires_at;
   let renewalCookie: string | undefined;
   if (shouldRenew) {
-    expiresAt = now + NORMAL_SESSION_MS;
-    renewalCookie = sessionCookie(rawToken, Math.floor(NORMAL_SESSION_MS / 1000), request);
-    await database().batch([
+    const nextExpiresAt = now + NORMAL_SESSION_MS;
+    const [renewalResult] = await database().batch([
       database().prepare(
         `UPDATE sessions SET expires_at = ?, last_seen_at = ?
          WHERE token_hash = ? AND actor_type = ? AND expires_at = ? AND expires_at > ?`,
-      ).bind(expiresAt, now, tokenHash, row.actor_type, row.expires_at, now),
+      ).bind(nextExpiresAt, now, tokenHash, row.actor_type, row.expires_at, now),
       database().prepare(
         `DELETE FROM sessions
          WHERE id IN (
@@ -239,6 +238,17 @@ export async function getSession(
          )`,
       ).bind(now, SESSION_EXPIRED_CLEANUP_LIMIT),
     ]);
+    if (renewalResult.meta.changes === 1) {
+      expiresAt = nextExpiresAt;
+      renewalCookie = sessionCookie(rawToken, Math.floor(NORMAL_SESSION_MS / 1000), request);
+    } else {
+      const current = await database().prepare(
+        `SELECT expires_at FROM sessions
+         WHERE token_hash = ? AND actor_type = ? AND expires_at > ?`,
+      ).bind(tokenHash, row.actor_type, now).first<{ expires_at: number }>();
+      if (!current) return null;
+      expiresAt = current.expires_at;
+    }
   } else if (row.last_seen_at <= now - SESSION_TOUCH_INTERVAL_MS) {
     await database().prepare(
       `UPDATE sessions SET last_seen_at = ?

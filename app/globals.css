@@ -450,6 +450,10 @@ label small { color: var(--color-text-muted); font-weight: 400; }
 .status-active { color: var(--color-success); border-color: var(--color-success); background: var(--color-success-soft); }
 .status-pending, .status-reset_required { color: var(--color-warning); border-color: var(--color-warning); background: var(--color-warning-soft); }
 .status-locked, .status-excluded { color: var(--color-danger); border-color: var(--color-danger); background: var(--color-danger-soft); }
+.student-status-stack { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; }
+.qr-status-badge { color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 600; }
+.qr-status-badge.active { color: var(--color-success); }
+.qr-status-badge.inactive { color: var(--color-danger); }
 .table-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .table-actions button { min-height: 44px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 8px 10px; color: var(--color-info); background: var(--color-surface-raised); font-size: var(--text-xs); font-weight: 600; }
 .table-actions .danger-link { color: var(--color-danger); }

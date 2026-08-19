@@ -30,8 +30,16 @@ test("session checks roll only normal sessions and throttle refresh writes", asy
     /row\.expires_at <= now \+ NORMAL_SESSION_MS - SESSION_ROLLING_REFRESH_INTERVAL_MS/,
   );
   assert.match(auth, /WHERE token_hash = \? AND actor_type = \? AND expires_at = \? AND expires_at > \?/);
+  assert.match(auth, /renewalResult\.meta\.changes === 1/);
+  assert.match(
+    auth,
+    /SELECT expires_at FROM sessions\s+WHERE token_hash = \? AND actor_type = \? AND expires_at > \?/,
+  );
+  assert.match(auth, /if \(!current\) return null/);
   assert.match(route, /getSession\(request, \{ rolling: true \}\)/);
-  assert.match(route, /"Set-Cookie": session\.renewalCookie/);
+  assert.match(route, /sessionResponseHeaders\(session\.renewalCookie\)/);
+  assert.match(route, /"Cache-Control": "private, no-store, max-age=0"/);
+  assert.match(route, /sessionResponseHeaders\(clearSessionCookie\(request\)\)/);
 });
 
 test("rolling refresh removes only a small ordered batch of already expired sessions", async () => {

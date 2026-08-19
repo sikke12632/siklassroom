@@ -47,7 +47,7 @@ type ClassRoom = {
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
-  qr_generation: number; activated_at: number | null;
+  qr_generation: number; qr_active?: number; activated_at: number | null;
 };
 type DraftStudent = { key: string; number: string; name: string };
 
@@ -1095,7 +1095,7 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
       <button ref={rangeButtonRef} className="add-row-button" type="button" onClick={openRangeDialog}>+ 학생 행 한꺼번에 추가</button>
       <Notice message={rangeMessage} tone="success" />
       <Notice message={error} tone="error" />
-      <div className="panel-footer"><p>저장하면 학생마다 학급 운영 중 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
+      <div className="panel-footer"><p>저장하면 학생마다 교사가 사용 중지하기 전까지 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
       {rangeOpen && (
         <div
           className="range-dialog-backdrop"
@@ -1197,7 +1197,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     } finally { onBusy(false); }
   }
   async function issueCard(student: Student) {
-    const isReplacement = student.status === "active" || student.status === "reset_required";
+    const isReplacement = Boolean(student.qr_active);
     if (isReplacement && !confirm(`${student.student_number}번 ${student.official_name} 학생에게 새 QR을 발급할까요? 이전 QR과 현재 로그인은 무효가 되지만 비밀번호는 그대로 유지됩니다.`)) return;
     onBusy(true); onError("");
     try {
@@ -1205,7 +1205,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
       onCards([data.card]);
       onMessage(isReplacement
         ? "이전 QR과 현재 로그인을 무효로 하고 새 개인 QR을 만들었어요. 비밀번호를 잊었다면 재설정을 10분 허용해 주세요."
-        : "이전 QR을 무효로 하고 새 개인 QR을 만들었어요.");
+        : "새 개인 QR을 만들었어요. 교사가 사용 중지하거나 새 QR로 바꾸기 전까지 계속 사용할 수 있어요.");
       onReload();
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
@@ -1216,6 +1216,16 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     try {
       await postJson<{ expiresAt: number }>(`/api/students/${student.id}/qr-reset-grant`, {});
       onMessage("기존 QR의 비밀번호 재설정을 10분 동안 허용했어요. 학생에게 지금 QR을 스캔하라고 알려 주세요.");
+    } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+  }
+
+  async function revokeCard(student: Student) {
+    if (!confirm(`${student.student_number}번 ${student.official_name} 학생의 QR만 사용 중지할까요? 비밀번호 로그인과 현재 로그인은 그대로 유지됩니다.`)) return;
+    onBusy(true); onError("");
+    try {
+      await api(`/api/students/${student.id}/registration-token`, { method: "DELETE" });
+      onMessage("개인 QR을 사용 중지했어요. 학생의 비밀번호 로그인과 현재 로그인은 그대로 유지됩니다.");
+      onReload();
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
 
@@ -1237,13 +1247,14 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
           <tr className={student.status === "excluded" ? "muted-row" : ""}>
             <td>{editingId === student.id ? <input className="table-input number" inputMode="numeric" value={editNumber} onChange={(event) => setEditNumber(event.target.value.replace(/\D/g, ""))} aria-label={`${student.official_name} 학생 번호`} /> : <b>{student.student_number}</b>}</td>
             <td>{editingId === student.id ? <input className="table-input" value={editName} onChange={(event) => setEditName(event.target.value)} aria-label={`${student.official_name} 학생 이름`} /> : <strong>{student.official_name}</strong>}</td>
-            <td><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span></td>
+            <td><div className="student-status-stack"><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span><small className={`qr-status-badge ${student.qr_active ? "active" : "inactive"}`}>{student.qr_active ? "QR 사용 중" : "QR 없음·중지"}</small></div></td>
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => resetStudentPassword(student)}>비밀번호 초기화</button>}
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => allowExistingCardReset(student)}>QR 재설정 10분 허용</button>}
-                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "새 QR 발급" : "QR 재발급"}</button>}
+                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.qr_active ? "새 QR 발급" : "QR 발급"}</button>}
+                {student.status !== "excluded" && Boolean(student.qr_active) && <button className="danger-link" onClick={() => revokeCard(student)}>QR 사용 중지</button>}
                 {student.status === "locked" ? <button onClick={() => updateStudent(student, { status: student.activated_at ? "active" : "pending" })}>잠금 해제</button> : student.status !== "excluded" && <button onClick={() => updateStudent(student, { status: "locked" })}>잠금</button>}
                 {student.status !== "excluded" && <button className="danger-link" onClick={() => { if (confirm("학생을 명단에서 제외할까요? 기록은 삭제하지 않고 보존합니다.")) updateStudent(student, { status: "excluded" }); }}>제외</button>}
               </>}

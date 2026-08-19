@@ -735,9 +735,10 @@ test("교사 홈은 시간표 저장과 월 경계 일정을 즉시 다시 확�
   assert.match(styles, /@media \(max-width: 1100px\) \{\s*\.portal-summary-grid \{ grid-template-columns: repeat\(2,/);
 });
 
-test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
-  const [registration, complete, verify, individualIssue, printCards, activation, migration] = await Promise.all([
+test("학생 개인 QR은 교사가 폐기할 때까지 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
+  const [registration, registrationPolicy, complete, verify, individualIssue, printCards, activation, migration] = await Promise.all([
     readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/registration-policy.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/registration/complete/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/registration/verify/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/students/[studentId]/registration-token/route.ts", import.meta.url), "utf8"),
@@ -745,13 +746,15 @@ test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설�
     readFile(new URL("../app/activate/ActivationPortal.tsx", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0014_thick_justice.sql", import.meta.url), "utf8"),
   ]);
-  assert.match(registration, /REGISTRATION_QR_LIFETIME_MS = 400/);
-  assert.match(registration, /REGISTRATION_CHALLENGE_LIFETIME_MS = 10/);
+  assert.match(registrationPolicy, /REGISTRATION_QR_PERSISTENT_EXPIRES_AT/);
+  assert.match(registrationPolicy, /REGISTRATION_CHALLENGE_LIFETIME_MS = 30/);
+  assert.match(registrationPolicy, /REGISTRATION_RESET_CHALLENGE_LIFETIME_MS = 10/);
   assert.match(registration, /QR_RESET_GRANT_LIFETIME_MS = 10/);
   assert.match(registration, /HttpOnly; SameSite=Strict/);
   assert.match(registration, /registrationActivationUrl/);
   assert.match(complete, /registration_operation_guards/);
   assert.match(complete, /prepareSession/);
+  assert.doesNotMatch(complete, /rt\.expires_at\s*>/);
   assert.match(complete, /challenge\.status === "reset_required"/);
   assert.match(complete, /password === STUDENT_TEMPORARY_PASSWORD/);
   assert.match(verify, /export async function POST/);

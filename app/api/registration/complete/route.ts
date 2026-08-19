@@ -20,7 +20,7 @@ function guardCondition(mode: "activate" | "login" | "reset", hasGrant: boolean)
     rc.id = ? AND rc.mode = ? AND rc.used_at IS NULL AND rc.revoked_at IS NULL
     AND rc.expires_at > ? AND rc.attempts < 5
     AND rt.id = rc.registration_token_id AND rt.student_id = rc.student_id
-    AND rt.revoked_at IS NULL AND rt.expires_at > ?
+    AND rt.revoked_at IS NULL
     AND rt.generation = rc.qr_generation
     AND s.id = rc.student_id AND s.qr_generation = rc.qr_generation
     AND s.credential_revision = rc.credential_revision_snapshot
@@ -99,7 +99,6 @@ export async function POST(request: Request) {
     const guardBindings: unknown[] = [
       challenge.challenge_id,
       challenge.challenge_mode,
-      now,
       now,
     ];
     if (challenge.challenge_mode === "login") guardBindings.push(challenge.password_hash);
