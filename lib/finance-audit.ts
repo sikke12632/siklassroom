@@ -561,28 +561,6 @@ export async function financeAuditForRequest(request: Request) {
        UNION ALL
 
        SELECT
-         'stock-supply-event:' || supply_event.id AS id,
-         supply_event.class_id AS class_id,
-         'stock' AS category,
-         'stock_supply_increased' AS action,
-         '주식 추가 발행' AS title,
-         supply_event.reason || ' · '
-           || supply_event.quantity || '주 추가 · 전체 '
-           || supply_event.total_shares_before || '주 → '
-           || supply_event.total_shares_after || '주' AS detail,
-         '담임교사' AS actor_label,
-         NULL AS student_name,
-         supply_event.quantity AS amount,
-         supply_event.created_at AS occurred_at,
-         'completed' AS outcome,
-         supply_event.stock_id AS related_id,
-         NULL AS previous_settings_json,
-         NULL AS settings_json
-       FROM finance_stock_supply_events supply_event
-
-       UNION ALL
-
-       SELECT
          'stock-news-application:' || application.id AS id,
          application.class_id AS class_id,
          'stock' AS category,
@@ -728,6 +706,62 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
+  const stockSupplyResultPromise = database().prepare(
+    `WITH stock_supply_events AS (
+       SELECT
+         'stock-supply-event:' || supply_event.id AS id,
+         supply_event.class_id AS class_id,
+         'stock' AS category,
+         'stock_supply_increased' AS action,
+         '주식 추가 발행' AS title,
+         supply_event.reason || ' · '
+           || supply_event.quantity || '주 추가 · 전체 '
+           || supply_event.total_shares_before || '주 → '
+           || supply_event.total_shares_after || '주' AS detail,
+         '담임교사' AS actor_label,
+         NULL AS student_name,
+         supply_event.quantity AS amount,
+         supply_event.created_at AS occurred_at,
+         'completed' AS outcome,
+         supply_event.stock_id AS related_id,
+         NULL AS previous_settings_json,
+         NULL AS settings_json
+       FROM finance_stock_supply_events supply_event
+     )
+     SELECT id, category, action, title, detail, actor_label, student_name,
+            amount, occurred_at, outcome, related_id,
+            previous_settings_json, settings_json
+     FROM stock_supply_events
+     WHERE class_id = ?
+       AND (? = '' OR category = ?)
+       AND (
+         ? = ''
+         OR LOWER(title) LIKE ? ESCAPE '!'
+         OR LOWER(detail) LIKE ? ESCAPE '!'
+         OR LOWER(actor_label) LIKE ? ESCAPE '!'
+         OR LOWER(COALESCE(student_name, '')) LIKE ? ESCAPE '!'
+       )
+       AND (
+         occurred_at < ?
+         OR (occurred_at = ? AND id < ?)
+       )
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT ?`,
+  ).bind(
+    context.classroom.id,
+    category,
+    category,
+    query,
+    search,
+    search,
+    search,
+    search,
+    cursor.time,
+    cursor.time,
+    cursor.id,
+    limit + 1,
+  ).all<AuditRow>();
+
   const automationFailureResultPromise = database().prepare(
     `WITH automation_failures AS (
        SELECT
@@ -819,16 +853,24 @@ export async function financeAuditForRequest(request: Request) {
     limit + 1,
   ).all<AuditRow>();
 
-  const [generalResult, moduleResult, stockResult, automationFailureResult] = await Promise.all([
+  const [
+    generalResult,
+    moduleResult,
+    stockResult,
+    stockSupplyResult,
+    automationFailureResult,
+  ] = await Promise.all([
     generalResultPromise,
     moduleResultPromise,
     stockResultPromise,
+    stockSupplyResultPromise,
     automationFailureResultPromise,
   ]);
   const mergedResults = [
     ...generalResult.results,
     ...moduleResult.results,
     ...stockResult.results,
+    ...stockSupplyResult.results,
     ...automationFailureResult.results,
   ].sort((left, right) => {
     const timeDifference = Number(right.occurred_at) - Number(left.occurred_at);

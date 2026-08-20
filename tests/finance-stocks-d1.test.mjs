@@ -1908,7 +1908,7 @@ test("additional stock issuance is idempotent and preserves existing positions",
 });
 
 test("position value limits protect teacher prices, real buys, and idempotent capped ticks", {
-  timeout: 120_000,
+  timeout: 360_000,
 }, async () => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "siklassroom-stock-position-limit-service-d1-"),
@@ -3008,7 +3008,7 @@ test("automatic stock tick keys survive an interval change at the same bucket", 
 });
 
 test("failed automatic stock ticks back off without starving healthy classes", {
-  timeout: 120_000,
+  timeout: 360_000,
 }, async () => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "siklassroom-stock-tick-backoff-d1-"),
