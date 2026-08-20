@@ -9,14 +9,18 @@ import {
 } from "@/lib/registration";
 import { consumeRateLimit, subjectThrottleKey } from "@/lib/rate-limit";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
-import { isSafeNewStudentPassword, isValidExistingStudentPassword } from "@/lib/student-password";
+import {
+  isSafeNewStudentPassword,
+  isValidExistingStudentPassword,
+  STUDENT_TEMPORARY_PASSWORD,
+} from "@/lib/student-password";
 
 function guardCondition(mode: "activate" | "login" | "reset", hasGrant: boolean) {
   const common = `
     rc.id = ? AND rc.mode = ? AND rc.used_at IS NULL AND rc.revoked_at IS NULL
     AND rc.expires_at > ? AND rc.attempts < 5
     AND rt.id = rc.registration_token_id AND rt.student_id = rc.student_id
-    AND rt.revoked_at IS NULL AND rt.expires_at > ?
+    AND rt.revoked_at IS NULL
     AND rt.generation = rc.qr_generation
     AND s.id = rc.student_id AND s.qr_generation = rc.qr_generation
     AND s.credential_revision = rc.credential_revision_snapshot
@@ -47,13 +51,24 @@ export async function POST(request: Request) {
     const body = await readJson<{ password?: string }>(request);
     const password = String(body.password ?? "");
     if (!isValidExistingStudentPassword(password)) {
-      throw new ApiError(400, "비밀번호는 숫자 4~12자리로 입력해 주세요.", "INVALID_STUDENT_PASSWORD");
+      throw new ApiError(400, "비밀번호는 영문 또는 숫자 4~32자로 입력해 주세요.", "INVALID_STUDENT_PASSWORD");
     }
     const challenge = await registrationChallenge(request);
+    if (
+      challenge.challenge_mode === "reset"
+      && challenge.status === "reset_required"
+      && password === STUDENT_TEMPORARY_PASSWORD
+    ) {
+      throw new ApiError(
+        400,
+        "임시 비밀번호와 다른 새 비밀번호를 만들어 주세요.",
+        "TEMPORARY_PASSWORD_REUSE",
+      );
+    }
     if (challenge.challenge_mode !== "login" && !isSafeNewStudentPassword(password)) {
       throw new ApiError(
         400,
-        "새 비밀번호는 같은 숫자나 연속 숫자를 피해서 숫자 6~12자리로 만들어 주세요.",
+        "새 비밀번호는 영문 또는 숫자 4~32자로 만들어 주세요.",
         "INVALID_STUDENT_PASSWORD",
       );
     }
@@ -84,7 +99,6 @@ export async function POST(request: Request) {
     const guardBindings: unknown[] = [
       challenge.challenge_id,
       challenge.challenge_mode,
-      now,
       now,
     ];
     if (challenge.challenge_mode === "login") guardBindings.push(challenge.password_hash);

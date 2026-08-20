@@ -132,6 +132,19 @@ function localDraftKey(classId: string) {
   return `job-classroom:first-assignment:${classId}:v1`;
 }
 
+function soundPreferenceKey(classId: string) {
+  return `job-classroom:first-assignment-sound:${classId}:v1`;
+}
+
+function readSoundPreference(classId: string) {
+  try {
+    const stored = window.localStorage.getItem(soundPreferenceKey(classId));
+    return stored === null ? true : stored !== "off";
+  } catch {
+    return true;
+  }
+}
+
 function draftFromServer(data: AssignmentResponse): LocalDraft {
   return {
     version: 1,
@@ -241,10 +254,7 @@ function applyLocalDraft(server: AssignmentResponse, draft: LocalDraft): Assignm
   );
   const seatCount = server.jobs.reduce((sum, job) => sum + job.memberCapacity, 0);
   const remainingSeats = Math.max(0, seatCount - assignments.length);
-  const canComplete = server.preflight.errors.length === 0
-    && server.students.length > 0
-    && assignments.length === server.students.length
-    && remainingSeats === 0;
+  const canComplete = server.preflight.errors.length === 0;
   return {
     ...server,
     mode: draft.mode,
@@ -316,6 +326,9 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
   const [winner, setWinner] = useState<Winner | null>(null);
   const [drawJob, setDrawJob] = useState<string | null>(null);
   const [winnerCandidates, setWinnerCandidates] = useState<string[]>([]);
+  const [winnerSoundEnabled, setWinnerSoundEnabled] = useState(
+    () => readSoundPreference(classId),
+  );
   const selectedJobRef = useRef("");
 
   const load = useCallback(async () => {
@@ -377,12 +390,22 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
     () => data?.jobs.find((job) => job.id === selectedJobId) ?? null,
     [data, selectedJobId],
   );
-  const candidateIds = localDraft?.candidateStudentIdsByJob[selectedJobId] ?? [];
+  // applyLocalDraft removes students who were already assigned (including in
+  // manual mode). Drive every draw control from that cleaned view so a stale
+  // local candidate cannot leave an enabled button that has nobody to draw.
+  const candidateIds = data?.candidateStudentIdsByJob[selectedJobId] ?? [];
 
   function persistDraft(next: LocalDraft) {
     const updated = { ...next, updatedAt: next.updatedAt + 1 };
     setLocalDraft(updated);
     writeLocalDraft(classId, updated);
+  }
+
+  function updateWinnerSound(enabled: boolean) {
+    setWinnerSoundEnabled(enabled);
+    try {
+      window.localStorage.setItem(soundPreferenceKey(classId), enabled ? "on" : "off");
+    } catch {}
   }
 
   function setCandidates(next: string[]) {
@@ -493,7 +516,13 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
 
   async function completeAssignments() {
     if (!data?.summary.canComplete || !data.mode) return;
-    if (!confirm(`${data.summary.totalStudents}명 모두의 첫 직업 배정을 확정할까요?\n확정하면 학생 화면에 직업이 공개되고 초기 설정이 완료됩니다.`)) return;
+    const flexibilityNotice = [
+      data.summary.availableCount > 0 ? `역할 없는 학생 ${data.summary.availableCount}명` : "",
+      data.summary.remainingSeats > 0 ? `공석 ${data.summary.remainingSeats}자리` : "",
+    ].filter(Boolean).join(" · ");
+    if (!confirm(
+      `${data.summary.assignedCount}명의 첫 직업 배정을 확정할까요?\n${flexibilityNotice ? `${flexibilityNotice}로 남겨 둡니다.\n` : ""}확정하면 배정된 학생 화면에 직업이 공개되고 초기 설정이 완료됩니다.`,
+    )) return;
     setBusy(true);
     setError("");
     try {
@@ -563,8 +592,8 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
           <section className="assignment-blocked panel">
             <span className="mode-icon" aria-hidden="true"><BriefcaseBusiness /></span>
             <p className="eyebrow">2단계 · 직업 만들기</p>
-            <h2>우리 반 직업을 먼저 확정해 주세요</h2>
-            <p>학생 수와 직업 자리 수를 정확히 맞춘 뒤 달력과 첫 배정을 시작할 수 있어요.</p>
+            <h2>우리 반 직업을 먼저 저장해 주세요</h2>
+            <p>직업 자리가 학생 수와 달라도 괜찮아요. 필요한 직업을 저장한 뒤 바로 첫 배정을 시작할 수 있어요.</p>
             <a className="button button-primary" href={`/teacher/classes/${classId}/jobs`}>직업 설정으로 이동</a>
           </section>
         ) : showCalendar || !data.calendar.saved ? (
@@ -582,7 +611,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
           <section className="assignment-blocked panel preflight-blocked">
             <CircleAlert aria-hidden="true" />
             <p className="eyebrow">배정 전 확인</p>
-            <h2>학생 수와 직업 자리 수를 맞춰 주세요</h2>
+            <h2>배정 전에 확인할 항목이 있어요</h2>
             {data.preflight.errors.map((item) => <p key={item.code}>{item.message}</p>)}
             <div className="button-row">
               <a className="button button-primary" href={`/teacher/classes/${classId}/jobs`}>직업 설정으로 돌아가기</a>
@@ -622,7 +651,7 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
               <span><Check aria-hidden="true" /></span>
               <p className="eyebrow">5단계 · 설정 완료</p>
               <h1>첫 직업 배정을 확정했어요</h1>
-              <p>{data.summary.totalStudents}명 모두에게 직업이 공개됐습니다. 이후 변경은 운영 화면의 정식 절차에서 진행해 주세요.</p>
+              <p>{data.summary.assignedCount}명에게 직업이 공개됐습니다. 역할 없는 학생과 공석은 그대로 유지됩니다.</p>
               <a className="button button-primary button-large" href="/teacher">교사 운영 화면으로</a>
             </div>
             <AssignmentReview assignments={studentOrder} jobs={data.jobs} />
@@ -738,8 +767,8 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 ) : (
                   <div className="assignment-empty">
                     <Check aria-hidden="true" />
-                    <h3>모든 학생의 첫 직업을 배정했어요</h3>
-                    <p>배정표를 검토한 뒤 최종 확정해 주세요.</p>
+                    <h3>현재 선택 가능한 학생이 없어요</h3>
+                    <p>배정표를 검토해 확정하거나, 여기서 배정을 마쳐도 됩니다.</p>
                   </div>
                 )}
 
@@ -803,17 +832,16 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
               </aside>
             </section>
 
-            {data.summary.assignedCount > 0 && (
-              <section className="assignment-final-review panel">
+            <section className="assignment-final-review panel">
                 <div>
                   <p className="eyebrow">최종 확인</p>
                   <h2>학생 번호순 배정표</h2>
-                  <p>전체 배정표를 서버에서 한 번 검증해 저장합니다. 미배정 학생과 남은 자리가 모두 0이어야 해요.</p>
+                  <p>현재 배정만 서버에서 검증해 저장합니다. 학생을 역할 없이 두거나 직업 자리를 공석으로 남겨도 괜찮아요.</p>
                 </div>
                 <div className="student-assignment-list">
-                  {studentOrder.map((assignment) => (
+                  {studentOrder.length ? studentOrder.map((assignment) => (
                     <span key={assignment.id}><b>{assignment.student_number}번 {assignment.student_name}</b><small>{assignment.job_name}</small></span>
-                  ))}
+                  )) : <span><b>아직 배정된 학생이 없어요.</b><small>빈 배정표로도 설정을 마칠 수 있습니다.</small></span>}
                 </div>
                 <button
                   className="button button-primary button-large"
@@ -822,19 +850,23 @@ export function InitialJobAssignmentPortal({ classId }: { classId: string }) {
                 >
                   <Check aria-hidden="true" />
                   {data.summary.canComplete
-                    ? `전체 배정 확정·서버 저장 · ${data.summary.totalStudents}명`
-                    : `미배정 ${data.summary.availableCount}명 · 남은 자리 ${data.summary.remainingSeats}개`}
+                    ? `현재 배정 확정·서버 저장 · ${data.summary.assignedCount}명`
+                    : "학생·직업·달력 정보를 확인해 주세요"}
                 </button>
               </section>
-            )}
           </>
         )}
       </main>
       {drawJob && (
         <WinnerCelebration
+          key={`${winner?.number ?? "drawing"}:${localDraft?.updatedAt ?? 0}`}
           winner={winner}
           job={drawJob}
           candidateNames={winnerCandidates}
+          soundEnabled={winnerSoundEnabled}
+          onSoundEnabledChange={updateWinnerSound}
+          canDrawAgain={Boolean(selectedJob && selectedJob.remainingCapacity > 0 && candidateIds.length > 0)}
+          onDrawAgain={drawRandom}
           onClose={() => {
             setDrawJob(null);
             setWinner(null);

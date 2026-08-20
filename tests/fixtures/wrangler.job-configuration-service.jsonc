@@ -1,0 +1,14 @@
+{
+  "name": "job-configuration-service-test",
+  "main": "./job-configuration-service-worker.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "job-configuration-service-test",
+      "database_id": "45ab94b4-5577-47f2-a69f-d011f93bd3f8",
+      "migrations_dir": "../../drizzle"
+    }
+  ]
+}

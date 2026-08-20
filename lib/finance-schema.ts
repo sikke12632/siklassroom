@@ -347,6 +347,7 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     BEGIN
       SELECT RAISE(ABORT, 'FINANCE_REQUEST_PENDING_STUDENT');
     END`,
+  `DROP TRIGGER IF EXISTS finance_request_resolutions_insert_guard`,
   `CREATE TRIGGER IF NOT EXISTS finance_request_resolutions_insert_guard
     BEFORE INSERT ON finance_request_resolutions
     BEGIN
@@ -409,44 +410,13 @@ export const FINANCE_SCHEMA_STATEMENTS = [
       END;
       SELECT CASE
         WHEN NEW.actor_type = 'banker'
-          AND NOT (
-            NEW.actor_job_period_id = (
-              SELECT period.id
-              FROM class_job_assignment_periods period
-              WHERE period.class_id = NEW.class_id
-                AND period.status = 'confirmed'
-                AND period.assignment_type IN ('initial', 'monthly')
-                AND (
-                  period.assignment_year
-                    < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                  OR (
-                    period.assignment_year
-                      = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                    AND period.assignment_month
-                      <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER)
-                  )
-                )
-              ORDER BY period.assignment_year DESC, period.assignment_month DESC,
-                       COALESCE(period.confirmed_at, 0) DESC,
-                       period.updated_at DESC, period.id DESC
-              LIMIT 1
-            )
-            AND EXISTS (
-              SELECT 1
-              FROM student_job_assignments assignment
-              JOIN class_jobs job
-                ON job.id = assignment.class_job_id
-               AND job.class_id = assignment.class_id
-               AND job.template_id = 'banker'
-               AND job.is_active = 1
-              JOIN students student
-                ON student.id = assignment.student_id
-               AND student.class_id = assignment.class_id
-               AND student.status = 'active'
-              WHERE assignment.period_id = NEW.actor_job_period_id
-                AND assignment.class_id = NEW.class_id
-                AND assignment.student_id = NEW.actor_student_id
-            )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM student_effective_permissions permission
+            WHERE permission.period_id = NEW.actor_job_period_id
+              AND permission.class_id = NEW.class_id
+              AND permission.student_id = NEW.actor_student_id
+              AND permission.permission_key = 'finance_banker'
           )
         THEN RAISE(ABORT, 'FINANCE_BANKER_ACCESS_DENIED')
       END;
@@ -684,79 +654,11 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         WHEN NEW.actor_type = 'banker'
           AND NOT EXISTS (
             SELECT 1
-            FROM class_job_assignment_periods period
-            JOIN student_job_assignments assignment
-              ON assignment.period_id = period.id
-             AND assignment.class_id = period.class_id
-             AND assignment.student_id = NEW.actor_student_id
-            JOIN class_jobs job
-              ON job.id = assignment.class_job_id
-             AND job.class_id = assignment.class_id
-             AND job.template_id = 'banker'
-             AND job.is_active = 1
-            JOIN students student
-              ON student.id = assignment.student_id
-             AND student.class_id = assignment.class_id
-             AND student.status = 'active'
-            WHERE period.id = NEW.actor_job_period_id
-              AND period.class_id = NEW.class_id
-              AND period.status = 'confirmed'
-              AND period.assignment_type IN ('initial', 'monthly')
-              AND (
-                period.assignment_year
-                  < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                OR (
-                  period.assignment_year
-                    = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                  AND period.assignment_month
-                    <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER)
-                )
-              )
-              AND NOT EXISTS (
-                SELECT 1
-                FROM class_job_assignment_periods newer
-                WHERE newer.class_id = period.class_id
-                  AND newer.status = 'confirmed'
-                  AND newer.assignment_type IN ('initial', 'monthly')
-                  AND (
-                    newer.assignment_year
-                      < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                    OR (
-                      newer.assignment_year
-                        = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-                      AND newer.assignment_month
-                        <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER)
-                    )
-                  )
-                  AND (
-                    newer.assignment_year > period.assignment_year
-                    OR (
-                      newer.assignment_year = period.assignment_year
-                      AND newer.assignment_month > period.assignment_month
-                    )
-                    OR (
-                      newer.assignment_year = period.assignment_year
-                      AND newer.assignment_month = period.assignment_month
-                      AND COALESCE(newer.confirmed_at, 0)
-                        > COALESCE(period.confirmed_at, 0)
-                    )
-                    OR (
-                      newer.assignment_year = period.assignment_year
-                      AND newer.assignment_month = period.assignment_month
-                      AND COALESCE(newer.confirmed_at, 0)
-                        = COALESCE(period.confirmed_at, 0)
-                      AND newer.updated_at > period.updated_at
-                    )
-                    OR (
-                      newer.assignment_year = period.assignment_year
-                      AND newer.assignment_month = period.assignment_month
-                      AND COALESCE(newer.confirmed_at, 0)
-                        = COALESCE(period.confirmed_at, 0)
-                      AND newer.updated_at = period.updated_at
-                      AND newer.id > period.id
-                    )
-                  )
-              )
+            FROM student_effective_permissions permission
+            WHERE permission.period_id = NEW.actor_job_period_id
+              AND permission.class_id = NEW.class_id
+              AND permission.student_id = NEW.actor_student_id
+              AND permission.permission_key = 'finance_banker'
           )
         THEN RAISE(ABORT, 'FINANCE_BANKER_ACCESS_DENIED')
       END;
@@ -2335,6 +2237,53 @@ export const FINANCE_SCHEMA_STATEMENTS = [
     ON finance_stock_events(class_id, idempotency_key)`,
   `CREATE INDEX IF NOT EXISTS finance_stock_events_class_created_idx
     ON finance_stock_events(class_id, created_at)`,
+  `CREATE TABLE IF NOT EXISTS finance_stock_supply_events (
+    id TEXT PRIMARY KEY, class_id TEXT NOT NULL, stock_id TEXT NOT NULL,
+    stock_revision_before INTEGER NOT NULL,
+    stock_revision_after INTEGER NOT NULL,
+    inventory_revision_before INTEGER NOT NULL,
+    inventory_revision_after INTEGER NOT NULL,
+    quantity INTEGER NOT NULL,
+    total_shares_before INTEGER NOT NULL,
+    total_shares_after INTEGER NOT NULL,
+    available_shares_before INTEGER NOT NULL,
+    available_shares_after INTEGER NOT NULL,
+    reason TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+    payload_hash TEXT NOT NULL, actor_teacher_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (stock_id, class_id) REFERENCES finance_stocks(id, class_id),
+    FOREIGN KEY (actor_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT finance_stock_supply_events_id_ck CHECK (
+      id = 'finance:stock-supply:' || stock_id || ':' || stock_revision_after
+    ),
+    CONSTRAINT finance_stock_supply_events_revision_ck CHECK (
+      stock_revision_after = stock_revision_before + 1
+      AND inventory_revision_after = inventory_revision_before + 1
+      AND stock_revision_before >= 0 AND inventory_revision_before >= 0
+    ),
+    CONSTRAINT finance_stock_supply_events_quantity_ck CHECK (
+      quantity BETWEEN 1 AND 1000000000
+      AND total_shares_before BETWEEN 1 AND 1000000000
+      AND total_shares_after = total_shares_before + quantity
+      AND total_shares_after BETWEEN 1 AND 1000000000
+      AND available_shares_before BETWEEN 0 AND total_shares_before
+      AND available_shares_after = available_shares_before + quantity
+      AND available_shares_after <= total_shares_after
+      AND total_shares_before - available_shares_before
+        = total_shares_after - available_shares_after
+    ),
+    CONSTRAINT finance_stock_supply_events_text_ck CHECK (
+      LENGTH(TRIM(reason)) BETWEEN 1 AND 300
+      AND LENGTH(TRIM(idempotency_key)) BETWEEN 8 AND 160
+      AND LENGTH(TRIM(payload_hash)) BETWEEN 8 AND 500
+    )
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_supply_events_stock_revision_uq
+    ON finance_stock_supply_events(stock_id, stock_revision_after)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS finance_stock_supply_events_class_idempotency_uq
+    ON finance_stock_supply_events(class_id, idempotency_key)`,
+  `CREATE INDEX IF NOT EXISTS finance_stock_supply_events_class_created_idx
+    ON finance_stock_supply_events(class_id, created_at, id)`,
   `CREATE TABLE IF NOT EXISTS finance_stock_news (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL,
     title TEXT NOT NULL, content TEXT NOT NULL, impact_bps INTEGER NOT NULL,
@@ -3085,10 +3034,25 @@ export const FINANCE_SCHEMA_STATEMENTS = [
         OR NEW.name <> OLD.name OR NEW.symbol <> OLD.symbol
         OR NEW.description <> OLD.description
         OR NEW.initial_price <> OLD.initial_price
-        OR NEW.total_shares <> OLD.total_shares
         OR NEW.max_shares_per_student <> OLD.max_shares_per_student
-        OR NEW.available_shares <> OLD.available_shares
-        OR NEW.inventory_revision <> OLD.inventory_revision
+        OR NOT (
+          (
+            NEW.total_shares = OLD.total_shares
+            AND NEW.available_shares = OLD.available_shares
+            AND NEW.inventory_revision = OLD.inventory_revision
+          )
+          OR (
+            NEW.total_shares > OLD.total_shares
+            AND NEW.total_shares - OLD.total_shares
+              = NEW.available_shares - OLD.available_shares
+            AND NEW.inventory_revision = OLD.inventory_revision + 1
+            AND NEW.current_price = OLD.current_price
+            AND NEW.previous_price = OLD.previous_price
+            AND NEW.status = OLD.status
+            AND NEW.updated_by_actor_type = 'teacher'
+            AND NEW.updated_by_teacher_id IS NOT NULL
+          )
+        )
         OR NEW.created_by_teacher_id <> OLD.created_by_teacher_id
         OR NEW.created_at <> OLD.created_at OR NEW.updated_at < OLD.updated_at
         OR NEW.revision <> OLD.revision + 1
@@ -3364,6 +3328,45 @@ export const FINANCE_SCHEMA_STATEMENTS = [
   `CREATE TRIGGER IF NOT EXISTS finance_stock_events_delete_guard
     BEFORE DELETE ON finance_stock_events
     BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_events_supply_idempotency_guard
+    BEFORE INSERT ON finance_stock_events
+    WHEN EXISTS (
+      SELECT 1 FROM finance_stock_supply_events supply_event
+      WHERE supply_event.class_id = NEW.class_id
+        AND supply_event.idempotency_key = NEW.idempotency_key
+    )
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_IDEMPOTENCY_CONFLICT'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_supply_events_insert_guard
+    BEFORE INSERT ON finance_stock_supply_events
+    BEGIN
+      SELECT CASE WHEN EXISTS (
+        SELECT 1 FROM finance_stock_events stock_event
+        WHERE stock_event.class_id = NEW.class_id
+          AND stock_event.idempotency_key = NEW.idempotency_key
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_IDEMPOTENCY_CONFLICT') END;
+      SELECT CASE WHEN NOT EXISTS (
+        SELECT 1
+        FROM finance_stocks stock
+        JOIN classes classroom ON classroom.id = stock.class_id
+        WHERE stock.id = NEW.stock_id AND stock.class_id = NEW.class_id
+          AND classroom.teacher_id = NEW.actor_teacher_id
+          AND classroom.status = 'active'
+          AND stock.status <> 'archived'
+          AND stock.revision = NEW.stock_revision_after
+          AND stock.inventory_revision = NEW.inventory_revision_after
+          AND stock.total_shares = NEW.total_shares_after
+          AND stock.available_shares = NEW.available_shares_after
+          AND stock.updated_by_actor_type = 'teacher'
+          AND stock.updated_by_teacher_id = NEW.actor_teacher_id
+          AND stock.updated_at = NEW.created_at
+      ) THEN RAISE(ABORT, 'FINANCE_STOCK_SUPPLY_EVENT_INVALID') END;
+    END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_supply_events_update_guard
+    BEFORE UPDATE ON finance_stock_supply_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_SUPPLY_EVENT_IMMUTABLE'); END`,
+  `CREATE TRIGGER IF NOT EXISTS finance_stock_supply_events_delete_guard
+    BEFORE DELETE ON finance_stock_supply_events
+    BEGIN SELECT RAISE(ABORT, 'FINANCE_STOCK_SUPPLY_EVENT_IMMUTABLE'); END`,
   `CREATE TRIGGER IF NOT EXISTS finance_stock_news_insert_guard
     BEFORE INSERT ON finance_stock_news
     BEGIN

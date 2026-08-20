@@ -13,20 +13,36 @@ export async function GET(request: Request) {
        FROM students s JOIN classes c ON c.id = s.class_id WHERE s.id = ?`,
     ).bind(studentId).first();
     const currentJobRow = await database().prepare(
-      `SELECT j.id, j.name, j.description, p.first_job_start_date, p.first_job_end_date,
+      `WITH current_period AS (
+         SELECT p.id, p.class_id, p.first_job_start_date, p.first_job_end_date,
+                p.confirmed_at, p.assignment_year, p.assignment_month, p.assignment_type
+         FROM class_job_assignment_periods p
+         WHERE p.class_id = (SELECT class_id FROM students WHERE id = ?)
+           AND p.status = 'confirmed'
+           AND p.assignment_type IN ('initial', 'monthly')
+           AND (
+             p.assignment_year < ?
+             OR (p.assignment_year = ? AND p.assignment_month <= ?)
+           )
+         ORDER BY p.assignment_year DESC, p.assignment_month DESC,
+                  COALESCE(p.confirmed_at, 0) DESC, p.updated_at DESC, p.id DESC
+         LIMIT 1
+       )
+       SELECT j.id, j.name, j.description, p.first_job_start_date, p.first_job_end_date,
               a.assignment_method, p.confirmed_at, p.assignment_year, p.assignment_month,
               p.assignment_type
-       FROM student_job_assignments a
-       JOIN class_job_assignment_periods p ON p.id = a.period_id
-       JOIN class_jobs j ON j.id = a.class_job_id
-       WHERE a.student_id = ? AND p.status = 'confirmed'
-         AND p.assignment_type IN ('initial', 'monthly')
-         AND (
-           p.assignment_year < ?
-           OR (p.assignment_year = ? AND p.assignment_month <= ?)
-         )
-       ORDER BY p.assignment_year DESC, p.assignment_month DESC, p.confirmed_at DESC LIMIT 1`,
-    ).bind(studentId, current.year, current.year, current.month).first<{
+       FROM current_period p
+       JOIN student_job_assignments a
+         ON a.period_id = p.id AND a.class_id = p.class_id AND a.student_id = ?
+       JOIN class_jobs j
+         ON j.id = a.class_job_id AND j.class_id = p.class_id`,
+    ).bind(
+      studentId,
+      current.year,
+      current.year,
+      current.month,
+      studentId,
+    ).first<{
       id: string;
       name: string;
       description: string;

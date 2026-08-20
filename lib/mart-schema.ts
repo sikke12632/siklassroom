@@ -1,69 +1,12 @@
 export const MART_SCHEMA_STATEMENTS = [
-  `CREATE VIEW IF NOT EXISTS mart_effective_market_clerks AS
-SELECT assignment.class_id,
-       assignment.student_id,
-       period.id AS period_id
-FROM student_job_assignments assignment
-JOIN class_job_assignment_periods period
-  ON period.id = assignment.period_id
- AND period.class_id = assignment.class_id
-JOIN class_jobs job
-  ON job.id = assignment.class_job_id
- AND job.class_id = assignment.class_id
-JOIN students student
-  ON student.id = assignment.student_id
- AND student.class_id = assignment.class_id
-WHERE period.status = 'confirmed'
-  AND period.assignment_type IN ('initial', 'monthly')
-  AND job.template_id = 'market-clerk'
-  AND job.is_active = 1
-  AND student.status = 'active'
-  AND (
-    period.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-    OR (
-      period.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-      AND period.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER)
-    )
-  )
-  AND NOT EXISTS (
-    SELECT 1
-    FROM class_job_assignment_periods newer
-    WHERE newer.class_id = period.class_id
-      AND newer.status = 'confirmed'
-      AND newer.assignment_type IN ('initial', 'monthly')
-      AND (
-        newer.assignment_year < CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-        OR (
-          newer.assignment_year = CAST(strftime('%Y', 'now', '+9 hours') AS INTEGER)
-          AND newer.assignment_month <= CAST(strftime('%m', 'now', '+9 hours') AS INTEGER)
-        )
-      )
-      AND (
-        newer.assignment_year > period.assignment_year
-        OR (
-          newer.assignment_year = period.assignment_year
-          AND newer.assignment_month > period.assignment_month
-        )
-        OR (
-          newer.assignment_year = period.assignment_year
-          AND newer.assignment_month = period.assignment_month
-          AND COALESCE(newer.confirmed_at, 0) > COALESCE(period.confirmed_at, 0)
-        )
-        OR (
-          newer.assignment_year = period.assignment_year
-          AND newer.assignment_month = period.assignment_month
-          AND COALESCE(newer.confirmed_at, 0) = COALESCE(period.confirmed_at, 0)
-          AND newer.updated_at > period.updated_at
-        )
-        OR (
-          newer.assignment_year = period.assignment_year
-          AND newer.assignment_month = period.assignment_month
-          AND COALESCE(newer.confirmed_at, 0) = COALESCE(period.confirmed_at, 0)
-          AND newer.updated_at = period.updated_at
-          AND newer.id > period.id
-        )
-      )
-  );`,
+  `DROP VIEW IF EXISTS mart_effective_market_clerks`,
+  `CREATE VIEW mart_effective_market_clerks AS
+SELECT DISTINCT permission.class_id,
+       permission.student_id,
+       permission.period_id
+FROM student_effective_permissions permission
+WHERE permission.permission_key = 'mart_operator'
+  AND permission.period_id IS NOT NULL;`,
   `CREATE TABLE IF NOT EXISTS mart_operations (
   id TEXT PRIMARY KEY NOT NULL,
   class_id TEXT NOT NULL,

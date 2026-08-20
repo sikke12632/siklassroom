@@ -323,7 +323,6 @@ function shortDate(value: string) {
 
 function jobNextAction(classId: string, summary: PortalSummary, studentCount: number, monthlyChoiceAccessible: boolean) {
   if (studentCount < 1) return { href: "#students", label: "학생 명단 먼저", description: "학생을 등록하면 학급 인원에 맞춰 직업을 구성할 수 있어요." };
-  if (summary.job_student_count_changed) return { href: `/teacher/classes/${classId}/jobs`, label: "자리 다시 맞추기", description: "학생 수가 바뀌었어요. 직업 자리 수를 다시 맞춰 주세요." };
   if (summary.job_status !== "completed") return { href: `/teacher/classes/${classId}/jobs`, label: summary.job_status === "draft" ? "초안 이어서" : "직업 설정", description: "우리 반에 필요한 직업과 자리 수를 준비해요." };
   if (summary.assignment_status !== "confirmed") return { href: `/teacher/classes/${classId}/job-assignments`, label: summary.calendar_saved ? "첫 직업 배정" : "달력 설정", description: summary.calendar_saved ? "학생에게 우리 반의 첫 직업을 배정해요." : "운영 달력을 정한 뒤 첫 직업을 배정해요." };
   if (monthlyChoiceAccessible) {
@@ -390,7 +389,7 @@ function dashboardTasks(input: {
   const tasks: DashboardTask[] = [
     { id: "students", label: input.studentCount ? `학생 명단 ${input.studentCount}명 등록` : "학생 명단 입력하기", href: "#students", complete: input.studentCount > 0 },
     { id: "qr", label: input.pendingCount ? `등록 전 학생 QR ${input.pendingCount}명 준비` : "학생 계정 등록 확인", href: "#students", complete: input.studentCount > 0 && input.pendingCount === 0 },
-    { id: "jobs", label: input.summary.job_student_count_changed ? "학생 수에 맞춰 직업 자리 조정" : input.summary.job_status === "completed" ? "우리 반 직업 구성 완료" : "우리 반 직업 구성하기", href: jobHref, complete: input.summary.job_status === "completed" && !input.summary.job_student_count_changed },
+    { id: "jobs", label: input.summary.job_status === "completed" ? "우리 반 직업 구성 완료" : "우리 반 직업 구성하기", href: jobHref, complete: input.summary.job_status === "completed" },
     { id: "calendar", label: input.summary.calendar_saved ? "운영 달력 저장 완료" : "운영 달력 설정하기", href: assignmentHref, complete: Boolean(input.summary.calendar_saved) },
     { id: "assignment", label: input.summary.assignment_status === "confirmed" ? "첫 직업 배정 완료" : "첫 직업 배정 확정하기", href: assignmentHref, complete: input.summary.assignment_status === "confirmed" },
   ];

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { FINANCE_SCHEMA_STATEMENTS } from "./finance-schema";
 import { MART_SCHEMA_STATEMENTS } from "./mart-schema";
+import { STUDENT_PERMISSION_SCHEMA_STATEMENTS } from "./student-permission-schema";
 
 export type RuntimeEnv = {
   DB?: D1Database;
@@ -20,7 +21,7 @@ let schemaProvidedByMigrations = false;
 // Bump this filename whenever a migration adds or changes runtime schema.
 // A database with this migration already applied does not need hundreds of
 // defensive CREATE/ALTER/backfill statements on every fresh Worker isolate.
-const LATEST_RUNTIME_SCHEMA_MIGRATION = "0040_operational_indexes.sql";
+const LATEST_RUNTIME_SCHEMA_MIGRATION = "0044_job_configuration_plans.sql";
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS teachers (
@@ -42,6 +43,8 @@ const schemaStatements = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS classes_identity_uq ON classes(school_normalized, school_year, grade, class_number)`,
   `CREATE INDEX IF NOT EXISTS classes_teacher_idx ON classes(teacher_id)`,
+  `CREATE INDEX IF NOT EXISTS classes_student_login_idx
+    ON classes(school_id, status, grade, class_number, school_year)`,
   `CREATE TABLE IF NOT EXISTS students (
     id TEXT PRIMARY KEY, class_id TEXT NOT NULL, student_number INTEGER NOT NULL,
     official_name TEXT NOT NULL, password_hash TEXT, status TEXT NOT NULL DEFAULT 'pending',
@@ -167,6 +170,35 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS class_jobs_class_idx ON class_jobs(class_id)`,
   `CREATE INDEX IF NOT EXISTS class_jobs_template_idx ON class_jobs(template_id)`,
+  `CREATE TABLE IF NOT EXISTS class_job_change_plans (
+    id TEXT PRIMARY KEY NOT NULL,
+    class_id TEXT NOT NULL,
+    target_year INTEGER NOT NULL,
+    target_month INTEGER NOT NULL,
+    jobs_json TEXT NOT NULL,
+    previous_jobs_json TEXT,
+    applied_jobs_json TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',
+    base_setup_revision INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_by_teacher_id TEXT NOT NULL,
+    applied_by_teacher_id TEXT,
+    applied_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (class_id) REFERENCES classes(id),
+    FOREIGN KEY (created_by_teacher_id) REFERENCES teachers(id),
+    FOREIGN KEY (applied_by_teacher_id) REFERENCES teachers(id),
+    CONSTRAINT class_job_change_plans_year_ck CHECK (target_year BETWEEN 2020 AND 2100),
+    CONSTRAINT class_job_change_plans_month_ck CHECK (target_month BETWEEN 1 AND 12),
+    CONSTRAINT class_job_change_plans_status_ck CHECK (status IN ('draft', 'applied')),
+    CONSTRAINT class_job_change_plans_base_revision_ck CHECK (base_setup_revision >= 0),
+    CONSTRAINT class_job_change_plans_revision_ck CHECK (revision >= 1)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS class_job_change_plans_target_uq
+    ON class_job_change_plans(class_id, target_year, target_month)`,
+  `CREATE INDEX IF NOT EXISTS class_job_change_plans_class_status_idx
+    ON class_job_change_plans(class_id, status, updated_at)`,
   `CREATE TABLE IF NOT EXISTS class_calendars (
     class_id TEXT PRIMARY KEY, school_year INTEGER NOT NULL,
     time_zone TEXT NOT NULL DEFAULT 'Asia/Seoul',
@@ -360,12 +392,14 @@ const schemaStatements = [
     ON job_assignment_candidates(period_id)`,
   `CREATE TABLE IF NOT EXISTS schools (
     id TEXT PRIMARY KEY, office_code TEXT NOT NULL, school_code TEXT NOT NULL,
+    student_login_code TEXT,
     official_name TEXT NOT NULL, normalized_name TEXT NOT NULL, search_name TEXT NOT NULL,
     school_level TEXT NOT NULL, province_name TEXT NOT NULL, district_name TEXT,
     road_address TEXT, status TEXT NOT NULL DEFAULT 'active', source TEXT NOT NULL DEFAULT 'neis',
     source_updated_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS schools_office_school_uq ON schools(office_code, school_code)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS schools_student_login_code_uq ON schools(student_login_code)`,
   `CREATE INDEX IF NOT EXISTS schools_normalized_idx ON schools(normalized_name)`,
   `CREATE INDEX IF NOT EXISTS schools_search_idx ON schools(search_name)`,
   `CREATE INDEX IF NOT EXISTS schools_filters_idx ON schools(province_name, school_level, status)`,
@@ -403,6 +437,7 @@ const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS system_migrations (
     key TEXT PRIMARY KEY, applied_at INTEGER NOT NULL
   )`,
+  ...STUDENT_PERMISSION_SCHEMA_STATEMENTS,
   ...FINANCE_SCHEMA_STATEMENTS,
   ...MART_SCHEMA_STATEMENTS,
   `CREATE TRIGGER IF NOT EXISTS teacher_email_verified_after_token_use
@@ -465,9 +500,11 @@ export async function ensureSchema(): Promise<void> {
       await db.batch(
         schemaStatements
           .filter((sql) => (
-            sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
-            || sql.startsWith("CREATE TABLE IF NOT EXISTS students")
-            || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
+          sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_assignment_periods")
+          || sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_change_plans")
+          || sql.startsWith("CREATE TABLE IF NOT EXISTS students")
+          || sql.startsWith("CREATE TABLE IF NOT EXISTS schools")
+          || sql.startsWith("CREATE TABLE IF NOT EXISTS student_job_assignments")
             || sql.startsWith("CREATE TABLE IF NOT EXISTS class_job_month_closures")
           ))
           .map((sql) => db.prepare(sql)),
@@ -483,6 +520,7 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "classes", "time_zone", "TEXT NOT NULL DEFAULT 'Asia/Seoul'");
       await ensureColumn(db, "classes", "setup_stage", "TEXT NOT NULL DEFAULT 'roster'");
       await ensureColumn(db, "students", "credential_revision", "INTEGER NOT NULL DEFAULT 0");
+      await ensureColumn(db, "schools", "student_login_code", "TEXT");
       await ensureColumn(db, "class_job_assignment_periods", "mode", "TEXT");
       await ensureColumn(db, "class_job_assignment_periods", "status", "TEXT NOT NULL DEFAULT 'draft'");
       await ensureColumn(db, "class_job_assignment_periods", "calendar_revision", "INTEGER");
@@ -495,6 +533,8 @@ export async function ensureSchema(): Promise<void> {
       await ensureColumn(db, "student_job_assignments", "assignment_sequence", "INTEGER NOT NULL DEFAULT 0");
       await ensureColumn(db, "class_job_month_closures", "evaluation_session_id", "TEXT");
       await ensureColumn(db, "class_job_month_closures", "evaluation_revision", "INTEGER");
+      await ensureColumn(db, "class_job_change_plans", "previous_jobs_json", "TEXT");
+      await ensureColumn(db, "class_job_change_plans", "applied_jobs_json", "TEXT");
       const statements = schemaStatements.map((sql) => db.prepare(sql));
       await db.batch(statements);
       await bootstrapExistingTeachers(db);
@@ -516,8 +556,8 @@ export function isOperationGuardFailure(error: unknown) {
 
 async function ensureColumn(
   db: D1Database,
-  table: "teachers" | "classes" | "students" | "class_job_assignment_periods" | "student_job_assignments"
-    | "class_job_month_closures",
+  table: "teachers" | "classes" | "students" | "schools" | "class_job_assignment_periods" | "student_job_assignments"
+    | "class_job_month_closures" | "class_job_change_plans",
   column: string,
   definition: string,
 ) {
@@ -575,13 +615,17 @@ async function bootstrapInitialSchools(db: D1Database) {
   await db.batch([
     db.prepare(
       `INSERT OR IGNORE INTO schools (
-         id, office_code, school_code, official_name, normalized_name, search_name,
+         id, office_code, school_code, student_login_code, official_name, normalized_name, search_name,
          school_level, province_name, district_name, road_address, status, source,
          source_updated_at, created_at, updated_at
-       ) VALUES (?, 'B10', '7091394', '서울서이초등학교', '서울서이초등학교', '서울서이초',
+       ) VALUES (?, 'B10', '7091394', '01', '서울서이초등학교', '서울서이초등학교', '서울서이초',
                  '초등학교', '서울특별시', '서울특별시강남서초교육지원청',
                  '서울특별시 서초구 서운로 35', 'active', 'neis', ?, ?, ?)`,
     ).bind(schoolId, now, now, now),
+    db.prepare(
+      `UPDATE schools SET student_login_code = '01', updated_at = ?
+       WHERE id = ? AND student_login_code IS NULL`,
+    ).bind(now, schoolId),
     db.prepare(
       `INSERT OR IGNORE INTO school_aliases
        (id, school_id, alias, normalized_alias, alias_type)

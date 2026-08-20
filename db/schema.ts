@@ -52,6 +52,13 @@ export const classes = sqliteTable("classes", {
     table.classNumber,
   ),
   index("classes_teacher_idx").on(table.teacherId),
+  index("classes_student_login_idx").on(
+    table.schoolId,
+    table.status,
+    table.grade,
+    table.classNumber,
+    table.schoolYear,
+  ),
 ]);
 
 export const students = sqliteTable("students", {
@@ -69,6 +76,33 @@ export const students = sqliteTable("students", {
 }, (table) => [
   uniqueIndex("students_class_number_uq").on(table.classId, table.studentNumber),
   index("students_class_idx").on(table.classId),
+]);
+
+export const studentManualPermissions = sqliteTable("student_manual_permissions", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  studentId: text("student_id").notNull().references(() => students.id),
+  permissionKey: text("permission_key").notNull(),
+  isActive: integer("is_active").notNull().default(1),
+  grantedByTeacherId: text("granted_by_teacher_id").notNull().references(() => teachers.id),
+  revision: integer("revision").notNull().default(1),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("student_manual_permissions_scope_uq")
+    .on(table.classId, table.studentId, table.permissionKey),
+  index("student_manual_permissions_student_idx").on(table.studentId, table.isActive),
+  index("student_manual_permissions_class_active_idx")
+    .on(table.classId, table.permissionKey, table.isActive),
+  check(
+    "student_manual_permissions_key_ck",
+    sql`${table.permissionKey} IN (
+      'finance_banker', 'mart_operator',
+      'life_check_tooth', 'life_check_milk', 'life_check_lunch'
+    )`,
+  ),
+  check("student_manual_permissions_active_ck", sql`${table.isActive} IN (0, 1)`),
+  check("student_manual_permissions_revision_ck", sql`${table.revision} >= 1`),
 ]);
 
 export const registrationTokens = sqliteTable("registration_tokens", {
@@ -185,6 +219,7 @@ export const schools = sqliteTable("schools", {
   id: text("id").primaryKey(),
   officeCode: text("office_code").notNull(),
   schoolCode: text("school_code").notNull(),
+  studentLoginCode: text("student_login_code"),
   officialName: text("official_name").notNull(),
   normalizedName: text("normalized_name").notNull(),
   searchName: text("search_name").notNull(),
@@ -199,6 +234,7 @@ export const schools = sqliteTable("schools", {
   updatedAt: integer("updated_at").notNull(),
 }, (table) => [
   uniqueIndex("schools_office_school_uq").on(table.officeCode, table.schoolCode),
+  uniqueIndex("schools_student_login_code_uq").on(table.studentLoginCode),
   index("schools_normalized_idx").on(table.normalizedName),
   index("schools_search_idx").on(table.searchName),
   index("schools_filters_idx").on(table.provinceName, table.schoolLevel, table.status),
@@ -310,6 +346,36 @@ export const classJobs = sqliteTable("class_jobs", {
 }, (table) => [
   index("class_jobs_class_idx").on(table.classId),
   index("class_jobs_template_idx").on(table.templateId),
+]);
+
+export const classJobChangePlans = sqliteTable("class_job_change_plans", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull().references(() => classes.id),
+  targetYear: integer("target_year").notNull(),
+  targetMonth: integer("target_month").notNull(),
+  jobsJson: text("jobs_json").notNull(),
+  previousJobsJson: text("previous_jobs_json"),
+  appliedJobsJson: text("applied_jobs_json"),
+  status: text("status").notNull().default("draft"),
+  baseSetupRevision: integer("base_setup_revision").notNull(),
+  revision: integer("revision").notNull().default(1),
+  createdByTeacherId: text("created_by_teacher_id").notNull().references(() => teachers.id),
+  appliedByTeacherId: text("applied_by_teacher_id").references(() => teachers.id),
+  appliedAt: integer("applied_at"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (table) => [
+  uniqueIndex("class_job_change_plans_target_uq").on(
+    table.classId,
+    table.targetYear,
+    table.targetMonth,
+  ),
+  index("class_job_change_plans_class_status_idx").on(table.classId, table.status, table.updatedAt),
+  check("class_job_change_plans_year_ck", sql`${table.targetYear} BETWEEN 2020 AND 2100`),
+  check("class_job_change_plans_month_ck", sql`${table.targetMonth} BETWEEN 1 AND 12`),
+  check("class_job_change_plans_status_ck", sql`${table.status} IN ('draft', 'applied')`),
+  check("class_job_change_plans_base_revision_ck", sql`${table.baseSetupRevision} >= 0`),
+  check("class_job_change_plans_revision_ck", sql`${table.revision} >= 1`),
 ]);
 
 export const classJobAssignmentPeriods = sqliteTable("class_job_assignment_periods", {
@@ -2358,6 +2424,75 @@ export const financeStockEvents = sqliteTable("finance_stock_events", {
   check(
     "finance_stock_events_reason_ck",
     sql`LENGTH(TRIM(${table.reason})) BETWEEN 1 AND 300`,
+  ),
+]);
+
+export const financeStockSupplyEvents = sqliteTable("finance_stock_supply_events", {
+  id: text("id").primaryKey(),
+  classId: text("class_id").notNull(),
+  stockId: text("stock_id").notNull(),
+  stockRevisionBefore: integer("stock_revision_before").notNull(),
+  stockRevisionAfter: integer("stock_revision_after").notNull(),
+  inventoryRevisionBefore: integer("inventory_revision_before").notNull(),
+  inventoryRevisionAfter: integer("inventory_revision_after").notNull(),
+  quantity: integer("quantity").notNull(),
+  totalSharesBefore: integer("total_shares_before").notNull(),
+  totalSharesAfter: integer("total_shares_after").notNull(),
+  availableSharesBefore: integer("available_shares_before").notNull(),
+  availableSharesAfter: integer("available_shares_after").notNull(),
+  reason: text("reason").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(),
+  payloadHash: text("payload_hash").notNull(),
+  actorTeacherId: text("actor_teacher_id").notNull().references(() => teachers.id),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [
+  uniqueIndex("finance_stock_supply_events_stock_revision_uq").on(
+    table.stockId,
+    table.stockRevisionAfter,
+  ),
+  uniqueIndex("finance_stock_supply_events_class_idempotency_uq").on(
+    table.classId,
+    table.idempotencyKey,
+  ),
+  index("finance_stock_supply_events_class_created_idx").on(
+    table.classId,
+    table.createdAt,
+    table.id,
+  ),
+  foreignKey({
+    columns: [table.stockId, table.classId],
+    foreignColumns: [financeStocks.id, financeStocks.classId],
+    name: "finance_stock_supply_events_stock_class_fk",
+  }),
+  check(
+    "finance_stock_supply_events_id_ck",
+    sql`${table.id} = 'finance:stock-supply:' || ${table.stockId} || ':'
+      || ${table.stockRevisionAfter}`,
+  ),
+  check(
+    "finance_stock_supply_events_revision_ck",
+    sql`${table.stockRevisionAfter} = ${table.stockRevisionBefore} + 1
+      AND ${table.inventoryRevisionAfter} = ${table.inventoryRevisionBefore} + 1
+      AND ${table.stockRevisionBefore} >= 0
+      AND ${table.inventoryRevisionBefore} >= 0`,
+  ),
+  check(
+    "finance_stock_supply_events_quantity_ck",
+    sql`${table.quantity} BETWEEN 1 AND 1000000000
+      AND ${table.totalSharesBefore} BETWEEN 1 AND 1000000000
+      AND ${table.totalSharesAfter} = ${table.totalSharesBefore} + ${table.quantity}
+      AND ${table.totalSharesAfter} BETWEEN 1 AND 1000000000
+      AND ${table.availableSharesBefore} BETWEEN 0 AND ${table.totalSharesBefore}
+      AND ${table.availableSharesAfter} = ${table.availableSharesBefore} + ${table.quantity}
+      AND ${table.availableSharesAfter} <= ${table.totalSharesAfter}
+      AND ${table.totalSharesBefore} - ${table.availableSharesBefore}
+        = ${table.totalSharesAfter} - ${table.availableSharesAfter}`,
+  ),
+  check(
+    "finance_stock_supply_events_text_ck",
+    sql`LENGTH(TRIM(${table.reason})) BETWEEN 1 AND 300
+      AND LENGTH(TRIM(${table.idempotencyKey})) BETWEEN 8 AND 160
+      AND LENGTH(TRIM(${table.payloadHash})) BETWEEN 8 AND 500`,
   ),
 ]);
 

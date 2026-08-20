@@ -93,7 +93,7 @@ const jobs = setup.templates.slice(0, 3).map((template, index) => ({
   templateId: template.id,
   name: template.name,
   description: template.shortDescription,
-  memberCapacity: 1,
+  memberCapacity: index === 0 ? 2 : 1,
   category: template.category,
   source: "template",
   sortOrder: index,
@@ -221,8 +221,13 @@ await request(`/api/classes/${classId}/job-assignments/manual`, {
 });
 const readyToComplete = await request(`/api/classes/${classId}/job-assignments`);
 assert.equal(readyToComplete.summary.availableCount, 0);
-assert.equal(readyToComplete.summary.remainingSeats, 0);
+assert.equal(readyToComplete.summary.remainingSeats, 1);
 assert.equal(readyToComplete.summary.canComplete, true);
+const partialAssignments = roster.students.slice(0, 2).map((student) => ({
+  classJobId: readyToComplete.jobs[0].id,
+  studentId: student.id,
+  method: "manual",
+}));
 
 const teacherCookie = cookie;
 const activationUrl = new URL(roster.students[0].activation_url);
@@ -248,11 +253,7 @@ await request(`/api/classes/${classId}/job-assignments/complete`, {
     expectedRevision: readyToComplete.revision - 1,
     expectedCalendarRevision: readyToComplete.calendar.revision,
     requestId: crypto.randomUUID(),
-    assignments: readyToComplete.assignments.map((assignment) => ({
-      classJobId: assignment.class_job_id,
-      studentId: assignment.student_id,
-      method: assignment.assignment_method,
-    })),
+    assignments: partialAssignments,
   },
 });
 const afterStaleRequest = await request(`/api/classes/${classId}/job-assignments`);
@@ -267,16 +268,14 @@ await request(`/api/classes/${classId}/job-assignments/complete`, {
     expectedRevision: readyToComplete.revision,
     expectedCalendarRevision: readyToComplete.calendar.revision,
     requestId: crypto.randomUUID(),
-    assignments: readyToComplete.assignments.map((assignment) => ({
-      classJobId: assignment.class_job_id,
-      studentId: assignment.student_id,
-      method: assignment.assignment_method,
-    })),
+    assignments: partialAssignments,
   },
 });
 const confirmed = await request(`/api/classes/${classId}/job-assignments`);
 assert.equal(confirmed.status, "confirmed");
-assert.equal(confirmed.assignments.length, 3);
+assert.equal(confirmed.assignments.length, 2);
+assert.equal(confirmed.summary.availableCount, 1);
+assert.equal(confirmed.summary.remainingSeats, 2);
 await request(`/api/classes/${classId}/job-assignments/complete`, {
   method: "POST",
   expected: 409,
@@ -285,15 +284,11 @@ await request(`/api/classes/${classId}/job-assignments/complete`, {
     expectedRevision: readyToComplete.revision,
     expectedCalendarRevision: readyToComplete.calendar.revision,
     requestId: crypto.randomUUID(),
-    assignments: readyToComplete.assignments.map((assignment) => ({
-      classJobId: assignment.class_job_id,
-      studentId: assignment.student_id,
-      method: assignment.assignment_method,
-    })),
+    assignments: partialAssignments,
   },
 });
 const afterRepeatedConfirmation = await request(`/api/classes/${classId}/job-assignments`);
-assert.equal(afterRepeatedConfirmation.assignments.length, 3);
+assert.equal(afterRepeatedConfirmation.assignments.length, 2);
 await request(
   `/api/classes/${classId}/job-assignments/${confirmed.assignments[0].id}`,
   { method: "DELETE", expected: 409 },

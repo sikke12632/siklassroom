@@ -2,10 +2,19 @@ import { database, ensureSchema, isOperationGuardFailure } from "./database";
 import { randomToken, sha256 } from "./crypto";
 import { requestCookie } from "./cookies";
 import { consumeRateLimit, subjectThrottleKey } from "./rate-limit";
+import {
+  isCurrentUnrevokedRegistration,
+  REGISTRATION_CHALLENGE_LIFETIME_MS,
+  REGISTRATION_QR_PERSISTENT_EXPIRES_AT,
+  REGISTRATION_RESET_CHALLENGE_LIFETIME_MS,
+} from "./registration-policy";
 import { ApiError } from "./responses";
 
-export const REGISTRATION_QR_LIFETIME_MS = 400 * 24 * 60 * 60 * 1000;
-export const REGISTRATION_CHALLENGE_LIFETIME_MS = 10 * 60 * 1000;
+export {
+  REGISTRATION_CHALLENGE_LIFETIME_MS,
+  REGISTRATION_QR_PERSISTENT_EXPIRES_AT,
+  REGISTRATION_RESET_CHALLENGE_LIFETIME_MS,
+} from "./registration-policy";
 export const QR_RESET_GRANT_LIFETIME_MS = 10 * 60 * 1000;
 export const REGISTRATION_CHALLENGE_COOKIE = "job_classroom_registration_challenge";
 
@@ -52,8 +61,8 @@ function secureCookieSuffix(request: Request) {
   return new URL(request.url).protocol === "https:" ? "; Secure" : "";
 }
 
-function challengeCookie(token: string, request: Request) {
-  return `${REGISTRATION_CHALLENGE_COOKIE}=${encodeURIComponent(token)}; Path=/api/registration; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(REGISTRATION_CHALLENGE_LIFETIME_MS / 1000)}${secureCookieSuffix(request)}`;
+function challengeCookie(token: string, request: Request, lifetimeMs: number) {
+  return `${REGISTRATION_CHALLENGE_COOKIE}=${encodeURIComponent(token)}; Path=/api/registration; HttpOnly; SameSite=Strict; Max-Age=${Math.max(1, Math.floor(lifetimeMs / 1000))}${secureCookieSuffix(request)}`;
 }
 
 export function clearRegistrationChallengeCookie(request: Request) {
@@ -118,12 +127,18 @@ export async function issueRegistrationTokens(input: {
   const db = database();
   const placeholders = input.studentIds.map(() => "?").join(", ");
   const result = await db.prepare(
-    `SELECT id, qr_generation, status
-     FROM students WHERE class_id = ? AND id IN (${placeholders})`,
+    `SELECT s.id, s.qr_generation, s.status,
+            EXISTS (
+              SELECT 1 FROM registration_tokens rt
+              WHERE rt.student_id = s.id AND rt.generation = s.qr_generation
+                AND rt.revoked_at IS NULL
+            ) AS has_current_qr
+     FROM students s WHERE s.class_id = ? AND s.id IN (${placeholders})`,
   ).bind(input.classId, ...input.studentIds).all<{
     id: string;
     qr_generation: number;
     status: string;
+    has_current_qr: number;
   }>();
   const students = new Map(result.results.map((student) => [student.id, student]));
   if (students.size !== input.studentIds.length) {
@@ -137,6 +152,7 @@ export async function issueRegistrationTokens(input: {
       studentId,
       previousGeneration: student.qr_generation,
       generation: student.qr_generation + 1,
+      replacesCurrentQr: Boolean(student.has_current_qr),
       purpose: student.status === "reset_required" ? "reset" as const : "activate" as const,
       rawToken,
       tokenHash: await sha256(rawToken),
@@ -166,7 +182,9 @@ export async function issueRegistrationTokens(input: {
     db.prepare(
       `UPDATE student_qr_reset_grants SET revoked_at = ? WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
     ).bind(now, item.studentId),
-    db.prepare(`DELETE FROM sessions WHERE student_id = ?`).bind(item.studentId),
+    ...(item.replacesCurrentQr
+      ? [db.prepare(`DELETE FROM sessions WHERE student_id = ?`).bind(item.studentId)]
+      : []),
     db.prepare(`UPDATE students SET qr_generation = ?, updated_at = ? WHERE id = ? AND qr_generation = ?`).bind(
       item.generation, now, item.studentId, item.previousGeneration,
     ),
@@ -179,7 +197,7 @@ export async function issueRegistrationTokens(input: {
       item.tokenHash,
       item.purpose,
       item.generation,
-      now + REGISTRATION_QR_LIFETIME_MS,
+      REGISTRATION_QR_PERSISTENT_EXPIRES_AT,
       now,
     ),
     db.prepare(
@@ -187,7 +205,11 @@ export async function issueRegistrationTokens(input: {
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       crypto.randomUUID(), input.teacherId, input.classId, item.studentId,
-      "student_qr_issued", JSON.stringify({ generation: item.generation, purpose: item.purpose }), now,
+      "student_qr_issued", JSON.stringify({
+        generation: item.generation,
+        purpose: item.purpose,
+        replacedExistingQr: item.replacesCurrentQr,
+      }), now,
     ),
     db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(item.guardId),
   ]);
@@ -265,6 +287,114 @@ export async function issueStudentQrResetGrant(input: {
   return { expiresAt };
 }
 
+export async function revokeRegistrationToken(input: {
+  studentId: string;
+  teacherId: string;
+  classId: string;
+}) {
+  await ensureSchema();
+  const db = database();
+  const student = await db.prepare(
+    `SELECT s.qr_generation,
+            EXISTS (
+              SELECT 1 FROM registration_tokens rt
+              WHERE rt.student_id = s.id AND rt.generation = s.qr_generation
+                AND rt.revoked_at IS NULL
+            ) AS has_current_qr
+     FROM students s WHERE s.id = ? AND s.class_id = ?`,
+  ).bind(input.studentId, input.classId).first<{
+    qr_generation: number;
+    has_current_qr: number;
+  }>();
+  if (!student) throw new ApiError(404, "학생을 찾을 수 없습니다.", "STUDENT_NOT_FOUND");
+  if (!student.has_current_qr) {
+    return { revoked: false, generation: student.qr_generation };
+  }
+
+  const now = Date.now();
+  const nextGeneration = student.qr_generation + 1;
+  const guardId = crypto.randomUUID();
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO registration_operation_guards (id, operation, created_at)
+         VALUES (
+           CASE WHEN EXISTS (
+             SELECT 1 FROM students s
+             JOIN classes c ON c.id = s.class_id
+             JOIN registration_tokens rt ON rt.student_id = s.id
+               AND rt.generation = s.qr_generation AND rt.revoked_at IS NULL
+             WHERE s.id = ? AND s.class_id = ? AND s.qr_generation = ?
+               AND c.teacher_id = ? AND c.status = 'active'
+           ) THEN ? ELSE NULL END,
+           'revoke_qr', ?
+         )`,
+      ).bind(
+        input.studentId,
+        input.classId,
+        student.qr_generation,
+        input.teacherId,
+        guardId,
+        now,
+      ),
+      db.prepare(
+        `UPDATE registration_tokens SET revoked_at = ?
+         WHERE student_id = ? AND revoked_at IS NULL`,
+      ).bind(now, input.studentId),
+      db.prepare(
+        `UPDATE registration_challenges SET revoked_at = ?
+         WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
+      ).bind(now, input.studentId),
+      db.prepare(
+        `UPDATE student_qr_reset_grants SET revoked_at = ?
+         WHERE student_id = ? AND used_at IS NULL AND revoked_at IS NULL`,
+      ).bind(now, input.studentId),
+      db.prepare(
+        `UPDATE students SET qr_generation = ?, updated_at = ?
+         WHERE id = ? AND qr_generation = ?`,
+      ).bind(nextGeneration, now, input.studentId, student.qr_generation),
+      db.prepare(
+        `INSERT INTO audit_logs (id, teacher_id, class_id, student_id, action, detail, created_at)
+         VALUES (?, ?, ?, ?, 'student_qr_revoked', ?, ?)`,
+      ).bind(
+        crypto.randomUUID(),
+        input.teacherId,
+        input.classId,
+        input.studentId,
+        JSON.stringify({
+          previousGeneration: student.qr_generation,
+          generation: nextGeneration,
+        }),
+        now,
+      ),
+      db.prepare(`DELETE FROM registration_operation_guards WHERE id = ?`).bind(guardId),
+    ]);
+  } catch (error) {
+    if (isOperationGuardFailure(error)) {
+      const current = await db.prepare(
+        `SELECT s.qr_generation,
+                EXISTS (
+                  SELECT 1 FROM registration_tokens rt
+                  WHERE rt.student_id = s.id AND rt.generation = s.qr_generation
+                    AND rt.revoked_at IS NULL
+                ) AS has_current_qr
+         FROM students s
+         JOIN classes c ON c.id = s.class_id
+         WHERE s.id = ? AND s.class_id = ? AND c.teacher_id = ? AND c.status = 'active'`,
+      ).bind(input.studentId, input.classId, input.teacherId).first<{
+        qr_generation: number;
+        has_current_qr: number;
+      }>();
+      if (current && !current.has_current_qr) {
+        return { revoked: false, generation: current.qr_generation };
+      }
+      throw new ApiError(409, "학생 또는 QR 상태가 바뀌었어요. 새로고침 후 다시 시도해 주세요.", "QR_REVOKE_STALE");
+    }
+    throw error;
+  }
+  return { revoked: true, generation: nextGeneration };
+}
+
 export async function registrationRecord(rawToken: string) {
   await ensureSchema();
   const tokenHash = await sha256(rawToken);
@@ -281,8 +411,8 @@ export async function registrationRecord(rawToken: string) {
 }
 
 export function assertUsableRegistration(record: RegistrationRecord | null) {
-  if (!record || record.revoked_at || Number(record.expires_at) <= Date.now() || Number(record.generation) !== Number(record.qr_generation)) {
-    throw new ApiError(410, "이 QR은 만료되었거나 새 QR로 바뀌었어요. 선생님께 현재 QR을 확인해 주세요.", "QR_NOT_USABLE");
+  if (!isCurrentUnrevokedRegistration(record)) {
+    throw new ApiError(410, "이 QR은 사용 중지되었거나 새 QR로 바뀌었어요. 선생님께 현재 QR을 확인해 주세요.", "QR_NOT_USABLE");
   }
   if (record.status === "locked" || record.status === "excluded") {
     throw new ApiError(403, "지금은 등록할 수 없는 계정이에요. 선생님께 알려 주세요.", "STUDENT_DISABLED");
@@ -327,7 +457,13 @@ export async function exchangeRegistrationToken(rawToken: string, request: Reque
   const rawChallenge = randomToken(32);
   const challengeHash = await sha256(rawChallenge);
   const challengeId = crypto.randomUUID();
-  const expiresAt = now + REGISTRATION_CHALLENGE_LIFETIME_MS;
+  const challengeLifetimeMs = mode === "reset"
+    ? Math.min(
+      REGISTRATION_RESET_CHALLENGE_LIFETIME_MS,
+      grant ? Math.max(1, grant.expires_at - now) : REGISTRATION_RESET_CHALLENGE_LIFETIME_MS,
+    )
+    : REGISTRATION_CHALLENGE_LIFETIME_MS;
+  const expiresAt = now + challengeLifetimeMs;
   await database().batch([
     database().prepare(
       `DELETE FROM registration_challenges
@@ -360,7 +496,7 @@ export async function exchangeRegistrationToken(rawToken: string, request: Reque
     record: record!,
     mode,
     resetExpiresAt: grant?.expires_at ?? null,
-    cookie: challengeCookie(rawChallenge, request),
+    cookie: challengeCookie(rawChallenge, request, challengeLifetimeMs),
   };
 }
 

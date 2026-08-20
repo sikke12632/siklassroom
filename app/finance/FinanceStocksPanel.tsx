@@ -86,6 +86,7 @@ type FinanceStockAsset = {
   availableShares: number;
   maxSharesPerStudent: number;
   revision: number;
+  inventoryRevision: number;
   holderCount: number;
   issuedShares: number;
   volume: number;
@@ -196,7 +197,6 @@ type LooseRecord = Record<string, unknown>;
 
 type CreateDraft = {
   name: string;
-  symbol: string;
   description: string;
   initialPrice: string;
   totalSupply: string;
@@ -205,6 +205,11 @@ type CreateDraft = {
   sellFeePercent: string;
   buySpread: string;
   sellSpread: string;
+};
+
+type IssuanceDraft = {
+  quantity: string;
+  reason: string;
 };
 
 type MarketDraft = {
@@ -228,7 +233,7 @@ type NewsDraft = {
 };
 
 const MAX_AMOUNT = 1_000_000_000;
-const MAX_SUPPLY = 1_000_000;
+const MAX_SUPPLY = 1_000_000_000;
 
 const MOODS: Array<{ value: StockMood; label: string; description: string }> = [
   { value: "surge", label: "급등장", description: "상승 힘이 매우 강해요" },
@@ -311,6 +316,16 @@ const styles: Record<string, CSSProperties> = {
     fontWeight: 750,
   },
   fieldHelp: { color: "var(--color-text-muted)", fontSize: "var(--text-xs)", fontWeight: 500 },
+  optionalBadge: {
+    display: "inline-flex",
+    width: "fit-content",
+    padding: "2px 7px",
+    borderRadius: "var(--radius-pill)",
+    color: "var(--color-info)",
+    background: "var(--color-info-soft)",
+    fontSize: "var(--text-xs)",
+    fontWeight: 800,
+  },
   inputWithSuffix: {
     display: "grid",
     gridTemplateColumns: "minmax(0, 1fr) auto",
@@ -532,6 +547,7 @@ function normalizeStock(value: unknown): FinanceStockAsset | null {
     ),
     maxSharesPerStudent: numberValue(value.maxSharesPerStudent ?? value.max_shares_per_student),
     revision: numberValue(value.revision),
+    inventoryRevision: numberValue(value.inventoryRevision ?? value.inventory_revision),
     holderCount: numberValue(value.holderCount ?? value.holder_count ?? stats.holderCount ?? stats.holder_count),
     issuedShares,
     volume: numberValue(value.volume ?? stats.volume),
@@ -1538,7 +1554,6 @@ export function FinanceStocksPanel({
 
   async function createStock(draft: CreateDraft) {
     const name = draft.name.trim();
-    const symbol = draft.symbol.trim().toLocaleUpperCase("en-US");
     const description = draft.description.trim();
     const initialPrice = Number(draft.initialPrice);
     const totalSupply = Number(draft.totalSupply);
@@ -1549,10 +1564,6 @@ export function FinanceStocksPanel({
     const sellSpread = Number(draft.sellSpread);
     if (!name || name.length > 40) {
       setNotice({ tone: "error", message: "회사 이름은 40자 안으로 적어 주세요." });
-      return false;
-    }
-    if (!symbol || symbol.length > 12 || /\s/.test(symbol)) {
-      setNotice({ tone: "error", message: "종목 기호는 띄어쓰기 없이 12자 안으로 적어 주세요." });
       return false;
     }
     if (description.length > 200) {
@@ -1590,7 +1601,6 @@ export function FinanceStocksPanel({
     }
     const input = {
       name,
-      symbol,
       ...(description ? { description } : {}),
       initialPrice,
       totalSupply,
@@ -1711,6 +1721,64 @@ export function FinanceStocksPanel({
       return true;
     } catch (reason) {
       setNotice({ tone: "error", message: reason instanceof Error ? reason.message : "종목 설정을 바꾸지 못했어요." });
+      await refreshEverything().catch(() => undefined);
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function issueAdditionalShares(draft: IssuanceDraft) {
+    if (!data?.stock) return false;
+    const quantity = Number(draft.quantity);
+    const reason = draft.reason.trim();
+    if (
+      !Number.isSafeInteger(quantity)
+      || quantity < 1
+      || quantity > MAX_SUPPLY
+      || data.stock.totalSupply + quantity > MAX_SUPPLY
+    ) {
+      const remainingCapacity = Math.max(0, MAX_SUPPLY - data.stock.totalSupply);
+      setNotice({
+        tone: "error",
+        message: `추가 발행량은 1주 이상 ${remainingCapacity.toLocaleString("ko-KR")}주 이하로 적어 주세요.`,
+      });
+      return false;
+    }
+    if (reason.length > 300) {
+      setNotice({ tone: "error", message: "추가 발행 이유는 300자 안으로 적어 주세요." });
+      return false;
+    }
+    const input = {
+      quantity,
+      expectedRevision: data.stock.revision,
+      expectedInventoryRevision: data.stock.inventoryRevision,
+      ...(reason ? { reason } : {}),
+    };
+    const slot = `stock-supply-issue:${data.stock.id}`;
+    const idempotencyKey = getStableActionKey(actionKeys, slot, JSON.stringify(input));
+    setBusyId(slot);
+    setNotice(null);
+    try {
+      await sendAction(
+        `/api/finance/stocks/assets/${encodeURIComponent(data.stock.id)}/issuance?classId=${encodeURIComponent(classId)}`,
+        "POST",
+        { ...input, idempotencyKey },
+      );
+      delete actionKeys.current[slot];
+      setNotice({
+        tone: "success",
+        message: `${quantity.toLocaleString("ko-KR")}주를 추가 발행했어요. 기존 학생의 보유 주식과 매입 기록은 그대로입니다.`,
+      });
+      await refreshEverything();
+      return true;
+    } catch (reasonValue) {
+      setNotice({
+        tone: "error",
+        message: reasonValue instanceof Error
+          ? reasonValue.message
+          : "주식을 추가 발행하지 못했어요.",
+      });
       await refreshEverything().catch(() => undefined);
       return false;
     } finally {
@@ -2150,6 +2218,7 @@ export function FinanceStocksPanel({
           onCreate={createStock}
           onMarketUpdate={updateMarket}
           onAssetUpdate={updateAsset}
+          onIssueAdditionalShares={issueAdditionalShares}
           onTick={tickStock}
           onCreateNews={createNews}
           onCancelNews={cancelNews}
@@ -2183,6 +2252,7 @@ function TeacherStocks({
   onCreate,
   onMarketUpdate,
   onAssetUpdate,
+  onIssueAdditionalShares,
   onTick,
   onCreateNews,
   onCancelNews,
@@ -2199,6 +2269,7 @@ function TeacherStocks({
   onCreate: (draft: CreateDraft) => Promise<boolean>;
   onMarketUpdate: (draft: MarketDraft, isOpen: boolean) => Promise<boolean>;
   onAssetUpdate: (draft: AssetDraft) => Promise<boolean>;
+  onIssueAdditionalShares: (draft: IssuanceDraft) => Promise<boolean>;
   onTick: () => Promise<boolean>;
   onCreateNews: (draft: NewsDraft) => Promise<boolean>;
   onCancelNews: (item: FinanceStockNews, reason: string) => Promise<boolean>;
@@ -2213,11 +2284,10 @@ function TeacherStocks({
   ) => Promise<boolean>;
   onRefresh: () => void;
 }) {
-  const suggestedPrice = Math.max(10_000, moneyStep * 100);
+  const suggestedPrice = moneyStep;
   const [createDraft, setCreateDraft] = useState<CreateDraft>({
     name: "우리 반 주식회사",
-    symbol: "CLASS",
-    description: "우리 반의 활동과 선택에 따라 함께 성장하는 학급 주식입니다.",
+    description: "",
     initialPrice: String(suggestedPrice),
     totalSupply: "100",
     maxSharesPerStudent: "10",
@@ -2236,6 +2306,10 @@ function TeacherStocks({
   const [assetDraft, setAssetDraft] = useState<AssetDraft>({
     currentPrice: String(data.stock?.currentPrice ?? suggestedPrice),
     status: data.stock?.status ?? "active",
+  });
+  const [issuanceDraft, setIssuanceDraft] = useState<IssuanceDraft>({
+    quantity: "10",
+    reason: "",
   });
   const [newsDraft, setNewsDraft] = useState<NewsDraft>({
     title: "",
@@ -2260,6 +2334,12 @@ function TeacherStocks({
     await onAssetUpdate(assetDraft);
   }
 
+  async function submitAdditionalIssuance(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const completed = await onIssueAdditionalShares(issuanceDraft);
+    if (completed) setIssuanceDraft({ quantity: "10", reason: "" });
+  }
+
   async function submitNews(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const completed = await onCreateNews(newsDraft);
@@ -2280,21 +2360,15 @@ function TeacherStocks({
           <span style={{ ...styles.badge, color: "var(--color-info)", background: "var(--color-info-soft)" }}>학급당 1종목</span>
         </div>
         <form style={styles.form} onSubmit={submitCreate}>
-          <div style={styles.fieldGrid}>
-            <label style={styles.label}>
-              회사 이름
-              <input value={createDraft.name} maxLength={40} onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })} disabled={disabled} required />
-              <small style={styles.fieldHelp}>학생 화면에 가장 크게 표시됩니다.</small>
-            </label>
-            <label style={styles.label}>
-              종목 기호
-              <input value={createDraft.symbol} maxLength={12} onChange={(event) => setCreateDraft({ ...createDraft, symbol: event.target.value.toLocaleUpperCase("en-US") })} disabled={disabled} required />
-              <small style={styles.fieldHelp}>예: CLASS, SEOI5</small>
-            </label>
-          </div>
           <label style={styles.label}>
-            회사 소개
+            회사 이름
+            <input value={createDraft.name} maxLength={40} onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })} disabled={disabled} required />
+            <small style={styles.fieldHelp}>학생 화면에 가장 크게 표시됩니다. 내부 종목 기호는 자동으로 만들어집니다.</small>
+          </label>
+          <label style={styles.label}>
+            <span>회사 소개 <span style={styles.optionalBadge}>선택</span></span>
             <textarea value={createDraft.description} maxLength={200} rows={3} onChange={(event) => setCreateDraft({ ...createDraft, description: event.target.value })} disabled={disabled} />
+            <small style={styles.fieldHelp}>학생들이 회사에 관심을 갖고 투자 활동에 참여하도록 돕는 소개 글입니다. 필요하지 않으면 비워 두어도 됩니다.</small>
           </label>
           <div style={styles.fieldGrid}>
             <MoneyField label="첫 가격" value={createDraft.initialPrice} unit={unit} min={moneyStep} step={moneyStep} disabled={disabled} onChange={(value) => setCreateDraft({ ...createDraft, initialPrice: value })} />
@@ -2307,7 +2381,7 @@ function TeacherStocks({
           </div>
           <div className="finance-action-notice info" style={{ marginTop: 0 }}>
             <ShieldCheck aria-hidden="true" />
-            <p>발행 후에도 가격·거래 상태·수수료는 바꿀 수 있지만 회사와 총 발행량은 안전을 위해 고정됩니다.</p>
+            <p>발행 후에도 가격·거래 상태·수수료를 바꾸고, 교실 상황에 맞게 주식을 추가 발행할 수 있습니다.</p>
           </div>
           <button className="button button-primary button-large" style={styles.fullAction} type="submit" disabled={disabled}>
             {busyId === "stock-create" ? <LoaderCircle className="spin" aria-hidden="true" /> : <Building2 aria-hidden="true" />}
@@ -2320,6 +2394,7 @@ function TeacherStocks({
 
   const stock = data.stock;
   const priceChange = stock.previousPrice === null ? 0 : stock.currentPrice - stock.previousPrice;
+  const remainingIssuableShares = Math.max(0, MAX_SUPPLY - stock.totalSupply);
   return (
     <>
       <div style={styles.companyCard}>
@@ -2446,6 +2521,61 @@ function TeacherStocks({
           <button className="button button-light" style={styles.fullAction} type="submit" disabled={disabled}>
             {busyId?.startsWith("stock-asset-update:") ? <LoaderCircle className="spin" aria-hidden="true" /> : <Save aria-hidden="true" />}
             가격·상태 저장
+          </button>
+        </form>
+      </section>
+
+      <section style={styles.section} aria-labelledby="teacher-stock-supply-title">
+        <div style={styles.sectionHeading}>
+          <div>
+            <p className="eyebrow">교실 상황에 맞게</p>
+            <h3 id="teacher-stock-supply-title" style={styles.sectionTitle}>주식 추가 발행</h3>
+            <p style={styles.muted}>필요한 만큼 새 주식을 시장에 더 내놓을 수 있습니다.</p>
+          </div>
+          <span style={{ ...styles.badge, color: "var(--color-info)", background: "var(--color-info-soft)" }}>
+            전체 {stock.totalSupply.toLocaleString("ko-KR")}주
+          </span>
+        </div>
+        <form style={styles.form} onSubmit={submitAdditionalIssuance}>
+          <div style={styles.fieldGrid}>
+            <NumberField
+              label="추가할 주식 수"
+              value={issuanceDraft.quantity}
+              suffix="주"
+              min={1}
+              max={Math.max(1, remainingIssuableShares)}
+              disabled={disabled || remainingIssuableShares === 0 || stock.status === "archived"}
+              onChange={(value) => setIssuanceDraft({ ...issuanceDraft, quantity: value })}
+            />
+            <label style={styles.label}>
+              <span>추가 발행 이유 <span style={styles.optionalBadge}>선택</span></span>
+              <input
+                value={issuanceDraft.reason}
+                maxLength={300}
+                placeholder="예: 2학기 투자 활동 확대"
+                onChange={(event) => setIssuanceDraft({ ...issuanceDraft, reason: event.target.value })}
+                disabled={disabled || stock.status === "archived"}
+              />
+              <small style={styles.fieldHelp}>비워 두면 기본 사유로 기록됩니다.</small>
+            </label>
+          </div>
+          <div className="finance-action-notice info" style={{ marginTop: 0 }}>
+            <ShieldCheck aria-hidden="true" />
+            <p>
+              현재 시장 재고 {stock.availableShares.toLocaleString("ko-KR")}주에 새 주식만 더합니다.
+              기존 학생의 보유량·평균 매수가·거래 기록은 바뀌지 않습니다.
+            </p>
+          </div>
+          <button
+            className="button button-light"
+            style={styles.fullAction}
+            type="submit"
+            disabled={disabled || remainingIssuableShares === 0 || stock.status === "archived"}
+          >
+            {busyId?.startsWith("stock-supply-issue:")
+              ? <LoaderCircle className="spin" aria-hidden="true" />
+              : <Coins aria-hidden="true" />}
+            주식 추가 발행
           </button>
         </form>
       </section>

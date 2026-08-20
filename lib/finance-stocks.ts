@@ -16,6 +16,7 @@ import {
   stableFinanceJson,
 } from "./finance-ledger-rules";
 import {
+  FINANCE_STOCK_MAX_SUPPLY,
   FinanceStockRuleError,
   assertFinanceStockPositionMarketValue,
   calculateFinanceStockExecutionPrice,
@@ -23,6 +24,7 @@ import {
   calculateFinanceStockLiquidationTotals,
   calculateFinanceStockPositionAfterTrade,
   limitFinanceStockPriceIncrease,
+  normalizeFinanceStockAdditionalIssuance,
   normalizeFinanceStockDefinition,
   normalizeFinanceStockMarketSettings,
   normalizeFinanceStockPrice,
@@ -249,6 +251,26 @@ type StockEventRow = {
   previous_snapshot_json: string | null;
   stock_snapshot_json: string;
   actor_type: string;
+  created_at: number;
+};
+
+type StockSupplyEventRow = {
+  id: string;
+  class_id: string;
+  stock_id: string;
+  stock_revision_before: number;
+  stock_revision_after: number;
+  inventory_revision_before: number;
+  inventory_revision_after: number;
+  quantity: number;
+  total_shares_before: number;
+  total_shares_after: number;
+  available_shares_before: number;
+  available_shares_after: number;
+  reason: string;
+  idempotency_key: string;
+  payload_hash: string;
+  actor_teacher_id: string;
   created_at: number;
 };
 
@@ -801,6 +823,8 @@ function mapDatabaseError(error: unknown): never {
     ["FINANCE_STOCK_MARKET_STALE", 409, "주식시장 설정이 다른 화면에서 바뀌었습니다. 최신 정보를 다시 불러와 주세요.", "FINANCE_STOCK_MARKET_STALE"],
     ["FINANCE_STOCK_MARKET_ACCESS_DENIED", 403, "이 학급의 주식시장 설정을 바꿀 수 없습니다.", "FINANCE_STOCK_ACCESS_DENIED"],
     ["FINANCE_STOCK_STALE", 409, "주가나 종목 상태가 바뀌었습니다. 최신 시세로 다시 확인해 주세요.", "FINANCE_STOCK_STALE"],
+    ["FINANCE_STOCK_SUPPLY_STALE", 409, "다른 거래나 추가 발행이 먼저 반영되었습니다. 최신 수량을 다시 확인해 주세요.", "FINANCE_STOCK_STALE"],
+    ["FINANCE_STOCK_SUPPLY_EVENT_INVALID", 409, "추가 발행 중 주식 수량이 바뀌었습니다. 최신 수량을 다시 확인해 주세요.", "FINANCE_STOCK_STALE"],
     ["FINANCE_STOCK_TRADE_STALE", 409, "다른 거래가 먼저 체결되었습니다. 최신 잔액과 보유량을 확인해 주세요.", "FINANCE_STOCK_TRADE_STALE"],
     ["FINANCE_STOCK_MARKET_CLOSED", 409, "지금은 주식시장이 쉬는 시간입니다.", "FINANCE_STOCK_MARKET_CLOSED"],
     ["FINANCE_STOCK_BUY_CLOSED", 409, "지금은 이 주식을 새로 살 수 없습니다.", "FINANCE_STOCK_BUY_CLOSED"],
@@ -883,6 +907,8 @@ function mapDatabaseError(error: unknown): never {
     || message.includes("finance_stock_trades.class_id, finance_stock_trades.student_id")
     || message.includes("finance_stock_events_class_idempotency_uq")
     || message.includes("finance_stock_market_events_class_idempotency_uq")
+    || message.includes("finance_stock_supply_events_class_idempotency_uq")
+    || message.includes("FINANCE_STOCK_IDEMPOTENCY_CONFLICT")
   ) {
     throw new ApiError(409, "같은 저장 요청 번호가 다른 작업에 사용되었습니다.", "FINANCE_STOCK_IDEMPOTENCY_CONFLICT");
   }
@@ -902,6 +928,24 @@ async function stockEventByIdempotency(
      FROM finance_stock_events
      WHERE class_id = ? AND idempotency_key = ? LIMIT 1`,
   ).bind(classId, key).first<StockEventRow>();
+}
+
+async function stockSupplyEventByIdempotency(
+  db: D1Database,
+  classId: string,
+  key: string,
+) {
+  return db.prepare(
+    `SELECT id, class_id, stock_id,
+            stock_revision_before, stock_revision_after,
+            inventory_revision_before, inventory_revision_after,
+            quantity, total_shares_before, total_shares_after,
+            available_shares_before, available_shares_after,
+            reason, idempotency_key, payload_hash,
+            actor_teacher_id, created_at
+     FROM finance_stock_supply_events
+     WHERE class_id = ? AND idempotency_key = ? LIMIT 1`,
+  ).bind(classId, key).first<StockSupplyEventRow>();
 }
 
 async function marketEventByIdempotency(
@@ -1320,6 +1364,9 @@ export async function createFinanceStock(
   try {
     definition = normalizeFinanceStockDefinition({
       ...input,
+      // A class currently has one stock. Keep the database symbol for
+      // compatibility, but do not make teachers invent an internal code.
+      symbol: "CLASS",
       denominationStep: step,
     });
     marketValues = normalizeFinanceStockMarketSettings({
@@ -1832,6 +1879,210 @@ export async function updateFinanceStock(
     mapDatabaseError(error);
   }
   return { stock: serializeStock(next), deduplicated: false };
+}
+
+export async function issueAdditionalFinanceStock(
+  request: Request,
+  stockIdValue: unknown,
+  input: Record<string, unknown>,
+) {
+  const context = await financeContextForRequest(request);
+  assertTeacher(context);
+  const stockId = requiredId(stockIdValue, "주식 ID");
+  const db = database();
+  const current = await stockById(db, context.classroom.id, stockId);
+  if (!current) {
+    throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
+  }
+
+  let values: ReturnType<typeof normalizeFinanceStockAdditionalIssuance>;
+  try {
+    values = normalizeFinanceStockAdditionalIssuance(input);
+  } catch (error) {
+    ruleError(error);
+  }
+
+  const payloadHash = await sha256(stableFinanceJson({
+    classId: context.classroom.id,
+    stockId,
+    quantity: values.quantity,
+    expectedRevision: values.expectedRevision,
+    expectedInventoryRevision: values.expectedInventoryRevision,
+    reason: values.reason,
+  }));
+  const duplicate = await stockSupplyEventByIdempotency(
+    db,
+    context.classroom.id,
+    values.idempotencyKey,
+  );
+  if (duplicate) {
+    if (duplicate.stock_id !== stockId || duplicate.payload_hash !== payloadHash) {
+      throw new ApiError(
+        409,
+        "같은 저장 요청이 다른 추가 발행에 사용되었습니다.",
+        "FINANCE_STOCK_IDEMPOTENCY_CONFLICT",
+      );
+    }
+    const saved = await stockById(db, context.classroom.id, stockId);
+    if (!saved) {
+      throw new ApiError(404, "우리 반 주식을 찾지 못했습니다.", "FINANCE_STOCK_NOT_FOUND");
+    }
+    return {
+      stock: serializeStock(saved),
+      issuance: {
+        quantity: Number(duplicate.quantity),
+        totalSupplyBefore: Number(duplicate.total_shares_before),
+        totalSupplyAfter: Number(duplicate.total_shares_after),
+        availableSupplyBefore: Number(duplicate.available_shares_before),
+        availableSupplyAfter: Number(duplicate.available_shares_after),
+        reason: duplicate.reason,
+        createdAt: Number(duplicate.created_at),
+      },
+      deduplicated: true,
+    };
+  }
+  if (current.status === "archived") {
+    throw new ApiError(
+      409,
+      "보관된 종목에는 주식을 추가 발행할 수 없습니다.",
+      "FINANCE_STOCK_IMMUTABLE",
+    );
+  }
+  const totalSupplyAfterBigInt = BigInt(current.total_shares) + BigInt(values.quantity);
+  if (totalSupplyAfterBigInt > BigInt(FINANCE_STOCK_MAX_SUPPLY)) {
+    throw new ApiError(
+      400,
+      `추가 발행 후 전체 주식 수는 ${FINANCE_STOCK_MAX_SUPPLY.toLocaleString("ko-KR")}주를 넘을 수 없습니다.`,
+      "FINANCE_STOCK_INVALID_SUPPLY",
+    );
+  }
+  const totalSupplyAfter = Number(totalSupplyAfterBigInt);
+  const availableSharesAfter = Number(current.available_shares) + values.quantity;
+  if (!Number.isSafeInteger(availableSharesAfter) || availableSharesAfter > totalSupplyAfter) {
+    throw new ApiError(
+      409,
+      "현재 주식 수량을 안전하게 늘릴 수 없습니다.",
+      "FINANCE_STOCK_INVALID_SUPPLY",
+    );
+  }
+  if (
+    Number(current.revision) !== values.expectedRevision
+    || Number(current.inventory_revision) !== values.expectedInventoryRevision
+  ) {
+    throw new ApiError(
+      409,
+      "다른 거래나 설정 변경이 먼저 반영되었습니다. 최신 수량을 다시 확인해 주세요.",
+      "FINANCE_STOCK_STALE",
+    );
+  }
+
+  const now = Date.now();
+  const next: StockRow = {
+    ...current,
+    total_shares: totalSupplyAfter,
+    available_shares: availableSharesAfter,
+    revision: values.expectedRevision + 1,
+    inventory_revision: values.expectedInventoryRevision + 1,
+    updated_at: now,
+  };
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE finance_stocks
+         SET total_shares = total_shares + ?,
+             available_shares = available_shares + ?,
+             revision = revision + 1,
+             inventory_revision = inventory_revision + 1,
+             updated_by_actor_type = 'teacher',
+             updated_by_teacher_id = ?, updated_at = ?
+         WHERE id = ? AND class_id = ? AND status <> 'archived'
+           AND revision = ? AND inventory_revision = ?
+           AND total_shares = ? AND available_shares = ?`,
+      ).bind(
+        values.quantity,
+        values.quantity,
+        context.actor.id,
+        now,
+        stockId,
+        context.classroom.id,
+        values.expectedRevision,
+        values.expectedInventoryRevision,
+        current.total_shares,
+        current.available_shares,
+      ),
+      db.prepare(
+        `INSERT INTO finance_stock_supply_events (
+           id, class_id, stock_id,
+           stock_revision_before, stock_revision_after,
+           inventory_revision_before, inventory_revision_after,
+           quantity, total_shares_before, total_shares_after,
+           available_shares_before, available_shares_after,
+           reason, idempotency_key, payload_hash,
+           actor_teacher_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        `finance:stock-supply:${stockId}:${next.revision}`,
+        context.classroom.id,
+        stockId,
+        values.expectedRevision,
+        next.revision,
+        values.expectedInventoryRevision,
+        next.inventory_revision,
+        values.quantity,
+        current.total_shares,
+        next.total_shares,
+        current.available_shares,
+        next.available_shares,
+        values.reason,
+        values.idempotencyKey,
+        payloadHash,
+        context.actor.id,
+        now,
+      ),
+    ]);
+  } catch (error) {
+    const concurrent = await stockSupplyEventByIdempotency(
+      db,
+      context.classroom.id,
+      values.idempotencyKey,
+    );
+    if (
+      concurrent
+      && concurrent.stock_id === stockId
+      && concurrent.payload_hash === payloadHash
+    ) {
+      const saved = await stockById(db, context.classroom.id, stockId);
+      if (saved) {
+        return {
+          stock: serializeStock(saved),
+          issuance: {
+            quantity: Number(concurrent.quantity),
+            totalSupplyBefore: Number(concurrent.total_shares_before),
+            totalSupplyAfter: Number(concurrent.total_shares_after),
+            availableSupplyBefore: Number(concurrent.available_shares_before),
+            availableSupplyAfter: Number(concurrent.available_shares_after),
+            reason: concurrent.reason,
+            createdAt: Number(concurrent.created_at),
+          },
+          deduplicated: true,
+        };
+      }
+    }
+    mapDatabaseError(error);
+  }
+  return {
+    stock: serializeStock(next),
+    issuance: {
+      quantity: values.quantity,
+      totalSupplyBefore: Number(current.total_shares),
+      totalSupplyAfter: next.total_shares,
+      availableSupplyBefore: Number(current.available_shares),
+      availableSupplyAfter: next.available_shares,
+      reason: values.reason,
+      createdAt: now,
+    },
+    deduplicated: false,
+  };
 }
 
 export async function tradeFinanceStock(

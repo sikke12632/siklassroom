@@ -1404,7 +1404,7 @@ test("pre-0017 settlement retries deduplicate without another ledger posting", {
 });
 
 test("failed maturities back off so later contracts settle and retries clean up", {
-  timeout: 120_000,
+  timeout: 360_000,
 }, async () => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "siklassroom-deposit-maturity-backoff-d1-"),

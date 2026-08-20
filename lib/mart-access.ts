@@ -12,6 +12,8 @@ export type MartContext = {
   actor: FinanceContext["actor"];
   classroom: FinanceContext["classroom"];
   activeJob: FinanceContext["activeJob"];
+  authorizationPeriodId?: string | null;
+  operatorPermissionSource?: FinanceContext["operatorPermissionSource"];
   role: MartRole;
   permissions: {
     canOperate: boolean;
@@ -27,12 +29,28 @@ export type MartContext = {
 
 export async function martContextForRequest(request: Request): Promise<MartContext> {
   const context = await financeContextForRequest(request);
-  const role = resolveMartRole(context.actor.type, context.activeJob?.templateId);
+  const automaticPermission = context.activeJob?.templateId === "market-clerk";
+  const manualPermission = context.manualPermissionKeys.includes("mart_operator");
+  const role = resolveMartRole(
+    context.actor.type,
+    context.activeJob?.templateId,
+    manualPermission,
+  );
   const classIsActive = context.classroom.status === "active";
   return {
     actor: context.actor,
     classroom: context.classroom,
     activeJob: context.activeJob,
+    authorizationPeriodId: context.permissionPeriodIds.mart_operator ?? null,
+    operatorPermissionSource: context.actor.type === "teacher"
+      ? null
+      : automaticPermission && manualPermission
+        ? "both"
+        : automaticPermission
+          ? "automatic"
+          : manualPermission
+            ? "manual"
+            : null,
     role,
     permissions: {
       canOperate: classIsActive && (role === "teacher" || role === "market_clerk"),
@@ -106,10 +124,10 @@ export function martOperationActor(context: MartContext) {
       actorLabel: context.actor.name || "교사",
     };
   }
-  if (!context.activeJob?.periodId) {
+  if (!context.authorizationPeriodId) {
     throw new ApiError(
       403,
-      "현재 효력이 있는 마트 직원 배정을 확인할 수 없습니다.",
+      "현재 효력이 있는 직업 운영 기간을 확인할 수 없습니다.",
       "MART_CLERK_ACCESS_DENIED",
     );
   }
@@ -117,7 +135,7 @@ export function martOperationActor(context: MartContext) {
     actorType: "market_clerk" as const,
     actorTeacherId: null,
     actorStudentId: context.actor.id,
-    actorJobPeriodId: context.activeJob.periodId,
+    actorJobPeriodId: context.authorizationPeriodId,
     actorLabel: context.actor.name,
   };
 }

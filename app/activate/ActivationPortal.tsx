@@ -1,11 +1,11 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Logo } from "@/app/components/Logo";
 import { Notice } from "@/app/components/Notice";
 import { ThemeToggle } from "@/app/components/ThemeToggle";
-import { postJson } from "@/lib/client-api";
+import { ClientApiError, postJson } from "@/lib/client-api";
 import { isSafeNewStudentPassword, isValidExistingStudentPassword } from "@/lib/student-password";
 
 type ActivationInfo = {
@@ -27,6 +27,8 @@ function tokenFromLocation() {
 
 export function ActivationPortal() {
   const router = useRouter();
+  const qrTokenRef = useRef("");
+  const challengeRefreshAttempted = useRef(false);
   const [info, setInfo] = useState<ActivationInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [password, setPassword] = useState("");
@@ -43,6 +45,10 @@ export function ActivationPortal() {
         setLoading(false);
         return;
       }
+      // Keep the bearer token only in this page's memory. This lets one lost or
+      // expired handoff cookie recover without asking a child to scan again,
+      // while the address bar and browser storage remain free of the token.
+      qrTokenRef.current = token;
       postJson<ActivationInfo>("/api/registration/verify", { token })
         .then(setInfo)
         .catch((reason) => setError(reason.message))
@@ -60,13 +66,28 @@ export function ActivationPortal() {
     }
     if (info?.mode === "login" ? !isValidExistingStudentPassword(password) : !isSafeNewStudentPassword(password)) {
       setError(info?.mode === "login"
-        ? "숫자 4~12자리로 입력해 주세요."
-        : "같은 숫자나 연속 숫자를 피해서 숫자 6~12자리로 만들어 주세요.");
+        ? "영문 또는 숫자 4~32자로 입력해 주세요."
+        : "영문 또는 숫자 4~32자로 만들어 주세요.");
       return;
     }
     setBusy(true);
     try {
-      await postJson("/api/registration/complete", { password });
+      try {
+        await postJson("/api/registration/complete", { password });
+      } catch (reason) {
+        const challengeExpired = reason instanceof ClientApiError
+          && (reason.code === "REGISTRATION_CHALLENGE_REQUIRED" || reason.code === "REGISTRATION_CHALLENGE_EXPIRED");
+        if (!challengeExpired || challengeRefreshAttempted.current || !qrTokenRef.current || !info) throw reason;
+
+        challengeRefreshAttempted.current = true;
+        const refreshed = await postJson<ActivationInfo>("/api/registration/verify", { token: qrTokenRef.current });
+        setInfo(refreshed);
+        if (refreshed.mode !== info.mode) {
+          throw new Error("계정 상태가 바뀌었어요. 화면 안내를 확인한 뒤 다시 진행해 주세요.");
+        }
+        await postJson("/api/registration/complete", { password });
+      }
+      qrTokenRef.current = "";
       router.replace("/student");
       router.refresh();
     } catch (reason) {
@@ -115,15 +136,15 @@ export function ActivationPortal() {
                 <h2>{heading}</h2>
                 <p>{isLogin
                   ? "QR은 학생을 찾는 카드예요. 평소 쓰던 비밀번호를 입력하면 안전하게 들어갈 수 있어요."
-                  : "친구에게 알려주지 않을 숫자 6~12자리를 정해 주세요."}</p>
+                  : "친구에게 알려주지 않을 영문 또는 숫자 4~32자를 정해 주세요."}</p>
               </div>
               <label>{isLogin ? "현재 비밀번호" : "새 비밀번호"}
                 <input
                   type="password"
-                  inputMode="numeric"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value.replace(/\D/g, "").slice(0, 12))}
-                  placeholder={isLogin ? "숫자 4자리 이상" : "숫자 6자리 이상"}
+                  onChange={(event) => setPassword(event.target.value.slice(0, 32))}
+                  placeholder="영문 또는 숫자 4자리 이상"
+                  maxLength={32}
                   autoComplete={isLogin ? "current-password" : "new-password"}
                   autoFocus
                   required
@@ -133,10 +154,10 @@ export function ActivationPortal() {
                 <label>한 번 더
                   <input
                     type="password"
-                    inputMode="numeric"
                     value={confirmPassword}
-                    onChange={(event) => setConfirmPassword(event.target.value.replace(/\D/g, "").slice(0, 12))}
+                    onChange={(event) => setConfirmPassword(event.target.value.slice(0, 32))}
                     placeholder="똑같이 입력"
+                    maxLength={32}
                     autoComplete="new-password"
                     required
                   />

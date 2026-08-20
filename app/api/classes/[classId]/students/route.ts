@@ -3,7 +3,7 @@ import { ownedActiveClass, ownedClass } from "@/lib/authorization";
 import { database, isOperationGuardFailure } from "@/lib/database";
 import { randomToken, sha256 } from "@/lib/crypto";
 import { cleanDisplayText, integerInRange } from "@/lib/identity";
-import { REGISTRATION_QR_LIFETIME_MS, registrationActivationUrl } from "@/lib/registration";
+import { REGISTRATION_QR_PERSISTENT_EXPIRES_AT, registrationActivationUrl } from "@/lib/registration";
 import { ApiError, apiFailure, json, readJson } from "@/lib/responses";
 
 type StudentInput = { number?: number; name?: string };
@@ -14,10 +14,62 @@ export async function GET(request: Request, context: { params: Promise<{ classId
     const { classId } = await context.params;
     const classRoom = await ownedClass(teacherId, classId);
     const result = await database().prepare(
-      `SELECT id, student_number, official_name, status, qr_generation, activated_at, created_at, updated_at
-       FROM students WHERE class_id = ? ORDER BY student_number ASC`,
-    ).bind(classId).all();
-    return json({ class: classRoom, students: result.results });
+      `SELECT s.id, s.student_number, s.official_name, s.status, s.qr_generation,
+              s.activated_at, s.created_at, s.updated_at,
+              EXISTS (
+                SELECT 1 FROM registration_tokens rt
+                WHERE rt.student_id = s.id AND rt.generation = s.qr_generation
+                  AND rt.revoked_at IS NULL
+              ) AS qr_active
+       FROM students s WHERE s.class_id = ? ORDER BY s.student_number ASC`,
+    ).bind(classId).all<Record<string, unknown>>();
+    const [manualPermissions, automaticPermissions] = await Promise.all([
+      database().prepare(
+        `SELECT student_id, permission_key, is_active, revision
+         FROM student_manual_permissions
+         WHERE class_id = ?
+         ORDER BY student_id, permission_key`,
+      ).bind(classId).all<{
+        student_id: string;
+        permission_key: string;
+        is_active: number;
+        revision: number;
+      }>(),
+      database().prepare(
+        `SELECT DISTINCT student_id, permission_key
+         FROM student_effective_permissions
+         WHERE class_id = ? AND permission_source = 'automatic'
+         ORDER BY student_id, permission_key`,
+      ).bind(classId).all<{ student_id: string; permission_key: string }>(),
+    ]);
+    const manualByStudent = new Map<string, Array<{
+      permission_key: string;
+      is_active: number;
+      revision: number;
+    }>>();
+    for (const row of manualPermissions.results) {
+      const entries = manualByStudent.get(row.student_id) ?? [];
+      entries.push({
+        permission_key: row.permission_key,
+        is_active: Number(row.is_active),
+        revision: Number(row.revision),
+      });
+      manualByStudent.set(row.student_id, entries);
+    }
+    const automaticByStudent = new Map<string, string[]>();
+    for (const row of automaticPermissions.results) {
+      const entries = automaticByStudent.get(row.student_id) ?? [];
+      entries.push(row.permission_key);
+      automaticByStudent.set(row.student_id, entries);
+    }
+    return json({
+      class: classRoom,
+      students: result.results.map((student) => ({
+        ...student,
+        automatic_permissions: automaticByStudent.get(String(student.id)) ?? [],
+        manual_permissions: manualByStudent.get(String(student.id)) ?? [],
+      })),
+    });
   } catch (error) {
     return apiFailure(error);
   }
@@ -72,7 +124,7 @@ export async function POST(request: Request, context: { params: Promise<{ classI
       statements.push(database().prepare(
         `INSERT INTO registration_tokens (id, student_id, token_hash, purpose, generation, expires_at, created_at)
          VALUES (?, ?, ?, 'activate', 1, ?, ?)`,
-      ).bind(crypto.randomUUID(), row.id, row.tokenHash, now + REGISTRATION_QR_LIFETIME_MS, now));
+      ).bind(crypto.randomUUID(), row.id, row.tokenHash, REGISTRATION_QR_PERSISTENT_EXPIRES_AT, now));
     }
     statements.push(database().prepare(
       `INSERT INTO audit_logs (

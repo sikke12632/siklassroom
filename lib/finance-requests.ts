@@ -484,19 +484,19 @@ function resolutionActor(context: FinanceContext) {
   if (
     context.financeRole === "banker"
     && context.actor.type === "student"
-    && context.activeJob
+    && context.authorizationPeriodId
   ) {
     return {
       actorType: "banker" as const,
       actorTeacherId: null,
       actorStudentId: context.actor.id,
-      actorJobPeriodId: context.activeJob.periodId,
+      actorJobPeriodId: context.authorizationPeriodId,
       actorLabel: context.actor.name,
       isEmergency: 0,
       postingActor: {
         type: "banker" as const,
         studentId: context.actor.id,
-        bankerPeriodId: context.activeJob.periodId,
+        bankerPeriodId: context.authorizationPeriodId,
         label: context.actor.name,
       },
     };

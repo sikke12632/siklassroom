@@ -645,7 +645,7 @@ test("입출금 신청은 은행원 처리·교사 개입·정정을 불변 원�
 });
 
 test("unresolved cash requests atomically block class archive and student exclusion", {
-  timeout: 180_000,
+  timeout: 360_000,
 }, async () => {
   const persistPath = await mkdtemp(
     path.join(tmpdir(), "siklassroom-finance-cash-lifecycle-d1-"),

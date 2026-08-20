@@ -10,6 +10,7 @@ import {
   calculateFinanceStockPositionAfterTrade,
   calculateFinanceStockTradeQuote,
   limitFinanceStockPriceIncrease,
+  normalizeFinanceStockAdditionalIssuance,
   normalizeFinanceStockDefinition,
   normalizeFinanceStockMarketSettings,
   normalizeFinanceStockTradeRequest,
@@ -427,6 +428,85 @@ test("종목 입력은 공백과 코드를 정리하고 가격을 권종 단위�
     }),
     stockError("FINANCE_STOCK_INVALID_SYMBOL"),
   );
+});
+
+test("종목 기호와 회사 소개 없이도 최소 권종에 맞는 낮은 시작가를 쓸 수 있다", () => {
+  assert.deepEqual(
+    normalizeFinanceStockDefinition({
+      name: "작은 회사",
+      initialPrice: 1,
+      totalSupply: 20,
+      maxSharesPerStudent: 5,
+      denominationStep: 1,
+    }),
+    {
+      symbol: "CLASS",
+      name: "작은 회사",
+      description: null,
+      currentPrice: 1,
+      initialPrice: 1,
+      totalSupply: 20,
+      maxSharesPerStudent: 5,
+      denominationStep: 1,
+    },
+  );
+});
+
+test("추가 발행은 주식·재고 revision과 전체 안전 한도를 함께 검증한다", () => {
+  assert.deepEqual(
+    normalizeFinanceStockAdditionalIssuance({
+      quantity: 25,
+      expectedRevision: 3,
+      expectedInventoryRevision: 7,
+      idempotencyKey: "stock-supply:test:0001",
+    }),
+    {
+      quantity: 25,
+      expectedRevision: 3,
+      expectedInventoryRevision: 7,
+      idempotencyKey: "stock-supply:test:0001",
+      reason: "학급 운영을 위해 주식을 추가 발행했습니다.",
+    },
+  );
+  assert.throws(
+    () => normalizeFinanceStockAdditionalIssuance({
+      quantity: 1_000_000_001,
+      expectedRevision: 3,
+      expectedInventoryRevision: 7,
+      idempotencyKey: "stock-supply:test:0002",
+    }),
+    stockError("FINANCE_STOCK_INVALID_SUPPLY"),
+  );
+});
+
+test("교사 화면은 종목 기호를 요구하지 않고 선택 소개와 안전한 추가 발행을 제공한다", async () => {
+  const [panel, service, schema, migration, route, audit] = await Promise.all([
+    readFile(new URL("../app/finance/FinanceStocksPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-stocks.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0043_stock_additional_issuance.sql", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/finance/stocks/assets/[stockId]/issuance/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/finance-audit.ts", import.meta.url), "utf8"),
+  ]);
+  assert.doesNotMatch(panel, /createDraft\.symbol/);
+  assert.match(panel, /내부 종목 기호는 자동으로 만들어집니다/);
+  assert.match(panel, /필요하지 않으면 비워 두어도 됩니다/);
+  assert.match(panel, /onIssueAdditionalShares/);
+  assert.match(panel, /expectedInventoryRevision: data\.stock\.inventoryRevision/);
+  assert.match(service, /symbol: "CLASS"/);
+  assert.match(service, /export async function issueAdditionalFinanceStock/);
+  assert.match(service, /total_shares = total_shares \+ \?/);
+  assert.match(service, /available_shares = available_shares \+ \?/);
+  assert.match(service, /revision = revision \+ 1/);
+  assert.match(service, /inventory_revision = inventory_revision \+ 1/);
+  for (const source of [schema, migration]) {
+    assert.match(source, /finance_stock_supply_events/);
+    assert.match(source, /total_shares_before[\s\S]*available_shares_before/);
+    assert.match(source, /FINANCE_STOCK_SUPPLY_EVENT_IMMUTABLE/);
+  }
+  assert.match(route, /issueAdditionalFinanceStock/);
+  assert.match(audit, /stock_supply_increased/);
+  assert.match(audit, /주식 추가 발행/);
 });
 
 test("시장 설정과 학생 거래 요청은 revision과 중복 방지 키를 정규화한다", () => {

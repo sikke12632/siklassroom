@@ -488,15 +488,9 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
   const capacityExceeded = (board?.jobs ?? []).some(
     (job) => (jobCounts[job.id] ?? 0) > job.capacity,
   );
-  const everyStudentAssigned = Boolean(
-    board?.session
-    && board.session.order.length === board.students.length
-    && board.session.order.every((student) => assignments[student.studentId]),
-  );
-  const canComplete = everyStudentAssigned
+  const canComplete = Boolean(board?.session)
     && !capacityExceeded
-    && !rosterMismatch
-    && remainingSeats === 0;
+    && !rosterMismatch;
 
   function chooseNextStudent(afterStudentId: string, nextAssignments: Record<string, string>) {
     const index = orderedStudents.findIndex((student) => student.studentId === afterStudentId);
@@ -552,7 +546,10 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
   }
 
   async function closeAndStart() {
-    if (!board?.sourcePeriod || board.evaluation?.status !== "finalized") return;
+    if (
+      !board?.sourcePeriod
+      || (board.sourcePeriod.assignmentCount > 0 && board.evaluation?.status !== "finalized")
+    ) return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -690,8 +687,9 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
 
   async function completeChoice() {
     if (!board?.session || !draft || !canComplete) return;
+    const unassignedCount = Math.max(0, orderedStudents.length - assignedCount);
     if (!window.confirm(
-      `${monthLabel(board.targetMonth)} 직업 선택 ${assignedCount}건을 최종 확정할까요?`,
+      `${monthLabel(board.targetMonth)} 직업 선택 ${assignedCount}건을 최종 확정할까요?\n${unassignedCount ? `역할 없는 학생 ${unassignedCount}명 · ` : ""}${remainingSeats ? `공석 ${remainingSeats}자리로 ` : ""}남겨 둘 수 있습니다.`,
     )) return;
     setBusy(true);
     setError("");
@@ -702,9 +700,9 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
           expectedRevision: board.session.revision,
           expectedJobSetupRevision: board.session.jobSetupRevision,
           requestId: crypto.randomUUID(),
-          assignments: board.session.order.map((student) => ({
-            studentId: student.studentId,
-            classJobId: draft.assignments[student.studentId],
+          assignments: Object.entries(draft.assignments).map(([studentId, classJobId]) => ({
+            studentId,
+            classJobId,
           })),
         },
       );
@@ -741,7 +739,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
     && board.latestConfirmedSession
     && board.latestConfirmedSession.targetYear === board.sourcePeriod.assignmentYear
     && board.latestConfirmedSession.targetMonth === board.sourcePeriod.assignmentMonth
-    && board.confirmedAssignments.length > 0,
+    && board.latestConfirmedSession.confirmedPeriodId,
   );
   const topbarMonth = recentConfirmationMatchesSource && !prepareNextMonth
     ? {
@@ -852,6 +850,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
 
   if (!board.closure) {
     const evaluation = board.evaluation;
+    const sourceHasAssignments = Number(board.sourcePeriod?.assignmentCount ?? 0) > 0;
     const evaluationOpen = evaluation?.status === "open";
     const evaluationClosed = evaluation?.status === "closed";
     const evaluationFinalized = evaluation?.status === "finalized";
@@ -865,7 +864,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
         <main className="job-main monthly-choice-main">
           <Notice message={error} tone="error" />
           <Notice message={message} tone="success" />
-          {!evaluationFinalized && board.blockingReason?.code !== "JOB_CAPACITY_MISMATCH" && (
+          {!evaluationFinalized && (
             <Notice message={board.blockingReason?.message} tone="error" />
           )}
           <section className="monthly-prep-heading">
@@ -905,17 +904,21 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
             <section className="panel monthly-evaluation-start">
               <span className="mode-icon" aria-hidden="true"><UsersRound /></span>
               <div>
-                <p className="eyebrow">학생들은 직업을 하나씩 평가해요</p>
-                <h2>힘듦 · 책임감 · 꾸준함 · 개인 부담</h2>
-                <p>각 항목을 1~5점으로 평가하면 직업별 평균과 A/B/C 추천등급이 자동으로 계산됩니다.</p>
+                <p className="eyebrow">{sourceHasAssignments ? "학생들은 직업을 하나씩 평가해요" : "지난달 배정 없이 다음 달을 준비해요"}</p>
+                <h2>{sourceHasAssignments ? "힘듦 · 책임감 · 꾸준함 · 개인 부담" : "평가할 직업 담당자가 없어요"}</h2>
+                <p>{sourceHasAssignments
+                  ? "각 항목을 1~5점으로 평가하면 직업별 평균과 A/B/C 추천등급이 자동으로 계산됩니다."
+                  : "지난달에 배정된 학생이 없으므로 평가를 건너뛰고 다음 달 선택 순서를 바로 만들 수 있어요."}</p>
               </div>
               <button
                 className="button button-primary button-large"
                 disabled={busy || !board.sourcePeriod || board.gradePreview.length === 0}
-                onClick={openEvaluation}
+                onClick={sourceHasAssignments ? openEvaluation : closeAndStart}
               >
                 <Check aria-hidden="true" />
-                {busy ? "평가를 열고 있어요…" : `${sourceLabel(board.sourcePeriod)} 직업평가 열기`}
+                {busy
+                  ? sourceHasAssignments ? "평가를 열고 있어요…" : "다음 달을 준비하고 있어요…"
+                  : sourceHasAssignments ? `${sourceLabel(board.sourcePeriod)} 직업평가 열기` : "평가 없이 다음 달 선택 시작"}
               </button>
             </section>
           )}
@@ -1183,7 +1186,7 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
           <div>
             <p className="eyebrow">4단계 · 교실에서 한 명씩 선택</p>
             <h1>{monthLabel(board.targetMonth)} 직업 선정</h1>
-            <p>선택은 이 브라우저에 즉시 저장되고, 모두 끝난 뒤 한 번만 서버로 전송됩니다.</p>
+            <p>선택은 이 브라우저에 즉시 저장됩니다. 필요한 학생만 선택하고 나머지는 역할 없이 마칠 수 있어요.</p>
           </div>
           <div className="monthly-live-tools">
             <span>선택 순서: <b>{board.session.orderMode === "shuffled" ? "동급 자동 무작위" : "동급 순서 재추첨 필요"}</b></span>
@@ -1231,8 +1234,8 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
               ) : (
                 <div className="monthly-all-chosen">
                   <Check aria-hidden="true" />
-                  <h2>모두 선택했어요</h2>
-                  <p>아래에서 전체 배정표를 확정해 주세요.</p>
+                  <h2>현재 선택을 마쳤어요</h2>
+                  <p>아래에서 현재 배정표를 확정해 주세요.</p>
                 </div>
               )}
             </div>
@@ -1340,14 +1343,23 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
             )}
           </div>
           {currentStudent ? (
-            <button
-              className="button button-primary button-large"
-              disabled={busy || rosterMismatch || !selectedJob}
-              onClick={confirmLocalChoice}
-            >
-              <Check aria-hidden="true" />
-              {selectedJob ? `${selectedJob.name}으로 선택 확정` : "직업을 선택해 주세요"}
-            </button>
+            <div className="button-row">
+              <button
+                className="button button-primary button-large"
+                disabled={busy || rosterMismatch || !selectedJob}
+                onClick={confirmLocalChoice}
+              >
+                <Check aria-hidden="true" />
+                {selectedJob ? `${selectedJob.name}으로 선택 확정` : "직업을 선택해 주세요"}
+              </button>
+              <button
+                className="button button-light"
+                disabled={busy || !canComplete}
+                onClick={completeChoice}
+              >
+                여기까지 선택하고 마치기
+              </button>
+            </div>
           ) : (
             <button
               className="button button-primary button-large"
@@ -1358,8 +1370,8 @@ export function MonthlyJobChoicePortal({ classId }: { classId: string }) {
               {busy
                 ? "전체 배정표를 저장하고 있어요…"
                 : canComplete
-                  ? `${assignedCount}명 전체 선택 확정·서버 저장`
-                  : `미완료 ${orderedStudents.length - assignedCount}명 · 남은 자리 ${remainingSeats}개`}
+                  ? `현재 ${assignedCount}명 선택 확정·서버 저장`
+                  : "학생·직업 정보를 다시 확인해 주세요"}
             </button>
           )}
         </section>

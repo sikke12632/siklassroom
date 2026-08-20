@@ -121,14 +121,14 @@ await request("/api/classes", { cookie: cookieBeforeSchool, expected: 401 });
 
 let classCreated;
 for (let attempt = 0; attempt < 30 && !classCreated; attempt += 1) {
-  const seed = (runNumber + attempt * 7919) % (60 * 6 * 30);
+  const seed = (runNumber + attempt * 7919) % (6 * 30);
   const response = await fetch(`${baseUrl}/api/classes`, {
     method: "POST",
     headers: { cookie: teacherCookie, "content-type": "application/json" },
     body: JSON.stringify({
-      schoolYear: 2040 + (seed % 60),
-      grade: 1 + (Math.floor(seed / 60) % 6),
-      classNumber: 1 + (Math.floor(seed / (60 * 6)) % 30),
+      schoolYear: 2100,
+      grade: 1 + (seed % 6),
+      classNumber: 1 + (Math.floor(seed / 6) % 30),
       displayName: "재사용 QR 검증반",
     }),
   });
@@ -256,8 +256,7 @@ const [racingPasswordLogin, racingReset] = await Promise.all([
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      schoolName: classCreated.data.class.school_name,
-      schoolYear: classCreated.data.class.school_year,
+      schoolCode: "01",
       grade: classCreated.data.class.grade,
       classNumber: classCreated.data.class.class_number,
       studentNumber: student.student_number,
@@ -279,8 +278,7 @@ if (racingLoginCookie) {
 await request("/api/student/login", {
   method: "POST",
   body: {
-    schoolName: classCreated.data.class.school_name,
-    schoolYear: classCreated.data.class.school_year,
+    schoolCode: "01",
     grade: classCreated.data.class.grade,
     classNumber: classCreated.data.class.class_number,
     studentNumber: student.student_number,
@@ -339,6 +337,58 @@ await request("/api/registration/complete", {
   body: { password: "975310" },
 });
 
+const persistentPasswordLogin = await request("/api/student/login", {
+  method: "POST",
+  body: {
+    schoolCode: "01",
+    grade: classCreated.data.class.grade,
+    classNumber: classCreated.data.class.class_number,
+    studentNumber: student.student_number,
+    password: "975310",
+  },
+});
+const persistentPasswordCookie = responseCookie(persistentPasswordLogin.response);
+await request(`/api/students/${student.id}/qr-reset-grant`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const challengeBeforeRevocation = await verifyQr(replacementToken, "reset");
+const revocation = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "DELETE",
+});
+assert.equal(revocation.data.qrRevoked, true);
+await request("/api/student/me", { cookie: persistentPasswordCookie });
+await request("/api/registration/complete", {
+  cookie: challengeBeforeRevocation.cookie,
+  method: "POST",
+  body: { password: "135790" },
+  expected: 410,
+});
+await request("/api/registration/verify", {
+  method: "POST",
+  body: { token: replacementToken },
+  expected: 410,
+});
+const rosterAfterRevocation = await request(`/api/classes/${classId}/students`, {
+  cookie: teacherCookie,
+});
+assert.equal(rosterAfterRevocation.data.students.find((row) => row.id === student.id).qr_active, 0);
+const repeatedRevocation = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "DELETE",
+});
+assert.equal(repeatedRevocation.data.qrRevoked, false);
+const afterRevocationReplacement = await request(`/api/students/${student.id}/registration-token`, {
+  cookie: teacherCookie,
+  method: "POST",
+  body: {},
+});
+const afterRevocationToken = activationTokenFrom(afterRevocationReplacement.data.card.activation_url);
+await request("/api/student/me", { cookie: persistentPasswordCookie });
+await verifyQr(afterRevocationToken, "login");
+
 const limitedStudent = roster.data.students[1];
 const limitedToken = activationTokenFrom(limitedStudent.activation_url);
 const limitedActivation = await verifyQr(limitedToken, "activate");
@@ -356,8 +406,7 @@ const distributedStudentLogins = await Promise.all(Array.from({ length: 8 }, (_,
       "x-forwarded-for": `student-login-${runNumber}-${index}`,
     },
     body: JSON.stringify({
-      schoolName: classCreated.data.class.school_name,
-      schoolYear: classCreated.data.class.school_year,
+      schoolCode: "01",
       grade: classCreated.data.class.grade,
       classNumber: classCreated.data.class.class_number,
       studentNumber: limitedStudent.student_number,
@@ -374,8 +423,7 @@ await request("/api/student/login", {
   method: "POST",
   headers: { "x-forwarded-for": `student-login-${runNumber}-7` },
   body: {
-    schoolName: classCreated.data.class.school_name,
-    schoolYear: classCreated.data.class.school_year,
+    schoolCode: "01",
     grade: classCreated.data.class.grade,
     classNumber: classCreated.data.class.class_number,
     studentNumber: limitedStudent.student_number,
@@ -408,8 +456,7 @@ const concurrentPinAttempts = await Promise.all(Array.from({ length: 8 }, (_, in
       "x-forwarded-for": `concurrent-pin-${runNumber}-${index}`,
     },
     body: JSON.stringify({
-      schoolName: classCreated.data.class.school_name,
-      schoolYear: classCreated.data.class.school_year,
+      schoolCode: "01",
       grade: classCreated.data.class.grade,
       classNumber: classCreated.data.class.class_number,
       studentNumber: concurrentStudent.student_number,

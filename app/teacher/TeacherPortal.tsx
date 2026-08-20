@@ -47,9 +47,30 @@ type ClassRoom = {
 };
 type Student = {
   id: string; student_number: number; official_name: string; status: string;
-  qr_generation: number; activated_at: number | null;
+  qr_generation: number; qr_active?: number; activated_at: number | null;
+  automatic_permissions?: StudentPermissionKey[];
+  manual_permissions?: Array<{
+    permission_key: StudentPermissionKey;
+    is_active: number;
+    revision: number;
+  }>;
 };
 type DraftStudent = { key: string; number: string; name: string };
+
+type StudentPermissionKey = "finance_banker" | "mart_operator"
+  | "life_check_tooth" | "life_check_milk" | "life_check_lunch";
+
+const STUDENT_PERMISSION_OPTIONS: Array<{
+  key: StudentPermissionKey;
+  label: string;
+  description: string;
+}> = [
+  { key: "finance_banker", label: "은행 운영", description: "입출금 신청 확인과 처리" },
+  { key: "mart_operator", label: "마트 운영", description: "상품·재고·판매 기록 관리" },
+  { key: "life_check_tooth", label: "양치 확인 기록", description: "우리 반 양치 결과 기록" },
+  { key: "life_check_milk", label: "우유 확인 기록", description: "우리 반 우유 결과 기록" },
+  { key: "life_check_lunch", label: "급식 확인 기록", description: "우리 반 급식 결과 기록" },
+];
 
 const currentYear = new Date().getFullYear();
 const emptyDraft = (number = ""): DraftStudent => ({ key: crypto.randomUUID(), number, name: "" });
@@ -196,6 +217,26 @@ export function TeacherPortal() {
     setError("");
     try {
       await api("/api/session", { method: "DELETE" });
+      // This route is already /teacher, so replacing it does not necessarily
+      // remount this client component. Clear every authenticated view state
+      // immediately instead of waiting for a router refresh to do it for us.
+      classLoadSequence.current += 1;
+      setScheduleDirty(false);
+      setActor(null);
+      setWrongEntrance(false);
+      setClasses([]);
+      setSelectedClassId(null);
+      setClassRoom(null);
+      setStudents([]);
+      setShowClassForm(false);
+      setAddingStudents(false);
+      setCards([]);
+      setBulkQrResume(null);
+      setInitialVerification(null);
+      setAuthMode("login");
+      setAuthNotice("");
+      setMessage("");
+      setSessionError("");
       router.replace("/teacher");
       router.refresh();
     } catch (reason) {
@@ -265,7 +306,6 @@ export function TeacherPortal() {
     selectedSummary
       && Number(selectedSummary.job_student_count ?? 0) > 0
       && selectedSummary.job_status === "completed"
-      && !selectedSummary.job_student_count_changed
       && selectedSummary.assignment_status === "confirmed",
   );
   const monthlyChoiceAccessible = Boolean(
@@ -277,11 +317,9 @@ export function TeacherPortal() {
     ? "학생 명단을 먼저 등록해 주세요."
     : selectedSummary?.job_status !== "completed"
       ? "우리 반 직업을 먼저 확정해 주세요."
-      : selectedSummary.job_student_count_changed
-        ? "달라진 학생 수에 맞춰 직업 정원을 먼저 조정해 주세요."
-        : selectedSummary?.assignment_status !== "confirmed"
-          ? "첫 직업 배정을 먼저 확정해 주세요."
-          : "";
+      : selectedSummary?.assignment_status !== "confirmed"
+        ? "첫 직업 배정을 먼저 확정해 주세요."
+        : "";
 
   return (
     <div className="teacher-shell">
@@ -865,6 +903,9 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
   const [rangeMessage, setRangeMessage] = useState("");
   const rangeInputRef = useRef<HTMLInputElement>(null);
   const rangeButtonRef = useRef<HTMLButtonElement>(null);
+  const nameInputRefs = useRef(new Map<string, HTMLInputElement>());
+  const focusFrameRef = useRef<number | null>(null);
+  const initialRowsRef = useRef(rows);
   const validCount = rows.filter((row) => row.number.trim() && row.name.trim()).length;
   const duplicateNumbers = useMemo(() => rows.filter((row) => row.number.trim()).filter((row, index, source) => source.findIndex((other) => other.number === row.number) !== index).map((row) => row.number), [rows]);
   const existingNumberSet = useMemo(() => new Set(existingStudentNumbers), [existingStudentNumbers]);
@@ -881,23 +922,73 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
     };
   }, [rangeOpen]);
 
+  useEffect(() => {
+    const initialRows = initialRowsRef.current;
+    const firstBlankName = initialRows.find((row) => row.number.trim() && !row.name.trim());
+    const frame = requestAnimationFrame(() => {
+      if (firstBlankName) {
+        nameInputRefs.current.get(firstBlankName.key)?.focus();
+      } else {
+        document.querySelector<HTMLInputElement>(`[data-roster-number="${initialRows[0]?.key}"]`)?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => () => {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+  }, []);
+
+  function focusName(key: string) {
+    if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
+    focusFrameRef.current = requestAnimationFrame(() => {
+      focusFrameRef.current = null;
+      nameInputRefs.current.get(key)?.focus();
+    });
+  }
+
   function update(key: string, field: "number" | "name", value: string) {
     setRows((current) => current.map((row) => row.key === key ? { ...row, [field]: value } : row));
   }
-  function handleEnter(event: KeyboardEvent<HTMLInputElement>, index: number, field: "number" | "name") {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
+  function handleRosterKeyDown(event: KeyboardEvent<HTMLInputElement>, index: number, field: "number" | "name") {
+    // Enter and arrow keys can be used inside a Korean IME candidate list.
+    // Do not move focus until that composition has finished.
+    if (event.nativeEvent.isComposing) return;
+
     if (field === "number") {
-      document.querySelector<HTMLInputElement>(`[data-roster-name="${rows[index].key}"]`)?.focus();
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      focusName(rows[index].key);
       return;
     }
-    if (index === rows.length - 1) {
+
+    const movingBackward = event.key === "ArrowUp" || (event.key === "Tab" && event.shiftKey);
+    const movingForward = event.key === "ArrowDown" || event.key === "Enter" || (event.key === "Tab" && !event.shiftKey);
+    if (!movingBackward && !movingForward) return;
+
+    const targetIndex = index + (movingBackward ? -1 : 1);
+    if (targetIndex >= 0 && targetIndex < rows.length) {
+      event.preventDefault();
+      focusName(rows[targetIndex].key);
+      return;
+    }
+
+    // Keep the established Enter-to-add behavior, but prefill the number and
+    // focus the new name so a teacher can continue typing in Korean.
+    if (movingForward && event.key === "Enter") {
+      event.preventDefault();
       const next = emptyDraft(String((Number(rows.at(-1)?.number) || rows.length) + 1));
       setRows((current) => [...current, next]);
-      requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-roster-number="${next.key}"]`)?.focus());
+      focusName(next.key);
       return;
     }
-    document.querySelector<HTMLInputElement>(`[data-roster-number="${rows[index + 1].key}"]`)?.focus();
+
+    // At the last name, Tab continues to the next roster action rather than
+    // stopping at the per-row delete control.
+    if (movingForward && event.key === "Tab") {
+      event.preventDefault();
+      rangeButtonRef.current?.focus();
+    }
   }
 
   function openRangeDialog() {
@@ -958,13 +1049,16 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
 
     // Keep every existing row object and its order so names already being
     // entered cannot be lost or moved when a range is appended.
-    setRows([...rows, ...additions]);
+    const nextRows = [...rows, ...additions];
+    const firstBlankName = nextRows.find((row) => row.number.trim() && !row.name.trim());
+    setRows(nextRows);
     setRangeMessage(additions.length
       ? `${parsed.numbers.length}개 번호를 확인해 새 학생 행 ${additions.length}개를 추가했어요.`
       : "입력한 번호의 행이 이미 모두 준비되어 있어요.");
     setRangeInput("");
     setRangeOpen(false);
-    requestAnimationFrame(() => rangeButtonRef.current?.focus());
+    if (firstBlankName) focusName(firstBlankName.key);
+    else requestAnimationFrame(() => rangeButtonRef.current?.focus());
   }
 
   async function save() {
@@ -988,21 +1082,38 @@ function RosterEditor({ classId, onSaved, onCancel, existingStudentNumbers = [] 
 
   return (
     <section className="panel roster-entry-panel">
-      <div className="panel-heading"><div><p className="eyebrow">2 / 3 · 학생 명단</p><h2>{onCancel ? "추가할 학생을 입력해 주세요" : "번호와 이름을 차례로 입력해 주세요"}</h2><p>Enter 키로 다음 칸으로 이동할 수 있어요. 같은 이름은 괜찮지만 번호는 겹치면 안 돼요.</p></div><div className="button-row"><span className="count-chip">{validCount}명 입력</span>{onCancel && <button className="text-button" onClick={onCancel}>취소</button>}</div></div>
+      <div className="panel-heading"><div><p className="eyebrow">2 / 3 · 학생 명단</p><h2>{onCancel ? "추가할 학생을 입력해 주세요" : "번호와 이름을 차례로 입력해 주세요"}</h2><p>이름칸에서는 Tab·Enter·위아래 방향키로 이름칸만 연속 이동할 수 있어요. 같은 이름은 괜찮지만 번호는 겹치면 안 돼요.</p></div><div className="button-row"><span className="count-chip">{validCount}명 입력</span>{onCancel && <button className="text-button" onClick={onCancel}>취소</button>}</div></div>
       <div className="roster-entry-list">
         <div className="roster-entry-head"><span>번호</span><span>공식 이름</span><span /></div>
         {rows.map((row, index) => (
           <div className="roster-entry-row" key={row.key}>
-            <input data-roster-number={row.key} inputMode="numeric" value={row.number} onChange={(event) => update(row.key, "number", event.target.value.replace(/\D/g, "").slice(0, 2))} onKeyDown={(event) => handleEnter(event, index, "number")} aria-label={`${index + 1}번째 학생 번호`} />
-            <input data-roster-name={row.key} value={row.name} onChange={(event) => update(row.key, "name", event.target.value)} onKeyDown={(event) => handleEnter(event, index, "name")} placeholder="학생 이름" aria-label={`${index + 1}번째 학생 이름`} />
-            <button aria-label="이 행 지우기" disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}>×</button>
+            <input data-roster-number={row.key} inputMode="numeric" value={row.number} onChange={(event) => update(row.key, "number", event.target.value.replace(/\D/g, "").slice(0, 2))} onKeyDown={(event) => handleRosterKeyDown(event, index, "number")} aria-label={`${index + 1}번째 학생 번호`} />
+            <input
+              ref={(element) => {
+                if (element) nameInputRefs.current.set(row.key, element);
+                else nameInputRefs.current.delete(row.key);
+              }}
+              data-roster-name={row.key}
+              value={row.name}
+              onChange={(event) => update(row.key, "name", event.target.value)}
+              onKeyDown={(event) => handleRosterKeyDown(event, index, "name")}
+              placeholder="학생 이름"
+              lang="ko"
+              inputMode="text"
+              autoComplete="off"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label={`${index + 1}번째 학생 이름`}
+            />
+            <button type="button" aria-label={`${row.number || index + 1}번 학생 행 지우기`} disabled={rows.length === 1} onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}>×</button>
           </div>
         ))}
       </div>
       <button ref={rangeButtonRef} className="add-row-button" type="button" onClick={openRangeDialog}>+ 학생 행 한꺼번에 추가</button>
       <Notice message={rangeMessage} tone="success" />
       <Notice message={error} tone="error" />
-      <div className="panel-footer"><p>저장하면 학생마다 학급 운영 중 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
+      <div className="panel-footer"><p>저장하면 학생마다 교사가 사용 중지하기 전까지 다시 쓸 수 있는 개인 QR이 만들어집니다.</p><button className="button button-primary button-large" disabled={busy} onClick={save}>{busy ? "계정을 만드는 중…" : `${validCount || "학생"}명 계정 만들고 QR 보기 →`}</button></div>
       {rangeOpen && (
         <div
           className="range-dialog-backdrop"
@@ -1074,6 +1185,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editNumber, setEditNumber] = useState("");
   const [editName, setEditName] = useState("");
+  const [permissionStudentId, setPermissionStudentId] = useState<string | null>(null);
   const [financeBlock, setFinanceBlock] = useState<{
     studentId: string;
     kind: "request" | "deposit" | "stock";
@@ -1104,7 +1216,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     } finally { onBusy(false); }
   }
   async function issueCard(student: Student) {
-    const isReplacement = student.status === "active" || student.status === "reset_required";
+    const isReplacement = Boolean(student.qr_active);
     if (isReplacement && !confirm(`${student.student_number}번 ${student.official_name} 학생에게 새 QR을 발급할까요? 이전 QR과 현재 로그인은 무효가 되지만 비밀번호는 그대로 유지됩니다.`)) return;
     onBusy(true); onError("");
     try {
@@ -1112,7 +1224,7 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
       onCards([data.card]);
       onMessage(isReplacement
         ? "이전 QR과 현재 로그인을 무효로 하고 새 개인 QR을 만들었어요. 비밀번호를 잊었다면 재설정을 10분 허용해 주세요."
-        : "이전 QR을 무효로 하고 새 개인 QR을 만들었어요.");
+        : "새 개인 QR을 만들었어요. 교사가 사용 중지하거나 새 QR로 바꾸기 전까지 계속 사용할 수 있어요.");
       onReload();
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
@@ -1126,6 +1238,50 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
     } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
   }
 
+  async function revokeCard(student: Student) {
+    if (!confirm(`${student.student_number}번 ${student.official_name} 학생의 QR만 사용 중지할까요? 비밀번호 로그인과 현재 로그인은 그대로 유지됩니다.`)) return;
+    onBusy(true); onError("");
+    try {
+      await api(`/api/students/${student.id}/registration-token`, { method: "DELETE" });
+      onMessage("개인 QR을 사용 중지했어요. 학생의 비밀번호 로그인과 현재 로그인은 그대로 유지됩니다.");
+      onReload();
+    } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+  }
+
+  async function resetStudentPassword(student: Student) {
+    if (!confirm(`${student.student_number}번 ${student.official_name} 학생의 비밀번호를 123456으로 초기화할까요? 현재 로그인은 종료되고, 학생은 새 비밀번호를 만든 뒤에만 서비스를 이용할 수 있습니다.`)) return;
+    onBusy(true); onError("");
+    try {
+      await postJson(`/api/students/${student.id}/password-reset`, {});
+      onMessage("비밀번호를 123456으로 초기화했어요. 학생은 로그인 후 새 비밀번호를 먼저 만들어야 합니다.");
+      onReload();
+    } catch (reason) { onError((reason as Error).message); } finally { onBusy(false); }
+  }
+
+  async function updatePermission(
+    student: Student,
+    permissionKey: StudentPermissionKey,
+    enabled: boolean,
+    expectedRevision: number,
+  ) {
+    onBusy(true); onError("");
+    try {
+      await patchJson(`/api/students/${student.id}/permissions`, {
+        permissionKey,
+        enabled,
+        expectedRevision,
+      });
+      onMessage(enabled
+        ? `${student.official_name} 학생에게 직접 운영 권한을 추가했어요.`
+        : `${student.official_name} 학생의 직접 운영 권한을 해제했어요. 직업에서 받은 자동 권한은 그대로 유지됩니다.`);
+      onReload();
+    } catch (reason) {
+      onError((reason as Error).message);
+    } finally {
+      onBusy(false);
+    }
+  }
+
   return (
     <div className="student-table-wrap">
       <table className="student-table"><thead><tr><th>번호</th><th>공식 이름</th><th>계정 상태</th><th>관리</th></tr></thead><tbody>
@@ -1134,17 +1290,75 @@ function StudentTable({ classId, students, busy, onBusy, onError, onMessage, onC
           <tr className={student.status === "excluded" ? "muted-row" : ""}>
             <td>{editingId === student.id ? <input className="table-input number" inputMode="numeric" value={editNumber} onChange={(event) => setEditNumber(event.target.value.replace(/\D/g, ""))} aria-label={`${student.official_name} 학생 번호`} /> : <b>{student.student_number}</b>}</td>
             <td>{editingId === student.id ? <input className="table-input" value={editName} onChange={(event) => setEditName(event.target.value)} aria-label={`${student.official_name} 학생 이름`} /> : <strong>{student.official_name}</strong>}</td>
-            <td><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span></td>
+            <td><div className="student-status-stack"><span className={`status-badge status-${student.status}`}>{friendlyStatus(student.status)}</span><small className={`qr-status-badge ${student.qr_active ? "active" : "inactive"}`}>{student.qr_active ? "QR 사용 중" : "QR 없음·중지"}</small></div></td>
             <td><div className="table-actions">
               {editingId === student.id ? <><button onClick={() => updateStudent(student, { number: Number(editNumber), name: editName })}>저장</button><button onClick={() => setEditingId(null)}>취소</button></> : <>
                 <button onClick={() => { setEditingId(student.id); setEditNumber(String(student.student_number)); setEditName(student.official_name); }}>수정</button>
+                {student.status !== "excluded" && <button
+                  type="button"
+                  aria-expanded={permissionStudentId === student.id}
+                  onClick={() => setPermissionStudentId((current) => current === student.id ? null : student.id)}
+                >운영 권한</button>}
+                {(student.status === "active" || student.status === "reset_required") && <button onClick={() => resetStudentPassword(student)}>비밀번호 초기화</button>}
                 {(student.status === "active" || student.status === "reset_required") && <button onClick={() => allowExistingCardReset(student)}>QR 재설정 10분 허용</button>}
-                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.status === "active" ? "새 QR 발급" : "QR 재발급"}</button>}
+                {student.status !== "excluded" && <button onClick={() => issueCard(student)}>{student.qr_active ? "새 QR 발급" : "QR 발급"}</button>}
+                {student.status !== "excluded" && Boolean(student.qr_active) && <button className="danger-link" onClick={() => revokeCard(student)}>QR 사용 중지</button>}
                 {student.status === "locked" ? <button onClick={() => updateStudent(student, { status: student.activated_at ? "active" : "pending" })}>잠금 해제</button> : student.status !== "excluded" && <button onClick={() => updateStudent(student, { status: "locked" })}>잠금</button>}
                 {student.status !== "excluded" && <button className="danger-link" onClick={() => { if (confirm("학생을 명단에서 제외할까요? 기록은 삭제하지 않고 보존합니다.")) updateStudent(student, { status: "excluded" }); }}>제외</button>}
               </>}
             </div></td>
           </tr>
+          {permissionStudentId === student.id && student.status !== "excluded" && (
+            <tr className="student-permission-row">
+              <td colSpan={4}>
+                <section className="student-permission-panel" aria-label={`${student.official_name} 학생 운영 권한`}>
+                  <div className="student-permission-heading">
+                    <div>
+                      <b>{student.student_number}번 {student.official_name} 운영 권한</b>
+                      <p>직업에서 생긴 권한은 자동으로 유지됩니다. 아래 스위치는 교사가 별도로 추가하는 권한입니다.</p>
+                    </div>
+                    <button className="button button-light" type="button" onClick={() => setPermissionStudentId(null)}>닫기</button>
+                  </div>
+                  <div className="student-permission-grid">
+                    {STUDENT_PERMISSION_OPTIONS.map((option) => {
+                      const manual = student.manual_permissions?.find((item) => item.permission_key === option.key);
+                      const manualActive = Boolean(manual?.is_active);
+                      const automatic = student.automatic_permissions?.includes(option.key) ?? false;
+                      return (
+                        <label className={`student-permission-option ${automatic ? "automatic" : ""}`} key={option.key}>
+                          <input
+                            type="checkbox"
+                            checked={manualActive}
+                            disabled={busy || (!manualActive && student.status !== "active")}
+                            onChange={(event) => void updatePermission(
+                              student,
+                              option.key,
+                              event.target.checked,
+                              Number(manual?.revision ?? 0),
+                            )}
+                          />
+                          <span>
+                            <b>{option.label}</b>
+                            <small>{option.description}</small>
+                          </span>
+                          <em>{automatic && manualActive
+                            ? "직업 자동 + 교사 직접 권한"
+                            : automatic
+                              ? "직업 자동 권한 있음"
+                              : manualActive
+                                ? "교사 직접 권한"
+                                : "직접 권한 없음"}</em>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {student.status !== "active" && (
+                    <p className="privacy-note">잠김·등록 전 상태에서는 새 권한을 추가할 수 없지만, 이미 준 직접 권한은 여기서 해제할 수 있습니다.</p>
+                  )}
+                </section>
+              </td>
+            </tr>
+          )}
           {financeBlock?.studentId === student.id && (
             <tr className="student-finance-guidance-row">
               <td colSpan={4}>

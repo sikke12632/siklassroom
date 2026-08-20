@@ -298,9 +298,9 @@ test("인증 요청은 검증 전에 원자적으로 제한하고 가입은 IP �
   assert.match(studentLogin, /verifyPasswordOrDummy\(password, student\?\.password_hash\)/);
   assert.match(teacherLogin, /consumeRateLimit\(ipKey/);
   assert.match(teacherLogin, /credentialThrottleKey\(request, "teacher-login", email\)/);
-  assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", identifier\)/);
+  assert.match(studentLogin, /credentialThrottleKey\(request, "student-login", credentialIdentifier\)/);
   assert.match(teacherLogin, /subjectThrottleKey\("teacher-login", email\)/);
-  assert.match(studentLogin, /subjectThrottleKey\("student-login", identifier\)/);
+  assert.match(studentLogin, /subjectThrottleKey\("student-login", credentialIdentifier\)/);
   assert.match(studentLogin, /consumeRateLimit\(subjectKey,[\s\S]*maxAttempts: 7/);
   assert.match(studentLogin, /consumeRateLimit\(key,[\s\S]*maxAttempts: 7/);
   assert.ok(
@@ -600,13 +600,15 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(assignmentPage, /모두 선택/);
   assert.match(assignmentPage, /바로 추첨 · 희망자/);
   assert.match(assignmentPage, /로컬 배정 적용/);
-  assert.match(assignmentPage, /전체 배정 확정·서버 저장/);
+  assert.match(assignmentPage, /현재 배정 확정·서버 저장/);
   assert.match(assignmentPage, /window\.localStorage/);
   assert.match(assignmentPage, /chooseSecureCandidate/);
   assert.doesNotMatch(assignmentPage, /job-assignments\/random/);
   assert.doesNotMatch(assignmentPage, /job-assignments\/candidates/);
   assert.match(winnerPage, /결과 바로 보기/);
   assert.match(winnerPage, /당첨!/);
+  assert.match(winnerPage, /같은 직업에서 다음 친구 뽑기/);
+  assert.match(winnerPage, /soundEnabled/);
   assert.match(winnerPage, /WINNER_REVEAL_DELAY_MS = 450/);
   assert.match(winnerPage, /aria-labelledby="winner-dialog-title"/);
   assert.match(winnerPage, /event\.key === "Escape"/);
@@ -619,6 +621,39 @@ test("서울서이초등학교 검색 시드와 첫 직업 배정 화면을 제�
   assert.match(completeApi, /completeInitialAssignments/);
   assert.match(completeApi, /expectedRevision/);
   assert.match(completeApi, /assignments/);
+});
+
+test("직업 설정과 최초·월별 배정은 공석과 역할 없는 학생을 허용한다", async () => {
+  const [setupPage, assignmentPage, winnerPage, assignmentRules, monthlyPage, monthlyRules, jobStorage] = await Promise.all([
+    readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/job-assignments/InitialJobAssignmentPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/job-assignments/WinnerCelebration.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-assignments.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/monthly-jobs/MonthlyJobChoicePortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../lib/monthly-job-choice.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-storage.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(setupPage, /저장하고 직업 배정으로/);
+  assert.match(setupPage, /router\.replace\(`\/teacher\/classes\/\$\{classId\}\/job-assignments`\)/);
+  assert.doesNotMatch(setupPage, /step === 4/);
+  assert.doesNotMatch(jobStorage, /"JOB_CAPACITY_MISMATCH"/);
+  assert.match(assignmentPage, /빈 배정표로도 설정을 마칠 수 있습니다/);
+  assert.match(assignmentPage, /readSoundPreference/);
+  assert.match(assignmentPage, /stored === null \? true/);
+  assert.match(assignmentPage, /candidateIds = data\?\.candidateStudentIdsByJob/);
+  assert.doesNotMatch(assignmentPage, /candidateIds = localDraft\?\.candidateStudentIdsByJob/);
+  assert.match(winnerPage, /onDrawAgain/);
+  assert.match(assignmentRules, /\) > job\.member_capacity/);
+  assert.doesNotMatch(assignmentRules, /\) <> job\.member_capacity/);
+  assert.match(assignmentRules, /storedInitialConfirmationRequestId/);
+  assert.match(assignmentRules, /requestId: idempotencyKey/);
+  assert.match(monthlyPage, /여기까지 선택하고 마치기/);
+  assert.match(monthlyPage, /Object\.entries\(draft\.assignments\)/);
+  assert.match(monthlyRules, /"JOB_CAPACITY_EXCEEDED"/);
+  assert.doesNotMatch(monthlyRules, /"MONTHLY_ASSIGNMENT_INCOMPLETE"/);
+  assert.match(monthlyRules, /storedMonthlyConfirmationRequestId/);
+  assert.match(monthlyRules, /detail\.requestId === "string"/);
 });
 
 test("동시에 같은 학급을 만드는 요청은 내부 오류 대신 중복으로 거절한다", async () => {
@@ -735,9 +770,10 @@ test("교사 홈은 시간표 저장과 월 경계 일정을 즉시 다시 확�
   assert.match(styles, /@media \(max-width: 1100px\) \{\s*\.portal-summary-grid \{ grid-template-columns: repeat\(2,/);
 });
 
-test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
-  const [registration, complete, verify, individualIssue, printCards, activation, migration] = await Promise.all([
+test("학생 개인 QR은 교사가 폐기할 때까지 재사용하고 비밀번호 재설정은 10분 허용으로 제한한다", async () => {
+  const [registration, registrationPolicy, complete, verify, individualIssue, printCards, activation, migration] = await Promise.all([
     readFile(new URL("../lib/registration.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/registration-policy.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/registration/complete/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/registration/verify/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/students/[studentId]/registration-token/route.ts", import.meta.url), "utf8"),
@@ -745,13 +781,17 @@ test("학생 개인 QR은 식별 카드로 재사용하고 비밀번호 재설�
     readFile(new URL("../app/activate/ActivationPortal.tsx", import.meta.url), "utf8"),
     readFile(new URL("../drizzle/0014_thick_justice.sql", import.meta.url), "utf8"),
   ]);
-  assert.match(registration, /REGISTRATION_QR_LIFETIME_MS = 400/);
-  assert.match(registration, /REGISTRATION_CHALLENGE_LIFETIME_MS = 10/);
+  assert.match(registrationPolicy, /REGISTRATION_QR_PERSISTENT_EXPIRES_AT/);
+  assert.match(registrationPolicy, /REGISTRATION_CHALLENGE_LIFETIME_MS = 30/);
+  assert.match(registrationPolicy, /REGISTRATION_RESET_CHALLENGE_LIFETIME_MS = 10/);
   assert.match(registration, /QR_RESET_GRANT_LIFETIME_MS = 10/);
   assert.match(registration, /HttpOnly; SameSite=Strict/);
   assert.match(registration, /registrationActivationUrl/);
   assert.match(complete, /registration_operation_guards/);
   assert.match(complete, /prepareSession/);
+  assert.doesNotMatch(complete, /rt\.expires_at\s*>/);
+  assert.match(complete, /challenge\.status === "reset_required"/);
+  assert.match(complete, /password === STUDENT_TEMPORARY_PASSWORD/);
   assert.match(verify, /export async function POST/);
   assert.match(verify, /registrationResponseHeaders/);
   assert.match(individualIssue, /student\.status === "reset_required" \? "reset" : "activate"/);
@@ -844,7 +884,19 @@ test("학생 화면은 서울 현재 월이 되기 전의 미래 확정 직업�
   assert.match(studentMe, /const current = seoulServerTime\(\)/);
   assert.match(studentMe, /p\.assignment_year < \?/);
   assert.match(studentMe, /p\.assignment_month <= \?/);
-  assert.match(studentMe, /bind\(studentId, current\.year, current\.year, current\.month\)/);
+  assert.match(studentMe, /WITH current_period AS/);
+  assert.match(studentMe, /FROM current_period p\s+JOIN student_job_assignments a/);
+  assert.match(studentMe, /a\.period_id = p\.id[\s\S]*a\.student_id = \?/);
+  assert.match(studentMe, /current\.month,\s+studentId/);
+});
+
+test("최신 확정 배정표에서 미배정된 학생은 과거 직업으로 되돌아가지 않는다", async () => {
+  const studentMe = await readFile(new URL("../app/api/student/me/route.ts", import.meta.url), "utf8");
+  const periodSelection = studentMe.indexOf("WITH current_period AS");
+  const assignmentJoin = studentMe.indexOf("JOIN student_job_assignments a", periodSelection);
+  assert.ok(periodSelection >= 0 && assignmentJoin > periodSelection);
+  assert.match(studentMe, /ORDER BY p\.assignment_year DESC, p\.assignment_month DESC,[\s\S]*p\.id DESC/);
+  assert.doesNotMatch(studentMe, /FROM student_job_assignments a[\s\S]*ORDER BY p\.assignment_year DESC/);
 });
 
 test("학생 직업평가를 안전하게 모아 최종등급과 자동 무작위 순서에 연결한다", async () => {
@@ -1039,6 +1091,110 @@ test("직업 설정 화면은 최초 조회 오류를 화면 안에서 다시 �
   assert.match(jobSetup, /event\.key !== "Tab"/);
   assert.match(jobSetup, /adjustmentDialogRef\.current\?\.contains/);
   assert.match(jobSetup, /previousFocus\?\.isConnected/);
+});
+
+test("직업 설정을 마친 학급은 마법사 대신 현재 직업 현황과 기간별 편집 입구를 연다", async () => {
+  const [portal, overviewRoute, currentRoute, planRoute, styles] = await Promise.all([
+    readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/jobs/overview/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/jobs/apply-current/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/classes/[classId]/jobs/plan/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(portal, /setup\.status === "completed"/);
+  assert.match(portal, /우리 반 직업 현황/);
+  assert.match(portal, /학생별 보기/);
+  assert.match(portal, /직업별 보기/);
+  assert.match(portal, /aria-pressed/);
+  assert.match(portal, /직업이 없는 학생/);
+  assert.match(portal, /공석/);
+  assert.match(portal, /현재 배정은 유지 중/);
+  assert.match(portal, /현재 구성 수정/);
+  assert.match(portal, /다음 달 구성 (?:준비|이어 수정)/);
+  assert.match(portal, /editTarget.*"current".*"next"/s);
+  assert.match(portal, /지금 바로 반영/);
+  assert.match(portal, /다음 달부터 반영/);
+  assert.match(portal, /\/jobs\/overview/);
+  assert.match(portal, /\/jobs\/apply-current/);
+  assert.match(portal, /\/jobs\/plan/);
+  assert.match(portal, /acknowledgeImpact/);
+  assert.match(portal, /JOB_CONFIG_IMPACT_CONFIRMATION_REQUIRED/);
+  assert.match(portal, /reason\.status === 409/);
+
+  assert.match(overviewRoute, /requireClassManagement/);
+  assert.match(overviewRoute, /ownedClass/);
+  for (const route of [currentRoute, planRoute]) {
+    assert.match(route, /requireClassManagement/);
+    assert.match(route, /ownedActiveClass/);
+  }
+  assert.match(currentRoute, /expectedSetupRevision/);
+  assert.match(currentRoute, /requestId/);
+  assert.match(currentRoute, /acknowledgeImpact/);
+  assert.match(planRoute, /expectedRevision/);
+  assert.match(planRoute, /requestId/);
+
+  assert.match(styles, /job-overview|job-status|job-dashboard/);
+  assert.match(styles, /min-height:\s*44px/);
+});
+
+test("현재 현황은 최신 확정 월을 먼저 고르고 다음 달 계획은 현재 배정과 권한에서 분리한다", async () => {
+  const [service, migration, runtimeSchema, drizzleSchema, studentMe, monthly, jobStorage, portal] = await Promise.all([
+    readFile(new URL("../lib/job-configurations.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0044_job_configuration_plans.sql", import.meta.url), "utf8"),
+    readFile(new URL("../lib/database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/student/me/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/monthly-job-choice.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/job-storage.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/teacher/classes/[classId]/jobs/JobSetupPortal.tsx", import.meta.url), "utf8"),
+  ]);
+
+  for (const source of [migration, runtimeSchema, drizzleSchema]) {
+    assert.match(source, /class_job_change_plans/);
+  }
+  assert.match(service, /class_job_change_plans/);
+  assert.match(service, /assignment_year\s*<|assignment_year <\s*\?/);
+  assert.match(service, /assignment_month\s*<=|assignment_month <=\s*\?/);
+  assert.match(service, /ORDER BY[\s\S]*assignment_year DESC[\s\S]*assignment_month DESC/);
+  assert.match(service, /student_job_assignments/);
+  assert.match(service, /unassignedStudents/);
+  assert.match(service, /retired/);
+  assert.match(service, /vacancies/);
+  const overviewLoader = service.indexOf("export async function loadJobOverview");
+  const periodFirst = service.indexOf("latestEffectiveJobPeriod", overviewLoader);
+  const assignmentRead = service.indexOf("FROM student_job_assignments assignment", periodFirst);
+  assert.ok(overviewLoader >= 0 && periodFirst > overviewLoader && assignmentRead > periodFirst);
+  assert.doesNotMatch(service, /DELETE\s+FROM\s+student_job_assignments/i);
+  assert.match(service, /JOB_CONFIG_IMPACT_CONFIRMATION_REQUIRED/);
+  assert.match(service, /OPEN_JOB_WORKFLOW_IMPACT/);
+  assert.match(service, /JOB_PLAN_STALE/);
+  assert.match(service, /FIRST_ASSIGNMENT_REQUIRED/);
+  assert.match(service, /job_configuration_applied_current/);
+  assert.match(service, /job_configuration_plan_saved/);
+  assert.match(service, /job_configuration_plan_applied/);
+  assert.match(service, /configurationJobs:\s*setupConfigurationJobs/);
+  assert.match(service, /nextScheduledJobPeriod/);
+  assert.match(service, /futureConfirmedPeriod/);
+  assert.match(service, /FUTURE_JOB_PERIOD_PENDING/);
+  assert.match(portal, /overview\.configurationJobs/);
+  assert.match(portal, /배정 예정표 보기/);
+  assert.match(portal, /nextPlanNeedsReview/);
+  assert.match(portal, /baseSetupRevision/);
+  assert.doesNotMatch(portal, /:\s*data\.setup\.draftJobs;\s*\n\s*setJobs/);
+  assert.match(jobStorage, /status IN \('not_started', 'draft'\)/);
+  assert.match(jobStorage, /JOB_SETUP_COMPLETED/);
+  assert.match(monthly, /applyDraftJobPlanForTarget/);
+  const planApply = monthly.indexOf("await applyDraftJobPlanForTarget");
+  const choiceInsert = monthly.indexOf("INSERT OR IGNORE INTO class_job_choice_sessions", planApply);
+  assert.ok(planApply >= 0 && choiceInsert > planApply);
+
+  assert.match(studentMe, /WITH current_period AS/);
+  assert.doesNotMatch(studentMe, /JOIN class_jobs[^;]+(?:AND|WHERE)\s+(?:j|job)\.is_active\s*=\s*1/s);
+  const permissionViewStart = migration.indexOf("CREATE VIEW `student_effective_permissions`");
+  assert.ok(permissionViewStart >= 0);
+  const effectivePermissionView = migration.slice(permissionViewStart);
+  assert.doesNotMatch(effectivePermissionView, /job\.is_active\s*=\s*1/);
 });
 
 test("금융센터 고정 메뉴의 모든 이동 대상은 메뉴 아래에 보이도록 여백을 둔다", async () => {
